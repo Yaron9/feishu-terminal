@@ -70,6 +70,13 @@ export class Store {
       Object.assign(binding, patch);
     });
   }
+  consumeCard(chatId, topicId, cardId, nonce) {
+    return this.transaction(data => {
+      const b = data.bindings.find(b => b.chatId === chatId && b.topicId === topicId);
+      if (!b || b.cardId !== cardId || b.nonce !== nonce) return false;
+      b.nonce = randomUUID(); return true;
+    });
+  }
   unbind(chatId, topicId) {
     return this.transaction(data => { data.bindings = data.bindings.filter(b => !(b.chatId === chatId && b.topicId === topicId)); });
   }

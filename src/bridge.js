@@ -31,6 +31,7 @@ export class Bridge {
     for (const b of this.store.list()) {
       this.state(b);
       if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
+      if (b.chatId === this.chatId && b.pendingCard) await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
     }
     this.resubscribe();
     await this.feishu.start(event => this.accept(event), this.onError);
@@ -197,7 +198,7 @@ export class Bridge {
     if (existing && !existing.frozen) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
     const identity = await this.identity(paneId);
     if (existing) {
-      await this.store.update(existing.chatId, existing.topicId, { identity, frozen: false, lastTranscript: undefined, nonce: randomUUID() });
+      await this.store.update(existing.chatId, existing.topicId, { identity, frozen: false, lastTranscript: undefined, nonce: randomUUID(), pendingCard: null });
       this.runtime.delete(existing.topicId);
       await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
     }
@@ -254,7 +255,9 @@ export class Bridge {
     }
     // Consume the nonce durably before sending any key. A replay under a new
     // event_id cannot execute the same card action again, including on restart.
-    await this.store.update(binding.chatId, binding.topicId, { nonce: randomUUID() });
+    if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce)) {
+      await this.feishu.reply(binding.topicId, 'Stale card. Use /t screen.'); return;
+    }
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
     if (event.key !== 'refresh') await this.writeInput(binding, 'pane.send_keys', { keys: [event.key] });
     state.dirty = true; await this.refresh(this.store.binding(binding.chatId, binding.topicId), true);
@@ -295,35 +298,55 @@ export class Bridge {
     state.visible = visible.text; state.nextSignature = signature;
     if (!deferCard) await this.refreshCard(binding);
   }
-  async refreshCard(binding) {
+  refreshCard(binding) {
+    return this.enqueue(() => this.publishCard(binding), `card:${binding.topicId}`);
+  }
+  async publishCard(binding) {
     const state = this.state(binding), now = this.now();
+    binding = this.store.binding(binding.chatId, binding.topicId);
+    if (!binding) return;
     // A manual screen request and a blocked notification still obey 1 Hz.
-    if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && state.cardPending) {
-      binding = this.store.binding(binding.chatId, binding.topicId);
-      if (!binding) return;
-      const nonce = randomUUID();
-      const card = screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: state.visible });
+    if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && (state.cardPending || binding.pendingCard)) {
+      let pending = binding.pendingCard;
+      if (!pending) {
+        const nonce = randomUUID();
+        pending = { nonce, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
+          card: screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
+        await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
+      }
       try {
-        // Replacement publishes card ID and nonce in the same atomic update.
-        if (binding.cardId) {
-          await this.store.update(binding.chatId, binding.topicId, { nonce });
-          try { await this.feishu.patch(binding.cardId, card); }
+        let cardId = pending.targetId;
+        if (cardId) {
+          try { await this.feishu.patch(cardId, pending.card); }
           catch (error) {
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
-            const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
-            await this.store.update(binding.chatId, binding.topicId, { cardId, nonce });
+            pending.targetId = null; cardId = null;
+            await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
           }
-        } else {
-          const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
-          await this.store.update(binding.chatId, binding.topicId, { cardId, nonce });
         }
+        if (!cardId) {
+          if (pending.attemptAt !== undefined && this.now() - pending.attemptAt >= 55 * 60 * 1000)
+            throw Object.assign(new Error('Card retry window expired'), { code: 'card_retry_expired' });
+          if (pending.attemptAt === undefined) {
+            pending.attemptAt = this.now();
+            await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
+          }
+          cardId = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
+        }
+        // The old nonce stays valid until publication succeeds. A pending
+        // version always has a fresh nonce; consumed versions are never reused.
+        await this.store.transaction(data => {
+          const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+          if (b?.pendingCard?.nonce === pending.nonce) Object.assign(b, { cardId, nonce: pending.nonce, pendingCard: null });
+        });
       } catch (error) {
         state.cardFailures = (state.cardFailures ?? 0) + 1;
         state.cardRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.cardFailures - 1));
         throw error;
       }
       state.cardFailures = 0; state.cardRetryAt = 0;
-      state.lastCard = this.now(); state.signature = state.nextSignature; state.blockedNotice = false; state.cardPending = false;
+      state.lastCard = this.now(); state.signature = pending.signature; state.blockedNotice = false;
+      state.cardPending = state.nextSignature !== pending.signature;
     }
   }
   async flush(binding) {

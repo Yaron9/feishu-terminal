@@ -156,3 +156,43 @@ test('transient card errors back off while plain output continues', async t => {
   const count = attempts;
   h.advance(500); await h.bridge.tick(); assert.equal(attempts, count);
 });
+
+const click = (binding, eventId) => ({ kind: 'button', eventId, chatId: binding.chatId, openId: 'ou_test',
+  topicId: binding.topicId, messageId: binding.cardId, nonce: binding.nonce, key: 'enter' });
+
+test('failed card patch preserves the visible nonce across restart; consumed nonce never revives', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd'));
+  h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
+  const old = h.store.binding('oc_test', 'm1');
+  h.feishu.patch = async () => { throw Object.assign(new Error('offline'), { code: 'network_error' }); };
+  h.fake.output('w1:p1', 'Changed approval'); h.advance(1000); await h.bridge.tick();
+  assert.equal(h.store.binding('oc_test', 'm1').nonce, old.nonce);
+  const restored = await h.restart(); const before = writes(h).length;
+  await h.bridge.handle(click(old, 'valid-old'));
+  assert.equal(writes(h).length, before + 1);
+  h.feishu.patch = async () => {};
+  h.advance(2000); await h.bridge.tick(); await h.restart();
+  await h.bridge.handle(click(old, 'replayed-old'));
+  assert.equal(writes(h).length, before + 1);
+  assert.notEqual(restored.binding('oc_test', 'm1').nonce, old.nonce);
+});
+
+test('restart reconciles an uncertain card patch by publishing the same pending nonce', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd'));
+  h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
+  const old = h.store.binding('oc_test', 'm1'); let visibleNonce;
+  h.feishu.patch = async (id, card) => {
+    visibleNonce = card.elements[1].actions[0].value.nonce;
+    throw Object.assign(new Error('response lost after server applied patch'), { code: 'network_error' });
+  };
+  h.fake.output('w1:p1', 'Changed approval'); h.advance(1000); await h.bridge.tick();
+  const pendingNonce = visibleNonce;
+  assert.equal(h.store.binding('oc_test', 'm1').nonce, old.nonce);
+  h.feishu.patch = async (id, card) => { assert.equal(card.elements[1].actions[0].value.nonce, pendingNonce); };
+  const restored = await h.restart();
+  assert.equal(restored.binding('oc_test', 'm1').nonce, pendingNonce);
+  assert.equal(restored.binding('oc_test', 'm1').pendingCard, null);
+  const before = writes(h).length;
+  await h.bridge.handle(click(restored.binding('oc_test', 'm1'), 'reconciled-click'));
+  assert.equal(writes(h).length, before + 1);
+});
