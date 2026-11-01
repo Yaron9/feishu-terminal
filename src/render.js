@@ -18,7 +18,7 @@ export function screenText(text, rows = 40, width = 120) {
 // only its new suffix; a rewritten screen contributes the changed tail.
 export function newOutput(previous = '', current = '') {
   if (current === previous) return '';
-  if (current.startsWith(previous)) return current.slice(previous.length);
+  previous = Array.from(previous); current = Array.from(current);
   // KMP finds the longest old suffix that is a new prefix in linear time.
   const prefix = new Uint32Array(current.length);
   for (let i = 1, j = 0; i < current.length; i++) {
@@ -27,14 +27,14 @@ export function newOutput(previous = '', current = '') {
     prefix[i] = j;
   }
   let overlap = 0;
-  for (const char of previous.split('')) {
+  for (const char of previous) {
     while (overlap && (overlap === current.length || char !== current[overlap])) overlap = prefix[overlap - 1];
     if (char === current[overlap]) overlap++;
   }
-  if (overlap) return current.slice(overlap);
+  if (overlap) return current.slice(overlap).join('');
   let common = 0;
   while (common < previous.length && common < current.length && previous[common] === current[common]) common++;
-  return current.slice(common);
+  return current.slice(common).join('');
 }
 
 // Bound UTF-8 bytes, never split a Unicode code point or trim any characters.

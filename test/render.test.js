@@ -32,3 +32,8 @@ test('screen clamps rows and width, strips controls, escapes markup, and exposes
   assert.ok(buttons.every(b => b.value.topic_id === 'm1' && b.value.nonce === 'nonce'));
   assert.equal(screenCard({ paneId: 'x', topicId: 'y', nonce: 'z', text: '', status: 'idle' }).elements.length, 1);
 });
+test('emoji replacement and rolling overlap preserve whole Unicode code points', () => {
+  assert.equal(newOutput('😀', '😁'), '😁');
+  assert.equal(newOutput('x😀', '😀😁'), '😁');
+  assert.equal(newOutput('x\ud83d', '😀ok'), '😀ok');
+});
