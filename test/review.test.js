@@ -39,3 +39,23 @@ test('legacy bindings without persisted identity fail closed on startup', async 
   await h.bridge.handle(message('unsafe', 'm2', 'm1'));
   assert.equal(writes(h).length, before);
 });
+
+test('uncertain shell text or Enter freezes ordinary input across restart until explicit /t ok', async t => {
+  for (const method of ['pane.send_text', 'pane.send_keys']) {
+    const h = await harness(t); await h.bridge.handle(message('pwd'));
+    h.fake.drop(method); await h.bridge.handle(message('danger', 'uncertain', 'm1'));
+    assert.equal(h.store.binding('oc_test', 'm1').needs_check, true);
+    assert.match(texts(h).at(-1).content, /\/t ok/);
+    assert.match(texts(h).at(-1).content, /\$ /);
+    await h.restart(); const before = writes(h).length;
+    for (const [i, text] of ['next', '/t raw next', '/t k enter'].entries())
+      await h.bridge.handle(message(text, `refused${i}`, 'm1'));
+    assert.equal(writes(h).length, before);
+    await h.bridge.handle(message('/t k ctrl+u', 'clear', 'm1'));
+    await h.bridge.handle(message('still refused', 'refused-again', 'm1'));
+    assert.equal(writes(h).length, before + 1);
+    await h.bridge.handle(message('/t ok', 'checked', 'm1'));
+    await h.bridge.handle(message('safe', 'safe', 'm1'));
+    assert.equal(writes(h).length, before + 3);
+  }
+});

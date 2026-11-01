@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, newOutput, splitText } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText } from './render.js';
 import { paneSubscriptions } from './herdr-client.js';
 import { auditRecord, appendAudit } from './store.js';
 
@@ -103,14 +103,23 @@ export class Bridge {
         return;
       }
       if (action.type === 'screen') { this.state(binding).dirty = true; await this.refresh(binding, true); return; }
-      if (['keys', 'raw'].includes(action.type)) await this.verify(binding);
-      if (action.type === 'keys') await this.herdr.request('pane.send_keys', { pane_id: binding.paneId, keys: action.keys });
-      if (action.type === 'raw') await this.herdr.request('pane.send_text', { pane_id: binding.paneId, text: action.text });
+      if (action.type === 'ok') {
+        await this.verify(binding);
+        await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
+        await this.feishu.reply(binding.topicId, 'Screen acknowledged; input enabled.'); return;
+      }
+      if (action.type === 'keys') await this.writeInput(binding, 'pane.send_keys', { keys: action.keys }, action.keys.length === 1 && action.keys[0] === 'ctrl+u');
+      if (action.type === 'raw') await this.writeInput(binding, 'pane.send_text', { text: action.text });
       if (action.type === 'input') await this.input(binding, action.text);
       this.state(binding).dirty = true;
     } catch (error) {
       if (error.code === 'binding_unverified') {
         await this.feishu.reply(event.topicId, 'Binding frozen: pane identity could not be confirmed. Use /t open <pane> to rebind or /t close.'); return;
+      }
+      if (this.store.binding(event.chatId, event.topicId)?.needs_check) {
+        let screen = '[screen unavailable; use /t screen]';
+        try { screen = screenText((await this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 })).read.text); } catch {}
+        await this.feishu.reply(event.topicId, `Input needs checking; input was not retried. Inspect the screen, optionally /t k ctrl+u, then /t ok before more input.\n${screen}`); return;
       }
       // Never echo upstream error messages: they may contain terminal content.
       const code = /^[a-z_0-9]+$/i.test(String(error.code)) ? String(error.code) : 'operation_failed';
@@ -138,6 +147,15 @@ export class Bridge {
       if (binding) await this.store.update(binding.chatId, binding.topicId, { frozen: true });
       throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     }
+  }
+  async writeInput(binding, method, params, allowClear = false) {
+    await this.verify(binding);
+    const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check;
+    if (wasChecking && !allowClear) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
+    // Persist intent before the mutation, so a crash also requires inspection.
+    await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
+    await this.herdr.request(method, { pane_id: binding.paneId, ...params });
+    if (!wasChecking) await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
   }
   async createPane() {
     const { workspaces } = await this.herdr.request('workspace.list');
@@ -173,6 +191,7 @@ export class Bridge {
   }
   async input(binding, text) {
     await this.verify(binding);
+    if (this.store.binding(binding.chatId, binding.topicId).needs_check) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     const state = this.state(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
     if (!state.initialized) {
@@ -195,8 +214,11 @@ export class Bridge {
       }
     } else {
       this.status(state, 'unknown', null);
+      await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
       await this.herdr.request('pane.send_text', { pane_id: binding.paneId, text });
+      await this.verify(binding);
       await this.herdr.request('pane.send_keys', { pane_id: binding.paneId, keys: ['enter'] });
+      await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
     }
     state.dirty = true;
   }
@@ -217,7 +239,7 @@ export class Bridge {
     // event_id cannot execute the same card action again, including on restart.
     await this.store.update(binding.chatId, binding.topicId, { nonce: randomUUID() });
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
-    if (event.key !== 'refresh') await this.herdr.request('pane.send_keys', { pane_id: binding.paneId, keys: [event.key] });
+    if (event.key !== 'refresh') await this.writeInput(binding, 'pane.send_keys', { keys: [event.key] });
     state.dirty = true; await this.refresh(this.store.binding(binding.chatId, binding.topicId), true);
   }
   tick() {

@@ -8,7 +8,7 @@ export function validKeys(keys) {
   return Array.isArray(keys) && keys.length >= 1 && keys.length <= 8 && keys.every(key => KEYS.has(key));
 }
 
-export const HELP = '/t ls | /t open <pane_id> | /t close [--kill] | /t k <1–8 keys> | /t screen | /t raw <text>';
+export const HELP = '/t ls | /t open <pane_id> | /t close [--kill] | /t k <1–8 keys> | /t screen | /t raw <text> | /t ok';
 
 // Nothing except the exact /t token is reserved. Payload whitespace is data.
 export function route(text, bound = false) {
@@ -19,7 +19,8 @@ export function route(text, bound = false) {
   const parts = text.trim().split(/\s+/u).slice(1);
   if (parts[0] === 'ls' && parts.length === 1) return { type: 'list' };
   if (parts[0] === 'open' && parts.length === 2) return { type: 'open', paneId: parts[1] };
-  if (!bound && ['close', 'k', 'screen'].includes(parts[0])) return { type: 'error', message: 'Open a topic first.' };
+  if (!bound && ['close', 'k', 'screen', 'ok'].includes(parts[0])) return { type: 'error', message: 'Open a topic first.' };
+  if (parts[0] === 'ok' && parts.length === 1) return { type: 'ok' };
   if (parts[0] === 'close' && (parts.length === 1 || (parts.length === 2 && parts[1] === '--kill'))) return { type: 'close', kill: parts[1] === '--kill' };
   if (parts[0] === 'screen' && parts.length === 1) return { type: 'screen' };
   if (parts[0] === 'k' && validKeys(parts.slice(1))) return { type: 'keys', keys: parts.slice(1) };
