@@ -59,3 +59,17 @@ test('uncertain shell text or Enter freezes ordinary input across restart until 
     assert.equal(writes(h).length, before + 3);
   }
 });
+
+test('idle or done output missed during restart, reconnect or between polls flushes after stability', async t => {
+  for (const mode of ['restart', 'reconnect', 'missed-working']) {
+    const h = await harness(t); await h.bridge.handle(message('pwd')); await h.subscribed();
+    if (mode === 'reconnect') { h.fake.disconnectSubscribers(); await eventually(() => h.fake.subscribers.size === 0); }
+    Object.assign(h.fake.panes.get('w1:p1'), { agent: 'codex', agent_status: mode === 'restart' ? 'done' : 'idle', text: '$ completed', visible: '$ completed' });
+    if (mode === 'restart') await h.restart();
+    if (mode === 'reconnect') await h.subscribed();
+    await h.bridge.tick(); assert.equal(texts(h).length, 0);
+    h.advance(1499); await h.bridge.tick(); assert.equal(texts(h).length, 0);
+    h.advance(1); await h.bridge.tick(); assert.equal(texts(h).at(-1)?.content, 'completed');
+    h.advance(2000); await h.bridge.tick(); assert.equal(texts(h).length, 1);
+  }
+});

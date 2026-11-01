@@ -56,6 +56,7 @@ export class Bridge {
   }
   status(state, status, agent = state.agent) {
     if (state.status === 'working' && ['idle', 'done'].includes(status)) state.settle = true;
+    if (!['idle', 'done'].includes(status)) state.settle = false;
     if (status === 'blocked' && state.status !== 'blocked') state.blockedNotice = true;
     if (status !== 'blocked') state.blockedNotice = false;
     state.status = status; state.agent = agent;
@@ -292,7 +293,8 @@ export class Bridge {
   async flush(binding) {
     const state = this.state(binding);
     if (!state.pending && !state.settle) return;
-    if (!state.settle && (state.agent || this.now() - state.lastChange < 1500)) return;
+    if (state.agent && !['idle', 'done'].includes(state.status)) return;
+    if (!state.settle && this.now() - state.lastChange < 1500) return;
     // Content is authoritative; revision can change for cursor/status updates.
     const delta = newOutput(state.previous, state.current);
     for (const [index, part] of splitText(delta).entries()) {
