@@ -92,7 +92,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
   };
 }
 
-export async function setup({ newGroup = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
+export async function setup({ newGroup = false, newApp = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
   fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, signal } = {}) {
   let release, ready = Promise.resolve(), stage = 'registration';
   const abort = new AbortController();
@@ -103,8 +103,25 @@ export async function setup({ newGroup = false, operator, paths = runtimePaths()
     const config = JSON.parse(await readOptional(paths.configFile, '{}'));
     const progressFile = join(paths.stateDir, 'setup-progress.json');
     let progress = JSON.parse(await readOptional(progressFile, '{}'));
+    const saveProgress = () => atomicPrivateWrite(progressFile, JSON.stringify(progress, null, 2) + '\n');
     const env = parseEnv(await readOptional(paths.envFile, ''));
-    const saved = progress.registered?.app_id && progress.registered.app_id === env.FEISHU_APP_ID && env.FEISHU_APP_SECRET;
+    const api = setupApi({ fetchImpl, sleep, signal: registrationSignal });
+    const tokenFor = async (appId, appSecret) => {
+      stage = 'tenant_token';
+      const auth = await api('/open-apis/auth/v3/tenant_access_token/internal', { method: 'POST', body: { app_id: appId, app_secret: appSecret } });
+      if (!auth.tenant_access_token) throw new SetupError('missing_tenant_token');
+      return auth.tenant_access_token;
+    };
+    let saved = !newApp && Boolean(env.FEISHU_APP_ID && env.FEISHU_APP_SECRET), token;
+    if (saved) {
+      if (progress.registered?.app_id !== env.FEISHU_APP_ID) {
+        progress = { registered: { app_id: env.FEISHU_APP_ID }, operator_open_id: config.operatorOpenIds?.[0] };
+      }
+      if (progress.tenant_brand === 'lark') throw new SetupError('lark_tenant_unsupported');
+      try { token = await tokenFor(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET); }
+      catch { saved = false; }
+    }
+    stage = 'registration';
     const result = saved ? { client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET,
       user_info: { open_id: progress.operator_open_id, tenant_brand: progress.tenant_brand } } : await registerApp({ createOnly: true,
       appPreset: { name: 'VPS 终端', desc: '飞书话题 ↔ VPS herdr 终端' },
@@ -133,42 +150,84 @@ export async function setup({ newGroup = false, operator, paths = runtimePaths()
       progress = { registered: { app_id: result.client_id }, tenant_brand: result.user_info?.tenant_brand };
     }
     if (/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) progress.operator_open_id = openId;
-    await atomicPrivateWrite(progressFile, JSON.stringify(progress, null, 2) + '\n');
+    await saveProgress();
     if (!/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) throw new SetupError('missing_operator');
     // Keep the product on Feishu; never send Lark credentials to Feishu endpoints.
     if (result.user_info?.tenant_brand === 'lark') throw new SetupError('lark_tenant_unsupported');
-    const api = setupApi({ fetchImpl, sleep, signal: registrationSignal });
-    stage = 'tenant_token';
-    const auth = await api('/open-apis/auth/v3/tenant_access_token/internal', { method: 'POST',
-      body: { app_id: result.client_id, app_secret: result.client_secret } });
-    if (!auth.tenant_access_token) throw new SetupError('missing_tenant_token');
-    const token = auth.tenant_access_token;
-    let chatId = config.chatIds?.length === 1 && /^oc_[A-Za-z0-9]+$/.test(config.chatIds[0]) ? config.chatIds[0] : null;
-    if (!chatId || newGroup) {
+    token ??= await tokenFor(result.client_id, result.client_secret);
+    const validChat = id => /^oc_[A-Za-z0-9]+$/.test(id ?? '');
+    const isMember = async chatId => {
+      stage = 'group_membership';
+      // A tenant token checks the current app's bot, not the human operator.
+      const response = await api(`/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members/is_in_chat`, { token });
+      if (typeof response.data?.is_in_chat !== 'boolean') throw new SetupError('invalid_membership_response');
+      return response.data.is_in_chat;
+    };
+    const resetGroup = () => {
+      for (const key of ['group_created', 'configured', 'welcomed', 'scopes_checked', 'welcome_uuid']) delete progress[key];
+    };
+    if (newGroup && (!progress.new_group || progress.scopes_checked)) {
+      resetGroup(); progress.new_group = true; progress.excluded_chat_id = config.chatIds?.[0]; await saveProgress();
+    }
+    let chatId = progress.group_created?.chat_id ?? (!progress.new_group && config.chatIds?.length === 1 ? config.chatIds[0] : null);
+    if (!validChat(chatId)) chatId = null;
+    if (chatId && !await isMember(chatId)) { resetGroup(); chatId = null; await saveProgress(); }
+    if (!chatId) {
+      stage = 'group_lookup';
+      const matches = new Set(), pages = new Set(); let pageToken;
+      do {
+        const query = new URLSearchParams({ page_size: '100', ...(pageToken ? { page_token: pageToken } : {}) });
+        const response = await api(`/open-apis/im/v1/chats?${query}`, { token });
+        if (!Array.isArray(response.data?.items)) throw new SetupError('invalid_group_list');
+        for (const chat of response.data.items) {
+          if (chat.name === 'VPS 终端' && validChat(chat.chat_id) && chat.chat_id !== progress.excluded_chat_id) matches.add(chat.chat_id);
+        }
+        pageToken = response.data.has_more ? response.data.page_token : null;
+        if (response.data.has_more && (!pageToken || pages.has(pageToken))) throw new SetupError('invalid_group_list');
+        pages.add(pageToken);
+      } while (pageToken);
+      if (matches.size > 1) throw new SetupError('ambiguous_setup_groups');
+      const candidate = [...matches][0];
+      if (candidate && await isMember(candidate)) chatId = candidate;
+    }
+    if (!chatId) {
       stage = 'group_create';
       const response = await api('/open-apis/im/v1/chats?user_id_type=open_id', { method: 'POST', token,
         body: { name: 'VPS 终端', description: '飞书话题 ↔ VPS herdr 终端', chat_mode: 'group', chat_type: 'private',
           group_message_type: 'thread', owner_id: openId, user_id_list: [openId] } });
       chatId = response.data?.chat_id;
       if (!/^oc_[A-Za-z0-9]+$/.test(chatId ?? '')) throw new SetupError('missing_chat_id');
-    } else stderr('SETUP existing chat retained; ensure the new app bot is a member. Use --new-group for a fresh group.');
+    }
+    if (progress.group_created?.chat_id !== chatId) { resetGroup(); progress.group_created = { chat_id: chatId }; await saveProgress(); }
+    const configChanged = config.chatIds?.[0] !== chatId || config.chatIds?.length !== 1 ||
+      config.operatorOpenIds?.[0] !== openId || config.operatorOpenIds?.length !== 1;
     Object.assign(config, { chatIds: [chatId], operatorOpenIds: [openId] });
     config.defaultCwd ??= homedir();
     config.stateFile ??= join(paths.stateDir, 'bridge.json');
     config.auditFile ??= join(paths.stateDir, 'audit.jsonl');
     stage = 'config_write';
-    await atomicPrivateWrite(paths.configFile, JSON.stringify(config, null, 2) + '\n');
-    stage = 'welcome';
-    await api('/open-apis/im/v1/messages?receive_id_type=chat_id', { method: 'POST', token,
-      body: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: WELCOME }), uuid: randomUUID() } });
-    stage = 'scopes';
-    const grants = await api('/open-apis/application/v6/scopes', { token });
-    if (!Array.isArray(grants.data?.scopes)) throw new SetupError('invalid_scope_response');
-    const granted = new Set(grants.data.scopes.filter(s => s.grant_status === 1 && s.scope_type !== 'user').map(s => s.scope_name));
-    stderr('SCOPE\tGRANT STATUS');
-    for (const name of NEEDED_SCOPES) stderr(`${name}\t${granted.has(name) ? 'granted' : 'not granted (pending approval or not requested)'}`);
-    if (!granted.has('im:message.group_msg')) stderr('im:message.group_msg 尚未授权（可能待审批）；审批完成前仍可 @机器人发送命令。');
-    if (NEEDED_SCOPES.filter(name => name !== 'im:message.group_msg').some(name => !granted.has(name))) throw new SetupError('required_scopes_missing');
+    if (!progress.configured || configChanged) {
+      await atomicPrivateWrite(paths.configFile, JSON.stringify(config, null, 2) + '\n');
+      progress.configured = true; await saveProgress();
+    }
+    if (!progress.welcomed) {
+      stage = 'welcome';
+      progress.welcome_uuid ??= randomUUID(); await saveProgress();
+      await api('/open-apis/im/v1/messages?receive_id_type=chat_id', { method: 'POST', token,
+        body: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: WELCOME }), uuid: progress.welcome_uuid } });
+      progress.welcomed = true; await saveProgress();
+    }
+    if (!progress.scopes_checked) {
+      stage = 'scopes';
+      const grants = await api('/open-apis/application/v6/scopes', { token });
+      if (!Array.isArray(grants.data?.scopes)) throw new SetupError('invalid_scope_response');
+      const granted = new Set(grants.data.scopes.filter(s => s.grant_status === 1 && s.scope_type !== 'user').map(s => s.scope_name));
+      stderr('SCOPE\tGRANT STATUS');
+      for (const name of NEEDED_SCOPES) stderr(`${name}\t${granted.has(name) ? 'granted' : 'not granted (pending approval or not requested)'}`);
+      if (!granted.has('im:message.group_msg')) stderr('im:message.group_msg 尚未授权（可能待审批）；审批完成前仍可 @机器人发送命令。');
+      if (NEEDED_SCOPES.filter(name => name !== 'im:message.group_msg').some(name => !granted.has(name))) throw new SetupError('required_scopes_missing');
+      progress.scopes_checked = true; await saveProgress();
+    }
     stderr('SETUP OK'); return 0;
   } catch (error) {
     await ready.catch(() => {});

@@ -13,12 +13,13 @@ let bridge, releaseLock, commandAbort;
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
-    console.log('feishu-terminal [setup [--new-group] [--operator ou_xxx] | selftest --herdr-socket <path>]'); return;
+    console.log('feishu-terminal [setup [--new-app] [--new-group] [--operator ou_xxx] | selftest --herdr-socket <path>]'); return;
   }
   if (command === 'setup') {
     const options = {};
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--new-group') options.newGroup = true;
+      else if (args[i] === '--new-app') options.newApp = true;
       else if (args[i] === '--operator' && /^ou_[A-Za-z0-9]+$/.test(args[i + 1] ?? '')) options.operator = args[++i];
       else throw new Error('Invalid setup option');
     }

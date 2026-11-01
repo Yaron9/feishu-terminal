@@ -26,13 +26,15 @@ async function fixture(t, { outcome, existing = false, pending = false, newGroup
     calls.push({ url, ...init, body: init.body && JSON.parse(init.body) });
     let response;
     if (url.endsWith('/internal')) response = { tenant_access_token: 'tenant_fixture' };
+    else if (url.endsWith('/members/is_in_chat')) response = { data: { is_in_chat: true } };
+    else if (url.includes('/chats?') && init.method === 'GET') response = { data: { items: [], has_more: false } };
     else if (url.includes('/chats?')) response = { data: { chat_id: 'oc_created' } };
     else if (url.includes('/messages?')) response = { data: { message_id: 'om_welcome' } };
     else if (url.endsWith('/scopes')) response = { data: { scopes: NEEDED_SCOPES.map(scope_name => ({ scope_name, grant_status: pending && scope_name === 'im:message.group_msg' ? 2 : 1 })) } };
     else throw new Error('unexpected HTTP');
     return { ok: true, status: 200, json: async () => ({ code: 0, ...response }) };
   };
-  const code = await setup({ paths, registerApp, fetchImpl, stdout: s => out.push(s), stderr: s => err.push(s), newGroup });
+  const code = await setup({ paths, registerApp, fetchImpl, stdout: s => out.push(s), stderr: s => err.push(s), newGroup, newApp: true });
   return { dir, paths, original, config, out, err, calls, options, code };
 }
 
@@ -52,7 +54,7 @@ test('setup registers with exact pinned SDK options, creates owner topic group, 
   const config = JSON.parse(await readFile(f.paths.configFile, 'utf8'));
   assert.deepEqual(config.chatIds, ['oc_created']); assert.deepEqual(config.operatorOpenIds, ['ou_fixture']);
   assert.equal(config.custom, 'preserved'); assert.equal(config.defaultCwd, '/tmp');
-  const group = f.calls.find(c => c.url.includes('/chats?'));
+  const group = f.calls.find(c => c.url.includes('/chats?') && c.method === 'POST');
   assert.equal(group.url, 'https://open.feishu.cn/open-apis/im/v1/chats?user_id_type=open_id');
   assert.equal(group.body.group_message_type, 'thread'); assert.equal(group.body.owner_id, 'ou_fixture');
   assert.deepEqual(group.body.user_id_list, ['ou_fixture']); assert.equal(group.headers.Authorization, 'Bearer tenant_fixture');
@@ -83,10 +85,11 @@ test('setup slow_down continues via the SDK and pending group_msg explicitly per
 
 test('existing real chat skips creation; --new-group overrides it', async t => {
   const keep = await fixture(t, { existing: true });
-  assert.equal(keep.code, 0); assert.ok(!keep.calls.some(c => c.url.includes('/chats?')));
+  assert.equal(keep.code, 0); assert.ok(!keep.calls.some(c => c.url.includes('/chats?') && c.method === 'POST'));
+  assert.ok(keep.calls.some(c => c.url.endsWith('/oc_existing/members/is_in_chat') && c.headers.Authorization === 'Bearer tenant_fixture'));
   assert.equal(JSON.parse(await readFile(keep.paths.configFile, 'utf8')).chatIds[0], 'oc_existing');
   const fresh = await fixture(t, { existing: true, newGroup: true });
-  assert.equal(fresh.code, 0); assert.ok(fresh.calls.some(c => c.url.includes('/chats?')));
+  assert.equal(fresh.code, 0); assert.ok(fresh.calls.some(c => c.url.includes('/chats?') && c.method === 'POST'));
 });
 
 test('dotenv merge replaces exported/duplicate credentials, preserves unrelated lines and refuses multiline injection', async t => {
