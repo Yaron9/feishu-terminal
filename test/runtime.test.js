@@ -1,11 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { runtimePaths } from '../src/runtime.js';
+
+test('npm start entrypoint can print help without a cwd dotenv file', async t => {
+  const dir = await mkdtemp(new URL('../.test-runtime-', import.meta.url)); t.after(() => rm(dir, { recursive: true, force: true }));
+  const { fileURLToPath } = await import('node:url');
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const args = pkg.scripts.start.split(' ').slice(1).map(arg => arg === 'bin/feishu-terminal.js' ? fileURLToPath(new URL('../bin/feishu-terminal.js', import.meta.url)) : arg);
+  const result = await promisify(execFile)(process.execPath, [...args, '--help'], { cwd: dir, windowsHide: true });
+  assert.match(result.stdout, /feishu-terminal \[setup/);
+});
 
 test('runtime ignores cwd config and selects only the installed layout or explicit config and sibling dotenv', async t => {
   const dir = await mkdtemp(new URL('../.test-runtime-', import.meta.url)); t.after(() => rm(dir, { recursive: true, force: true }));
