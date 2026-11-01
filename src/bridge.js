@@ -292,16 +292,30 @@ export class Bridge {
   }
   async flush(binding) {
     const state = this.state(binding);
-    if (!state.pending && !state.settle) return;
-    if (state.agent && !['idle', 'done'].includes(state.status)) return;
-    if (!state.settle && this.now() - state.lastChange < 1500) return;
-    // Content is authoritative; revision can change for cursor/status updates.
-    const delta = newOutput(state.previous, state.current);
-    for (const [index, part] of splitText(delta).entries()) {
-      const uuid = createHash('sha256').update(`${binding.topicId}\0${state.previous}\0${state.current}\0${index}`).digest('hex').slice(0, 32);
-      await this.feishu.reply(binding.topicId, part, 'text', uuid);
+    let batch = this.store.binding(binding.chatId, binding.topicId).outputBatch;
+    if (!batch) {
+      if (!state.pending && !state.settle) return;
+      if (state.agent && !['idle', 'done'].includes(state.status)) return;
+      if (!state.settle && this.now() - state.lastChange < 1500) return;
+      batch = { checkpoint: state.current, next: 0,
+        chunks: splitText(newOutput(state.previous, state.current)).map(text => ({ text, uuid: randomUUID() })) };
+      await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
     }
-    await this.store.update(binding.chatId, binding.topicId, { lastTranscript: state.current });
-    state.previous = state.current; state.pending = false; state.settle = false;
+    while (batch.next < batch.chunks.length) {
+      const chunk = batch.chunks[batch.next];
+      // Feishu deduplicates UUIDs for one hour. Stop ambiguous retries before
+      // that expires instead of risking another copy after a long outage.
+      if (chunk.attemptAt !== undefined && this.now() - chunk.attemptAt >= 55 * 60 * 1000)
+        throw Object.assign(new Error('Output retry window expired; inspect delivery'), { code: 'output_retry_expired' });
+      if (chunk.attemptAt === undefined) {
+        chunk.attemptAt = this.now();
+        await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
+      }
+      await this.feishu.reply(binding.topicId, chunk.text, 'text', chunk.uuid);
+      batch.next++;
+      await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
+    }
+    await this.store.update(binding.chatId, binding.topicId, { lastTranscript: batch.checkpoint, outputBatch: null });
+    state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
   }
 }

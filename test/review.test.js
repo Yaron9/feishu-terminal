@@ -73,3 +73,22 @@ test('idle or done output missed during restart, reconnect or between polls flus
     h.advance(2000); await h.bridge.tick(); assert.equal(texts(h).length, 1);
   }
 });
+
+test('partly delivered output resumes fixed chunks and UUIDs across transcript growth and restart', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd'));
+  const first = 'a'.repeat(12000), second = 'b'.repeat(1000);
+  h.fake.output('w1:p1', '$ ' + first + second);
+  await h.bridge.tick(); h.advance(1600);
+  const reply = h.feishu.reply.bind(h.feishu); let failedUuid, fail = true;
+  h.feishu.reply = async (topic, content, type, uuid) => {
+    if (type === 'text' && content === second && fail) { fail = false; failedUuid = uuid; throw new Error('ambiguous delivery'); }
+    return reply(topic, content, type, uuid);
+  };
+  await h.bridge.tick();
+  assert.equal(texts(h).filter(c => c.content === first).length, 1);
+  h.fake.output('w1:p1', '$ ' + first + second + 'tail'); await h.restart();
+  await h.bridge.tick(); h.advance(1600); await h.bridge.tick(); h.advance(1600); await h.bridge.tick();
+  assert.equal(texts(h).filter(c => c.content === first).length, 1);
+  assert.equal(texts(h).find(c => c.content === second)?.uuid, failedUuid);
+  assert.equal(texts(h).map(c => c.content).join(''), first + second + 'tail');
+});
