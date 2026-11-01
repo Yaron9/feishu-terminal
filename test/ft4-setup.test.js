@@ -32,11 +32,9 @@ async function fixture(t, openId = 'ou_owner') {
     progress: async () => JSON.parse(await readFile(join(paths.stateDir, 'setup-progress.json'), 'utf8')) };
 }
 
-test('missing or invalid registration operator saves credentials privately and resumes the same app with --operator', async t => {
-  for (const openId of [undefined, 'invalid']) {
+test('invalid registration operator saves credentials privately and resumes the same app with --operator', async t => {
+  for (const openId of ['invalid']) {
     const f = await fixture(t, openId);
-    // Explicit undefined must not activate the fixture default.
-    if (openId === undefined) f.options.registerApp = async () => ({ client_id: 'cli_app1', client_secret: 'private_secret', user_info: {} });
     assert.equal(await f.run(), 3);
     assert.match(f.errors.join('\n'), /missing_operator/);
     assert.match(await readFile(f.paths.envFile, 'utf8'), /FEISHU_APP_SECRET=private_secret/);

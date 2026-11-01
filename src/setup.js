@@ -85,7 +85,10 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
           ...(body ? { body: JSON.stringify(body) } : {}) });
         data = await response.json();
-      } catch { throw new SetupError('network_error'); }
+      } catch {
+        signal?.throwIfAborted();
+        throw new SetupError('network_error');
+      }
       if ((response.status === 429 || [99991400, 230020].includes(data.code)) && attempt < 4) {
         const retry = Number(response.headers?.get('retry-after')) || 0;
         await sleep(Math.max(1000 * 2 ** attempt, Math.min(30000, retry * 1000))); continue;
@@ -97,7 +100,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
 }
 
 export async function setup({ newGroup = false, newApp = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
-  fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, signal } = {}) {
+  fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, now = Date.now, signal } = {}) {
   let release, ready = Promise.resolve(), stage = 'registration';
   const abort = new AbortController();
   const registrationSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
@@ -148,7 +151,7 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       },
     });
     await ready;
-    const openId = operator ?? result.user_info?.open_id;
+    let openId = operator ?? result.user_info?.open_id;
     if (!saved) {
       stage = 'credentials';
       await saveCredentials(paths.envFile, result.client_id, result.client_secret);
@@ -156,10 +159,17 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
     }
     if (/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) progress.operator_open_id = openId;
     await saveProgress();
-    if (!/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) throw new SetupError('missing_operator');
+    const claiming = openId == null && operator === undefined;
+    if (!claiming && !/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) throw new SetupError('missing_operator');
     // Keep the product on Feishu; never send Lark credentials to Feishu endpoints.
     if (result.user_info?.tenant_brand === 'lark') throw new SetupError('lark_tenant_unsupported');
     token ??= await tokenFor(result.client_id, result.client_secret);
+    if (claiming) {
+      stage = 'claim_scopes';
+      const grants = await api('/open-apis/application/v6/scopes', { token });
+      const granted = new Set(grants.data?.scopes?.filter(s => s.grant_status === 1 && s.scope_type !== 'user').map(s => s.scope_name));
+      if (['im:chat:readonly', 'im:message:readonly'].some(scope => !granted.has(scope))) throw new SetupError('required_scopes_missing');
+    }
     const validChat = id => /^oc_[A-Za-z0-9]+$/.test(id ?? '');
     const isMember = async chatId => {
       stage = 'group_membership';
@@ -169,15 +179,17 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       return response.data.is_in_chat;
     };
     const resetGroup = () => {
-      for (const key of ['group_created', 'configured', 'welcomed', 'scopes_checked', 'welcome_uuid']) delete progress[key];
+      for (const key of ['group_created', 'configured', 'welcomed', 'scopes_checked', 'welcome_uuid', 'claim']) delete progress[key];
     };
     if (newGroup && (!progress.new_group || progress.scopes_checked)) {
       resetGroup(); progress.new_group = true; progress.excluded_chat_id = config.chatIds?.[0]; await saveProgress();
     }
     let chatId = progress.group_created?.chat_id ?? (!progress.new_group && config.chatIds?.length === 1 ? config.chatIds[0] : null);
+    // An unknown operator can claim only the fresh bot-only group from this attempt.
+    if (claiming && progress.claim?.chat_id !== chatId) chatId = null;
     if (!validChat(chatId)) chatId = null;
     if (chatId && !await isMember(chatId)) { resetGroup(); chatId = null; await saveProgress(); }
-    if (!chatId) {
+    if (!chatId && !claiming) {
       stage = 'group_lookup';
       const matches = new Set(), pages = new Set(); let pageToken;
       do {
@@ -199,11 +211,55 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       stage = 'group_create';
       const response = await api('/open-apis/im/v1/chats?user_id_type=open_id', { method: 'POST', token,
         body: { name: 'VPS 终端', description: '飞书话题 ↔ VPS herdr 终端', chat_mode: 'group', chat_type: 'private',
-          group_message_type: 'thread', owner_id: openId, user_id_list: [openId] } });
+          group_message_type: 'thread', ...(!claiming ? { owner_id: openId, user_id_list: [openId] } : {}) } });
       chatId = response.data?.chat_id;
       if (!/^oc_[A-Za-z0-9]+$/.test(chatId ?? '')) throw new SetupError('missing_chat_id');
     }
-    if (progress.group_created?.chat_id !== chatId) { resetGroup(); progress.group_created = { chat_id: chatId }; await saveProgress(); }
+    if (progress.group_created?.chat_id !== chatId) {
+      resetGroup(); progress.group_created = { chat_id: chatId };
+      if (claiming) progress.claim = { chat_id: chatId, deadline: now() + 15 * 60 * 1000 };
+      await saveProgress();
+    }
+    if (claiming) {
+      stage = 'claim';
+      const deadline = progress.claim.deadline;
+      if (!Number.isFinite(deadline) || now() >= deadline) throw new SetupError('claim_expired');
+      const claimSignal = AbortSignal.any([registrationSignal, AbortSignal.timeout(Math.ceil(deadline - now()))]);
+      const claimApi = setupApi({ fetchImpl, sleep, signal: claimSignal });
+      // Official API uses POST, with im:chat:readonly; no additional scope is needed.
+      const link = await claimApi(`/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/link`, { method: 'POST', token, body: { validity_period: 'week' } });
+      let url;
+      try { url = new URL(link.data?.share_link); } catch { throw new SetupError('invalid_join_url'); }
+      if (url.protocol !== 'https:' || !url.hostname.endsWith('.feishu.cn') || url.username || url.password) throw new SetupError('invalid_join_url');
+      stdout(`SETUP_JOIN_URL ${url.href}`);
+      stderr('SETUP claim: 15 分钟内入群并发一条 @机器人 消息；本新群第一位发言的人将成为唯一操作者。');
+      while (!openId && now() < deadline) {
+        let pageToken; const pages = new Set();
+        do {
+          claimSignal.throwIfAborted();
+          const query = new URLSearchParams({ container_id_type: 'chat', container_id: chatId, sort_type: 'ByCreateTimeAsc', page_size: '50',
+            ...(pageToken ? { page_token: pageToken } : {}) });
+          const messages = await claimApi(`/open-apis/im/v1/messages?${query}`, { token });
+          if (now() >= deadline) throw new SetupError('claim_expired');
+          if (!Array.isArray(messages.data?.items)) throw new SetupError('invalid_message_list');
+          openId = messages.data.items.find(m => m.sender?.sender_type === 'user' && m.sender.id_type === 'open_id' && /^ou_[A-Za-z0-9]+$/.test(m.sender.id))?.sender.id;
+          pageToken = messages.data.has_more ? messages.data.page_token : null;
+          if (messages.data.has_more && (!pageToken || pages.has(pageToken))) throw new SetupError('invalid_message_list');
+          pages.add(pageToken);
+        } while (!openId && pageToken);
+        if (!openId) await sleep(Math.min(1000, Math.max(0, deadline - now())), undefined, { signal: claimSignal });
+      }
+      if (!openId) throw new SetupError('claim_expired');
+      progress.operator_open_id = openId;
+      await saveProgress();
+    }
+    if (progress.claim && !progress.claim.acknowledged) {
+      stage = 'claim_ack';
+      progress.claim.ack_uuid ??= randomUUID(); await saveProgress();
+      await api('/open-apis/im/v1/messages?receive_id_type=chat_id', { method: 'POST', token,
+        body: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: '已确认本群第一位发言用户为唯一授权操作者；setup 将继续完成配置。' }), uuid: progress.claim.ack_uuid } });
+      progress.claim.acknowledged = true; await saveProgress();
+    }
     const previousConfig = JSON.stringify(config);
     const configChanged = config.chatIds?.[0] !== chatId || config.chatIds?.length !== 1 ||
       config.operatorOpenIds?.[0] !== openId || config.operatorOpenIds?.length !== 1;
@@ -240,10 +296,10 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
     await ready.catch(() => {});
     // Never log upstream messages, payloads, credentials, device codes or tokens.
     const denied = ['access_denied', 'expired_token'].includes(error.code);
-    const safeCode = error instanceof SetupError ? error.code : 'operation_failed';
+    const safeCode = stage === 'claim' && error.name === 'TimeoutError' ? 'claim_expired' : error instanceof SetupError ? error.code : 'operation_failed';
     const details = error instanceof SetupError ?
       `${error.status === undefined ? '' : ` http_status=${error.status}`}${error.platformCode === undefined ? '' : ` feishu_code=${error.platformCode}`}` : '';
     stderr(denied ? `SETUP ${error.code}: 请重新运行 setup。` : `SETUP failed (${stage}/${safeCode}${details}): check network, private files, app permissions and group membership.`);
-    return denied ? 2 : error.code === 'missing_operator' ? 3 : 1;
+    return denied ? 2 : ['missing_operator', 'claim_expired'].includes(safeCode) ? 3 : 1;
   } finally { await release?.(); }
 }

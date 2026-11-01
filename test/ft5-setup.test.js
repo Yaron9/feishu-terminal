@@ -78,3 +78,74 @@ test('setup requires chat readonly and reports only numeric platform code and HT
   } : fetchImpl(url, init) }), 1);
   assert.match(f.err.join('\n'), /required_scopes_missing/);
 });
+
+test('missing open_id creates a bot-only group and claims only the first human, durably before acknowledgement', async t => {
+  const f = await fixture(t), fetchImpl = f.options.fetchImpl;
+  let polls = 0, acknowledged = false;
+  const run = { registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret', user_info: {} }),
+    sleep: async () => {},
+    fetchImpl: async (url, init) => {
+      if (url.endsWith('/link')) {
+        assert.equal(init.method, 'POST');
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
+      }
+      if (url.includes('/messages?container_id_type=chat')) {
+        polls++;
+        assert.ok(url.includes('container_id=oc_created') && url.includes('ByCreateTimeAsc'));
+        const items = [{ sender: { sender_type: 'app', id_type: 'open_id', id: 'ou_bot' } }];
+        if (polls > 1) items.push(...['ou_first', 'ou_second'].map(id => ({ sender: { sender_type: 'user', id_type: 'open_id', id } })));
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { items, has_more: false } }) };
+      }
+      if (url.includes('/messages?receive_id_type') && JSON.parse(init.body).content.includes('第一位')) {
+        assert.equal(JSON.parse(await readFile(join(f.paths.stateDir, 'setup-progress.json'), 'utf8')).operator_open_id, 'ou_first');
+        acknowledged = true;
+      }
+      return fetchImpl(url, init);
+    } };
+  assert.equal(await f.run(run), 0, f.err.join('\n'));
+  assert.deepEqual((await f.config()).operatorOpenIds, ['ou_first']);
+  const group = f.calls.find(c => c.url.includes('/chats?') && c.method === 'POST').body;
+  assert.equal(group.owner_id, undefined); assert.equal(group.user_id_list, undefined);
+  assert.ok(f.out.includes('SETUP_JOIN_URL https://applink.feishu.cn/join-fixture'));
+  assert.equal(acknowledged, true); assert.equal(polls, 2);
+});
+
+test('claim expires within fifteen minutes, preserves the app and group, and --operator resumes them', async t => {
+  const f = await fixture(t), fetchImpl = f.options.fetchImpl;
+  let time = 1_000_000;
+  const options = { registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret' }),
+    now: () => time, sleep: async ms => { time += ms; },
+    fetchImpl: async (url, init) => {
+      if (url.endsWith('/link')) return { ok: true, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
+      if (url.includes('/messages?container_id_type=chat')) return { ok: true, json: async () => ({ code: 0, data: { items: [], has_more: false } }) };
+      return fetchImpl(url, init);
+    } };
+  assert.equal(await f.run(options), 3, f.err.join('\n'));
+  assert.equal(time, 1_900_000);
+  assert.match(f.err.join('\n'), /claim_expired/);
+  const before = JSON.parse(await readFile(join(f.paths.stateDir, 'setup-progress.json'), 'utf8'));
+  assert.equal(before.group_created.chat_id, 'oc_created');
+  const polls = f.out.length;
+  assert.equal(await f.run(options), 3); // Resume cannot restart the claim clock.
+  assert.equal(time, 1_900_000); assert.equal(f.out.length, polls);
+  assert.equal(await f.run({ operator: 'ou_explicit' }), 0);
+  assert.equal(f.calls.filter(c => c.url.includes('/chats?') && c.method === 'POST').length, 1);
+  assert.deepEqual((await f.config()).operatorOpenIds, ['ou_explicit']);
+});
+
+test('claim saves the first operator across a lost acknowledgement and retries with the same UUID', async t => {
+  const f = await fixture(t), fetchImpl = f.options.fetchImpl;
+  let uuid;
+  assert.equal(await f.run({ registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret' }),
+    fetchImpl: async (url, init) => {
+      if (url.endsWith('/link')) return { ok: true, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
+      if (url.includes('/messages?container_id_type=chat')) return { ok: true, json: async () => ({ code: 0, data: {
+        items: [{ sender: { sender_type: 'user', id_type: 'open_id', id: 'ou_claimed' } }], has_more: false } }) };
+      if (url.includes('/messages?receive_id_type')) { uuid = JSON.parse(init.body).uuid; throw new Error('response lost'); }
+      return fetchImpl(url, init);
+    } }), 1);
+  assert.equal(await f.run(), 0, f.err.join('\n'));
+  assert.equal(f.calls.find(c => c.url.includes('/messages?')).body.uuid, uuid);
+  assert.deepEqual((await f.config()).operatorOpenIds, ['ou_claimed']);
+  assert.equal(f.calls.filter(c => c.url.includes('/chats?') && c.method === 'POST').length, 1);
+});
