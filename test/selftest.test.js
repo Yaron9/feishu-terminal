@@ -58,6 +58,7 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
 test('selftest uses real Bridge and socket schema, reads output back, patches cards, feeds card callback, keys and both close modes', async t => {
   const r = await run(t);
   assert.equal(r.code, 0, r.logs.join('\n')); assert.equal(r.logs.filter(l => l.startsWith('PASS')).length, 10);
+  assert.ok(r.logs.some(line => line.includes('127.0.0.1:49450') && line.includes("may differ from the service's")));
   assert.ok(r.patchCount >= 3);
   assert.ok(r.calls.some(c => c.method === 'pane.send_keys' && c.params.keys.includes('ctrl+c')));
   assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);

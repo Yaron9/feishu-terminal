@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Bridge } from './bridge.js';
 import { Store } from './store.js';
-import { HerdrClient, endpointFromEnv } from './herdr-client.js';
+import { HerdrClient, endpointFromEnv, endpointLabel } from './herdr-client.js';
 import { Feishu, messageEvent, actionEvent } from './feishu.js';
 import { runtimePaths } from './runtime.js';
 
@@ -24,6 +24,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     print('FAIL herdr endpoint: pass --herdr-socket or explicit HERDR_TCP');
     feishu.close(); herdr.close(); return 1;
   }
+  print(`SELFTEST herdr ${endpointLabel(herdr.endpoint ?? (socket ? { path: socket } : endpointFromEnv(env)))}; may differ from the service's endpoint.`);
   const owned = new Set(), replies = new Set();
   let bridge, temp, failed = false, activeStep = 'initialize', patches = 0, patchIds = [];
   const runStep = async (name, fn) => { activeStep = name; signal?.throwIfAborted(); await fn(); print(`PASS ${name}`); };

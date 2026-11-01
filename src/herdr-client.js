@@ -16,6 +16,25 @@ export function endpointFromEnv(env = process.env) {
   return { path: env.HERDR_SOCKET_PATH || join(homedir(), '.config/herdr/herdr.sock') };
 }
 
+export function endpointLabel(endpoint) {
+  return String(endpoint.path ?? `${endpoint.host}:${endpoint.port}`).replace(/[\x00-\x1f\x7f]/g,
+    char => char === '\n' ? '\\n' : char === '\r' ? '\\r' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+// Read-only startup probe: a missing server must not restart the Feishu service.
+export function monitorHerdr(herdr, { log = line => console.error(line), retryMs = 5000 } = {}) {
+  let stopped = false, timer;
+  const probe = async () => {
+    let ok = false;
+    try { await herdr.request('ping'); ok = true; } catch { /* safe status only */ }
+    if (stopped) return;
+    log(`${ok ? 'herdr ok' : 'herdr_unreachable'} ${endpointLabel(herdr.endpoint)}`);
+    if (!ok) { timer = setTimeout(probe, retryMs); timer.unref?.(); }
+  };
+  probe();
+  return () => { stopped = true; clearTimeout(timer); };
+}
+
 // The server may close a request connection after its response. Never multiplex
 // requests or retry writes: a dropped response does not mean input was rejected.
 export class HerdrClient {
