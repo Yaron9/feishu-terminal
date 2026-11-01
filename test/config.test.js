@@ -27,7 +27,7 @@ test('instance lock refuses a live owner, releases cleanly, recovers a terminate
   const file = join(dir, 'bridge.lock');
   const release = await acquireLock(file);
   await assert.rejects(acquireLock(file), /Another instance/);
-  assert.equal(await readFile(file, 'utf8'), String(process.pid));
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).pid, process.pid);
   await release();
   // Use an actual exited child PID rather than assuming a random PID is dead.
   const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true, stdio: 'ignore' });
