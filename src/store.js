@@ -60,7 +60,7 @@ export class Store {
   bind(binding) {
     return this.transaction(data => {
       if (data.bindings.some(b => b.topicId === binding.topicId || b.paneId === binding.paneId)) throw new Error('Topic or pane already bound');
-      data.bindings.push({ ...binding, nonce: randomUUID() });
+      data.bindings.push({ ...binding, generation: randomUUID(), nonce: randomUUID() });
     });
   }
   update(chatId, topicId, patch) {

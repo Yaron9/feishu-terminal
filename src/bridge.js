@@ -161,21 +161,33 @@ export class Bridge {
   async verify(binding) {
     const expected = binding;
     binding = this.store.binding(binding.chatId, binding.topicId);
+    if (!this.sameGeneration(expected, binding)) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
     try {
       if (!binding || binding.frozen || !binding.identity) throw new Error('Unverified binding');
       const current = await this.identity(binding.paneId);
       const latest = this.store.binding(binding.chatId, binding.topicId);
-      if (!latest || latest.frozen || Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
+      if (!this.sameGeneration(binding, latest) || latest.frozen || Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
         throw new Error('Identity mismatch');
       this.state(binding).verified = true;
     } catch {
-      if (binding) {
-        await this.store.update(binding.chatId, binding.topicId, { frozen: true, outputBatch: null, pendingCard: null });
+      if (binding && this.sameGeneration(binding, this.store.binding(binding.chatId, binding.topicId))) {
+        await this.updateGeneration(binding, { frozen: true, discardedOutput: Boolean(binding.outputBatch) || binding.discardedOutput,
+          outputBatch: null, pendingCard: null });
         this.runtime.delete(binding.topicId);
         this.resubscribe();
       }
       throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     }
+  }
+  sameGeneration(binding, current) {
+    return Boolean(current && (binding.generation ?? 0) === (current.generation ?? 0));
+  }
+  updateGeneration(binding, patch) {
+    return this.store.transaction(data => {
+      const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+      if (!this.sameGeneration(binding, current)) return false;
+      Object.assign(current, patch); return true;
+    });
   }
   async readVerified(binding, read) {
     await this.verify(binding);
@@ -220,9 +232,11 @@ export class Bridge {
     if (existing && !existing.frozen) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
     const identity = await this.identity(paneId);
     if (existing) {
-      await this.store.update(existing.chatId, existing.topicId, { identity, frozen: false, lastTranscript: undefined, nonce: randomUUID(), pendingCard: null });
+      await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
+        lastTranscript: undefined, nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
       this.runtime.delete(existing.topicId);
       await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
+      if (existing.outputBatch || existing.discardedOutput) await this.feishu.reply(existing.topicId, '旧终端未发送完的输出已丢弃');
       await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
     }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
@@ -327,7 +341,9 @@ export class Bridge {
   }
   async publishCard(binding) {
     const state = this.state(binding), now = this.now();
-    binding = this.store.binding(binding.chatId, binding.topicId);
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (!this.sameGeneration(binding, current)) return;
+    binding = current;
     if (!binding || binding.frozen || !state.verified) return;
     // A manual screen request and a blocked notification still obey 1 Hz.
     if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && (state.cardPending || binding.pendingCard)) {
@@ -337,7 +353,7 @@ export class Bridge {
         const nonce = randomUUID();
         pending = { nonce, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
           card: screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
-        await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
+        if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
       }
       try {
         let cardId = pending.targetId;
@@ -347,7 +363,7 @@ export class Bridge {
           catch (error) {
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
             pending.targetId = null; cardId = null;
-            await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
+            if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
           }
         }
         if (!cardId) {
@@ -355,7 +371,7 @@ export class Bridge {
             throw Object.assign(new Error('Card retry window expired'), { code: 'card_retry_expired' });
           if (pending.attemptAt === undefined) {
             pending.attemptAt = this.now();
-            await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
+            if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
           }
           await this.verify(binding);
           cardId = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
@@ -377,20 +393,26 @@ export class Bridge {
     }
   }
   async flush(binding) {
-    binding = this.store.binding(binding.chatId, binding.topicId);
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (!this.sameGeneration(binding, current)) return;
+    binding = current;
     if (!binding || binding.frozen || !this.state(binding).verified) return;
     await this.verify(binding);
     const state = this.state(binding);
     let batch = this.store.binding(binding.chatId, binding.topicId).outputBatch;
+    if (batch && (batch.generation ?? 0) !== (binding.generation ?? 0)) {
+      await this.updateGeneration(binding, { outputBatch: null }); return;
+    }
     if (!batch) {
       if (!state.pending && !state.settle) return;
       if (state.agent && !['idle', 'done'].includes(state.status)) return;
       if (!state.settle && this.now() - state.lastChange < 1500) return;
-      batch = { checkpoint: state.current, next: 0,
+      batch = { generation: binding.generation ?? 0, checkpoint: state.current, next: 0,
         chunks: splitText(newOutput(state.previous, state.current)).map(text => ({ text, uuid: randomUUID() })) };
-      await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
+      if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
     }
     while (batch.next < batch.chunks.length) {
+      if (!this.sameGeneration(binding, this.store.binding(binding.chatId, binding.topicId))) return;
       const chunk = batch.chunks[batch.next];
       // Feishu deduplicates UUIDs for one hour. Stop ambiguous retries before
       // that expires instead of risking another copy after a long outage.
@@ -398,14 +420,14 @@ export class Bridge {
         throw Object.assign(new Error('Output retry window expired; inspect delivery'), { code: 'output_retry_expired' });
       if (chunk.attemptAt === undefined) {
         chunk.attemptAt = this.now();
-        await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
+        if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
       }
       await this.verify(binding);
       await this.feishu.reply(binding.topicId, chunk.text, 'text', chunk.uuid);
       batch.next++;
-      await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
+      if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
     }
-    await this.store.update(binding.chatId, binding.topicId, { lastTranscript: batch.checkpoint, outputBatch: null });
+    if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null })) return;
     state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
   }
 }
