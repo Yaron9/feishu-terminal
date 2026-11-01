@@ -10,7 +10,7 @@ test('config fails closed for missing credentials, empty/multiple chats, invalid
   const dir = await mkdtemp(new URL('../.test-config-', import.meta.url));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'config.json');
-  const base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: '/tmp' };
+  const base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: dir };
   const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'secret-fixture', FEISHU_TERMINAL_CONFIG: file };
   await assert.rejects(loadConfig({}));
   for (const invalid of [{ chatIds: [] }, { chatIds: ['oc_a', 'oc_b'] }, { operatorOpenIds: [] }, { defaultCwd: 'relative' }, { appSecret: 'embedded' }]) {
@@ -19,6 +19,18 @@ test('config fails closed for missing credentials, empty/multiple chats, invalid
   await writeFile(file, JSON.stringify(base));
   const config = await loadConfig(env);
   assert.deepEqual(config.chatIds, base.chatIds); assert.ok(!JSON.stringify(config).includes('secret-fixture'));
+});
+
+test('config rejects a missing cwd and a regular file as cwd', async t => {
+  const dir = await mkdtemp(new URL('../.test-config-', import.meta.url));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'config.json');
+  const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture', FEISHU_TERMINAL_CONFIG: file };
+  for (const path of [join(dir, 'missing'), file]) {
+    const defaultCwd = path.replace(/^[A-Za-z]:/, '').replaceAll('\\', '/');
+    await writeFile(file, JSON.stringify({ chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd }));
+    await assert.rejects(loadConfig(env), /existing directory/);
+  }
 });
 
 test('instance lock refuses a live owner, releases cleanly, recovers a terminated PID and fails closed on corruption', async t => {

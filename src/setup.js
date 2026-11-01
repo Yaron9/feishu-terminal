@@ -1,7 +1,7 @@
 import { registerApp as sdkRegisterApp } from '@larksuiteoapi/node-sdk';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv } from 'node:util';
@@ -199,14 +199,16 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       if (!/^oc_[A-Za-z0-9]+$/.test(chatId ?? '')) throw new SetupError('missing_chat_id');
     }
     if (progress.group_created?.chat_id !== chatId) { resetGroup(); progress.group_created = { chat_id: chatId }; await saveProgress(); }
+    const previousConfig = JSON.stringify(config);
     const configChanged = config.chatIds?.[0] !== chatId || config.chatIds?.length !== 1 ||
       config.operatorOpenIds?.[0] !== openId || config.operatorOpenIds?.length !== 1;
     Object.assign(config, { chatIds: [chatId], operatorOpenIds: [openId] });
-    config.defaultCwd ??= homedir();
-    config.stateFile ??= join(paths.stateDir, 'bridge.json');
-    config.auditFile ??= join(paths.stateDir, 'audit.jsonl');
+    if (!config.defaultCwd || config.defaultCwd === '/home/REPLACE_WITH_USER') config.defaultCwd = homedir();
+    for (const [key, name] of [['stateFile', 'bridge.json'], ['auditFile', 'audit.jsonl']]) {
+      if (!config[key] || config[key] === `./state/${name}`) config[key] = resolve(paths.stateDir, name);
+    }
     stage = 'config_write';
-    if (!progress.configured || configChanged) {
+    if (!progress.configured || configChanged || JSON.stringify(config) !== previousConfig) {
       await atomicPrivateWrite(paths.configFile, JSON.stringify(config, null, 2) + '\n');
       progress.configured = true; await saveProgress();
     }
