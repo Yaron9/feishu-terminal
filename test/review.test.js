@@ -196,3 +196,34 @@ test('restart reconciles an uncertain card patch by publishing the same pending 
   await h.bridge.handle(click(restored.binding('oc_test', 'm1'), 'reconciled-click'));
   assert.equal(writes(h).length, before + 1);
 });
+
+test('ambiguous output pauses before UUID deduplication expires instead of resending', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
+  const reply = h.feishu.reply.bind(h.feishu); let attempts = 0;
+  h.feishu.reply = async (topic, content, type, uuid) => {
+    if (type === 'text') { attempts++; throw new Error('unknown delivery'); }
+    return reply(topic, content, type, uuid);
+  };
+  h.fake.output('w1:p1', '$ result'); await h.drain(); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
+  assert.equal(attempts, 1);
+  h.advance(55 * 60 * 1000); await h.restart(); await h.bridge.tick();
+  assert.equal(attempts, 1);
+});
+
+test('a click racing a pending patch cannot revive a consumed nonce', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd'));
+  h.fake.status('w1:p1', 'blocked'); await h.bridge.tick(); const old = h.store.binding('oc_test', 'm1');
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  h.feishu.patch = async () => { entered(); await gate; };
+  h.fake.output('w1:p1', 'new approval'); h.advance(1000);
+  const tick = h.bridge.tick(); await started;
+  const before = writes(h).length;
+  const action = h.bridge.handle(click(old, 'racing-click'));
+  try { await eventually(() => writes(h).length === before + 1); }
+  finally { release(); await tick; await action; }
+  await h.bridge.handle(click(old, 'replayed-race')); await h.restart();
+  await h.bridge.handle(click(old, 'replayed-after-restart'));
+  assert.equal(writes(h).length, before + 1);
+});

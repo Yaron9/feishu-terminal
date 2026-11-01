@@ -76,6 +76,23 @@ test('failed bot identity lookup rejects delivery instead of acknowledging uncla
   assert.equal(delivered, false);
 });
 
+test('SDK sends failure ACKs when the durable claim fails for messages or buttons', async () => {
+  const frames = [];
+  const ws = new FeishuWSClient({ appId: 'fixture', appSecret: 'fixture', logger: quietLogger });
+  ws.sendMessage = frame => frames.push(frame);
+  const edge = new Feishu({ client: {}, ws: { start({ eventDispatcher }) { ws.eventDispatcher = eventDispatcher; }, close() {} } });
+  await edge.start(async () => { throw new Error('state disk unavailable'); });
+  for (const [type, eventType] of [['event', 'im.message.receive_v1'], ['card', 'card.action.trigger']]) {
+    await ws.handleEventData({ method: 1, service: 1, headers: [
+      { key: 'type', value: type }, { key: 'message_id', value: type }, { key: 'sum', value: '1' }, { key: 'seq', value: '0' },
+    ], payload: Buffer.from(JSON.stringify({ schema: '2.0', header: { event_type: eventType, event_id: type },
+      event: { message: { message_id: type }, action: { value: {} } } })) });
+  }
+  assert.equal(frames.length, 2);
+  assert.ok(frames.every(frame => JSON.parse(Buffer.from(frame.payload).toString()).code === 500));
+  edge.close(); ws.close({ force: true });
+});
+
 test('SDK message and card ACK waits for durable claim but not execution; card type survives compatibility shim', async () => {
   const seen = [], acknowledgements = [];
   const ws = new FeishuWSClient({ appId: 'fixture', appSecret: 'fixture', logger: quietLogger });
