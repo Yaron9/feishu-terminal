@@ -24,14 +24,17 @@ export class Bridge {
     return this.runtime.get(binding.topicId);
   }
   async start({ timers = true } = {}) {
-    for (const b of this.store.list()) this.state(b);
+    for (const b of this.store.list()) {
+      this.state(b);
+      if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
+    }
     this.resubscribe();
     await this.feishu.start(event => this.handle(event), this.onError);
     if (timers) this.timer = setInterval(() => { this.tick().catch(() => {}); }, 250);
   }
   async stop() {
     this.stopped = true; clearInterval(this.timer); this.unsubscribe?.();
-    this.feishu.close(); this.herdr.close(); await this.queue;
+    this.feishu.close(); await this.queue; this.herdr.close();
   }
   resubscribe() {
     this.unsubscribe?.();
@@ -44,7 +47,12 @@ export class Bridge {
         const state = this.state(binding); state.dirty = true;
         if (data.agent_status) this.status(state, data.agent_status, data.agent);
       }).catch(() => {});
-    }, () => { for (const state of this.runtime.values()) state.dirty = true; });
+    }, connection => {
+      for (const state of this.runtime.values()) { state.dirty = true; state.status = 'unknown'; }
+      if (connection === 'connected') for (const b of this.store.list()) {
+        this.enqueue(() => this.verify(b)).catch(() => {});
+      }
+    });
   }
   status(state, status, agent = state.agent) {
     if (state.status === 'working' && ['idle', 'done'].includes(status)) state.settle = true;
@@ -80,7 +88,8 @@ export class Bridge {
       if (action.type === 'create') {
         if (event.isReply) { await this.feishu.reply(event.topicId, 'This topic is not bound. Use /t open <pane_id> in the group.'); return; }
         const pane = await this.createPane();
-        await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id });
+        const identity = await this.identity(pane.pane_id);
+        await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity });
         this.resubscribe();
         const created = this.store.binding(event.chatId, event.messageId);
         await this.log(event, created, 'first_input', action.text);
@@ -88,17 +97,21 @@ export class Bridge {
         return;
       }
       if (action.type === 'close') {
-        if (action.kill) await this.herdr.request('pane.close', { pane_id: binding.paneId });
+        if (action.kill) { await this.verify(binding); await this.herdr.request('pane.close', { pane_id: binding.paneId }); }
         await this.store.unbind(binding.chatId, binding.topicId); this.runtime.delete(binding.topicId); this.resubscribe();
         await this.feishu.reply(binding.topicId, action.kill ? 'Pane closed; topic unbound.' : 'Topic unbound; pane is still running.');
         return;
       }
       if (action.type === 'screen') { this.state(binding).dirty = true; await this.refresh(binding, true); return; }
+      if (['keys', 'raw'].includes(action.type)) await this.verify(binding);
       if (action.type === 'keys') await this.herdr.request('pane.send_keys', { pane_id: binding.paneId, keys: action.keys });
       if (action.type === 'raw') await this.herdr.request('pane.send_text', { pane_id: binding.paneId, text: action.text });
       if (action.type === 'input') await this.input(binding, action.text);
       this.state(binding).dirty = true;
     } catch (error) {
+      if (error.code === 'binding_unverified') {
+        await this.feishu.reply(event.topicId, 'Binding frozen: pane identity could not be confirmed. Use /t open <pane> to rebind or /t close.'); return;
+      }
       // Never echo upstream error messages: they may contain terminal content.
       const code = /^[a-z_0-9]+$/i.test(String(error.code)) ? String(error.code) : 'operation_failed';
       await this.feishu.reply(event.topicId, `Request failed (${code}); input was not retried. Use /t screen or /t ls to inspect.`);
@@ -106,6 +119,25 @@ export class Bridge {
   }
   log(event, binding, action, text = '') {
     return this.audit(auditRecord({ openId: event.openId, topicId: binding?.topicId ?? event.topicId, paneId: binding?.paneId, action, text }));
+  }
+  async identity(paneId) {
+    const [{ pane }, { workspaces }] = await Promise.all([
+      this.herdr.request('pane.get', { pane_id: paneId }), this.herdr.request('workspace.list'),
+    ]);
+    if (pane?.pane_id !== paneId || !pane.terminal_id || !pane.tab_id ||
+      !workspaces.some(w => w.workspace_id === pane.workspace_id && w.label === 'feishu')) throw new Error('Unconfirmed pane identity');
+    return { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id };
+  }
+  async verify(binding) {
+    binding = this.store.binding(binding.chatId, binding.topicId);
+    try {
+      if (!binding || binding.frozen || !binding.identity) throw new Error('Unverified binding');
+      const current = await this.identity(binding.paneId);
+      if (Object.keys(current).some(key => current[key] !== binding.identity[key])) throw new Error('Identity mismatch');
+    } catch {
+      if (binding) await this.store.update(binding.chatId, binding.topicId, { frozen: true });
+      throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    }
   }
   async createPane() {
     const { workspaces } = await this.herdr.request('workspace.list');
@@ -127,15 +159,20 @@ export class Bridge {
   }
   async open(event, paneId) {
     const existing = this.store.forPane(paneId);
-    if (existing) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
-    const { pane } = await this.herdr.request('pane.get', { pane_id: paneId });
-    if (!pane?.pane_id) throw new Error('Missing pane');
+    if (existing && !existing.frozen) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
+    const identity = await this.identity(paneId);
+    if (existing) {
+      await this.store.update(existing.chatId, existing.topicId, { identity, frozen: false, lastTranscript: undefined, nonce: randomUUID() });
+      this.runtime.delete(existing.topicId);
+      await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
+    }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
     const topicId = await this.feishu.send(event.chatId, `Terminal ${paneId}. Reply here to send input. /t screen shows the terminal.`);
-    await this.store.bind({ chatId: event.chatId, topicId, paneId });
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity });
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
   }
   async input(binding, text) {
+    await this.verify(binding);
     const state = this.state(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
     if (!state.initialized) {
@@ -169,6 +206,7 @@ export class Bridge {
       await this.feishu.reply(event.topicId || event.messageId, 'Stale or foreign card. Use /t screen for the current card.'); return;
     }
     const state = this.state(binding);
+    if (event.key !== 'refresh') await this.verify(binding);
     if (event.key !== 'refresh') {
       const { agents } = await this.herdr.request('agent.list');
       if (!agents.some(a => a.pane_id === binding.paneId && a.agent && a.agent_status === 'blocked')) {

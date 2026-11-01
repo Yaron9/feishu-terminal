@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Store } from '../src/store.js';
@@ -14,7 +15,9 @@ export async function fakeHerdr() {
     }
   };
   const create = () => {
+    workspace ??= { workspace_id: 'w1', label: 'feishu' };
     const pane = { pane_id: `w1:p${++sequence}`, workspace_id: 'w1', tab_id: `w1:t${sequence}`,
+      terminal_id: `term_${randomUUID()}`,
       agent: null, agent_status: 'unknown', revision: 1, text: '$ ', visible: '$ ' };
     panes.set(pane.pane_id, pane); return pane;
   };
@@ -64,7 +67,7 @@ export async function fakeHerdr() {
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { calls, panes, subscribers, create, emit, endpoint: { host: '127.0.0.1', port: server.address().port },
+  return { calls, panes, subscribers, create, emit, workspace: () => workspace, endpoint: { host: '127.0.0.1', port: server.address().port },
     fail(method, code) { failNext = { method, code }; }, drop(method) { dropNext = method; },
     output(paneId, text) {
       const pane = panes.get(paneId); Object.assign(pane, { text, visible: text, revision: pane.revision + 1 });
