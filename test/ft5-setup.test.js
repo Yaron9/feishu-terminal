@@ -81,21 +81,25 @@ test('setup requires chat readonly and reports only numeric platform code and HT
 
 test('missing open_id creates a bot-only group and claims only the first human, durably before acknowledgement', async t => {
   const f = await fixture(t), fetchImpl = f.options.fetchImpl;
-  let polls = 0, acknowledged = false;
+  let acknowledged = false, closed = false;
   const run = { registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret', user_info: {} }),
-    sleep: async () => {},
+    claimClientFactory: () => ({ close() { closed = true; }, async start(deliver) {
+      for (const event of [
+        { kind: 'message', chatId: 'oc_created', senderType: 'app', openId: 'ou_bot' },
+        { kind: 'message', chatId: 'oc_other', senderType: 'user', openId: 'ou_other' },
+        { kind: 'button', chatId: 'oc_created', senderType: 'user', openId: 'ou_button' },
+        { kind: 'message', chatId: 'oc_created', senderType: 'user', openId: 'invalid' },
+        ...['ou_first', 'ou_second'].map(openId => ({ kind: 'message', chatId: 'oc_created', senderType: 'user', openId })),
+      ]) await deliver(event);
+    } }),
     fetchImpl: async (url, init) => {
+      if (url.endsWith('/scopes')) return { ok: true, json: async () => ({ code: 0, data: {
+        scopes: NEEDED_SCOPES.map(scope_name => ({ scope_name, grant_status: scope_name === 'im:message.group_msg' ? 2 : 1 })) } }) };
       if (url.endsWith('/link')) {
         assert.equal(init.method, 'POST');
         return { ok: true, status: 200, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
       }
-      if (url.includes('/messages?container_id_type=chat')) {
-        polls++;
-        assert.ok(url.includes('container_id=oc_created') && url.includes('ByCreateTimeAsc'));
-        const items = [{ sender: { sender_type: 'app', id_type: 'open_id', id: 'ou_bot' } }];
-        if (polls > 1) items.push(...['ou_first', 'ou_second'].map(id => ({ sender: { sender_type: 'user', id_type: 'open_id', id } })));
-        return { ok: true, status: 200, json: async () => ({ code: 0, data: { items, has_more: false } }) };
-      }
+      assert.ok(!url.includes('/messages?container_id_type=chat'), 'claim must work before group_msg approval');
       if (url.includes('/messages?receive_id_type') && JSON.parse(init.body).content.includes('第一位')) {
         assert.equal(JSON.parse(await readFile(join(f.paths.stateDir, 'setup-progress.json'), 'utf8')).operator_open_id, 'ou_first');
         acknowledged = true;
@@ -107,7 +111,7 @@ test('missing open_id creates a bot-only group and claims only the first human, 
   const group = f.calls.find(c => c.url.includes('/chats?') && c.method === 'POST').body;
   assert.equal(group.owner_id, undefined); assert.equal(group.user_id_list, undefined);
   assert.ok(f.out.includes('SETUP_JOIN_URL https://applink.feishu.cn/join-fixture'));
-  assert.equal(acknowledged, true); assert.equal(polls, 2);
+  assert.equal(acknowledged, true); assert.equal(closed, true);
 });
 
 test('claim expires within fifteen minutes, preserves the app and group, and --operator resumes them', async t => {
@@ -115,9 +119,9 @@ test('claim expires within fifteen minutes, preserves the app and group, and --o
   let time = 1_000_000;
   const options = { registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret' }),
     now: () => time, sleep: async ms => { time += ms; },
+    claimClientFactory: () => ({ async start() {}, close() {} }),
     fetchImpl: async (url, init) => {
       if (url.endsWith('/link')) return { ok: true, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
-      if (url.includes('/messages?container_id_type=chat')) return { ok: true, json: async () => ({ code: 0, data: { items: [], has_more: false } }) };
       return fetchImpl(url, init);
     } };
   assert.equal(await f.run(options), 3, f.err.join('\n'));
@@ -137,10 +141,9 @@ test('claim saves the first operator across a lost acknowledgement and retries w
   const f = await fixture(t), fetchImpl = f.options.fetchImpl;
   let uuid;
   assert.equal(await f.run({ registerApp: async () => ({ client_id: 'cli_fixture', client_secret: 'private_secret' }),
+    claimClientFactory: () => ({ async start(deliver) { await deliver({ kind: 'message', chatId: 'oc_created', senderType: 'user', openId: 'ou_claimed' }); }, close() {} }),
     fetchImpl: async (url, init) => {
       if (url.endsWith('/link')) return { ok: true, json: async () => ({ code: 0, data: { share_link: 'https://applink.feishu.cn/join-fixture' } }) };
-      if (url.includes('/messages?container_id_type=chat')) return { ok: true, json: async () => ({ code: 0, data: {
-        items: [{ sender: { sender_type: 'user', id_type: 'open_id', id: 'ou_claimed' } }], has_more: false } }) };
       if (url.includes('/messages?receive_id_type')) { uuid = JSON.parse(init.body).uuid; throw new Error('response lost'); }
       return fetchImpl(url, init);
     } }), 1);

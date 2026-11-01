@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv } from 'node:util';
 import { runtimePaths } from './runtime.js';
 import { acquireLock } from './instance-lock.js';
+import { Feishu } from './feishu.js';
 
 export const NEEDED_SCOPES = ['im:chat:create', 'im:chat:read', 'im:chat:readonly', 'im:message.group_at_msg:readonly',
   'im:message.group_msg', 'im:message:send_as_bot', 'im:message:readonly'];
@@ -101,7 +102,8 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
 }
 
 export async function setup({ newGroup = false, newApp = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
-  fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, now = Date.now, signal } = {}) {
+  fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, now = Date.now, signal,
+  claimClientFactory = credentials => new Feishu(credentials) } = {}) {
   let release, ready = Promise.resolve(), stage = 'registration';
   const abort = new AbortController();
   const registrationSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
@@ -169,7 +171,7 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       stage = 'claim_scopes';
       const grants = await api('/open-apis/application/v6/scopes', { token });
       const granted = new Set(grants.data?.scopes?.filter(s => s.grant_status === 1 && s.scope_type !== 'user').map(s => s.scope_name));
-      if (['im:chat:readonly', 'im:message:readonly'].some(scope => !granted.has(scope))) throw new SetupError('required_scopes_missing');
+      if (['im:chat:readonly', 'im:message.group_at_msg:readonly'].some(scope => !granted.has(scope))) throw new SetupError('required_scopes_missing');
     }
     const validChat = id => /^oc_[A-Za-z0-9]+$/.test(id ?? '');
     const isMember = async chatId => {
@@ -251,25 +253,31 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       let url;
       try { url = new URL(link.data?.share_link); } catch { throw new SetupError('invalid_join_url'); }
       if (url.protocol !== 'https:' || !url.hostname.endsWith('.feishu.cn') || url.username || url.password) throw new SetupError('invalid_join_url');
-      stdout(`SETUP_JOIN_URL ${url.href}`);
-      stderr('SETUP claim: 15 分钟内入群并发一条 @机器人 消息；本新群第一位发言的人将成为唯一操作者。');
-      while (!openId && now() < deadline) {
-        let pageToken; const pages = new Set();
-        do {
-          claimSignal.throwIfAborted();
-          const query = new URLSearchParams({ container_id_type: 'chat', container_id: chatId, sort_type: 'ByCreateTimeAsc', page_size: '50',
-            ...(pageToken ? { page_token: pageToken } : {}) });
-          const messages = await claimApi(`/open-apis/im/v1/messages?${query}`, { token });
-          if (now() >= deadline) throw new SetupError('claim_expired');
-          if (!Array.isArray(messages.data?.items)) throw new SetupError('invalid_message_list');
-          openId = messages.data.items.find(m => m.sender?.sender_type === 'user' && m.sender.id_type === 'open_id' && /^ou_[A-Za-z0-9]+$/.test(m.sender.id))?.sender.id;
-          pageToken = messages.data.has_more ? messages.data.page_token : null;
-          if (messages.data.has_more && (!pageToken || pages.has(pageToken))) throw new SetupError('invalid_message_list');
-          pages.add(pageToken);
-        } while (!openId && pageToken);
-        if (!openId) await sleep(Math.min(1000, Math.max(0, deadline - now())), undefined, { signal: claimSignal });
+      claimSignal.throwIfAborted();
+      const client = claimClientFactory({ appId: result.client_id, appSecret: result.client_secret });
+      const cancelTimer = new AbortController();
+      let resolveClaim, rejectClaim, onAbort, first = false;
+      const received = new Promise((resolve, reject) => {
+        resolveClaim = resolve; rejectClaim = reject; onAbort = () => reject(claimSignal.reason);
+        claimSignal.addEventListener('abort', onAbort, { once: true });
+      });
+      const expired = sleep(Math.max(0, deadline - now()), undefined, { signal: AbortSignal.any([claimSignal, cancelTimer.signal]) })
+        .then(() => { throw new SetupError('claim_expired'); });
+      try {
+        // History reads require approved group_msg. The preset's @bot event works while it is pending.
+        const started = Promise.resolve().then(() => client.start(event => {
+          if (first || now() >= deadline || event.kind !== 'message' || event.chatId !== chatId || event.senderType !== 'user' || !/^ou_[A-Za-z0-9]+$/.test(event.openId ?? '')) return;
+          first = true; openId = event.openId;
+          // Resolve once; claim mode never creates a Bridge or executes terminal input.
+          resolveClaim(event.openId);
+        }, () => rejectClaim(new SetupError('claim_connection_failed'))));
+        await Promise.race([started, received, expired]);
+        stdout(`SETUP_JOIN_URL ${url.href}`);
+        stderr('SETUP claim: 15 分钟内入群并发一条 @机器人 消息；本新群第一位发言的人将成为唯一操作者。');
+        openId = await Promise.race([received, expired]);
+      } finally {
+        cancelTimer.abort(); claimSignal.removeEventListener('abort', onAbort); client.close();
       }
-      if (!openId) throw new SetupError('claim_expired');
       progress.operator_open_id = openId;
       await saveProgress();
     }
