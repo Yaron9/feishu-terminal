@@ -8,13 +8,14 @@ Requires Node.js >=22, npm, and an already running herdr server (developed again
 
 ```sh
 npm ci --omit=dev
-cp config.example.json config.json
-cp .env.example .env
-# Edit config.json and .env on the runtime machine.
+mkdir -p "$HOME/.config/feishu-terminal"
+cp config.example.json "$HOME/.config/feishu-terminal/config.json"
+cp .env.example "$HOME/.config/feishu-terminal/.env"
+# Edit the installed config and its sibling .env on the runtime machine.
 npm start
 ```
 
-Configure exactly one group in `chatIds`, allowed Feishu `operatorOpenIds`, and an existing absolute Linux `defaultCwd`. Credentials come only from runtime env/`.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`. `FEISHU_TERMINAL_CONFIG` selects the config file (default `./config.json`). The default socket is `~/.config/herdr/herdr.sock`; override with `HERDR_SOCKET_PATH`. Only the explicit isolated test uses `HERDR_TCP=127.0.0.1:49450`, which takes precedence over the socket path.
+Configure exactly one group in `chatIds`, allowed Feishu `operatorOpenIds`, and an existing absolute Linux `defaultCwd`. Credentials come only from runtime env/the config's sibling `.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`. The default config is always `~/.config/feishu-terminal/config.json`; `FEISHU_TERMINAL_CONFIG` overrides it. Relative state/audit paths resolve from the config directory. The default socket is `~/.config/herdr/herdr.sock`; override with `HERDR_SOCKET_PATH`. Only the explicit isolated test uses `HERDR_TCP=127.0.0.1:49450`, which takes precedence over the socket path.
 
 For persistent Linux service installation, see [deploy/README.md](deploy/README.md). Do not point an existing state file at a different herdr session: pane IDs are local to one server.
 
@@ -25,31 +26,38 @@ For persistent Linux service installation, see [deploy/README.md](deploy/README.
 ```sh
 bash deploy/install.sh
 export PATH="$HOME/.local/bin:$PATH"
-export FEISHU_TERMINAL_CONFIG="$HOME/.config/feishu-terminal/config.json"
 feishu-terminal setup
 # 手机飞书打开 SETUP_URL 所示的完整链接，确认创建应用。
 # 中断或失败后直接重跑 setup，续接同一应用；不要加 --new-app。
-# 若退出 3 / missing_operator：feishu-terminal setup --operator ou_xxx
+# 若出现 SETUP_JOIN_URL：打开链接入群，在 15 分钟内发一条 @机器人 消息认领。
+# 若退出 3 / missing_operator 或 claim_expired：feishu-terminal setup --operator ou_xxx
 # 等待 SETUP OK 后再继续：
+# 在配置旁 .env 设置生产 HERDR_SOCKET_PATH；清除隔离测试用的 HERDR_TCP。
 systemctl --user daemon-reload
 systemctl --user enable --now feishu-terminal
+journalctl --user -u feishu-terminal -n 20
+# 确认 herdr ok <生产端点>；herdr_unreachable 时服务保持运行并重试 ping。
 # 显式指定隔离的 ftest herdr socket；替换为指挥者提供的实际路径：
 feishu-terminal selftest --herdr-socket /absolute/path/to/ftest.sock
 ```
 
-`setup` 优先读取配置旁 `.env` 的已有应用并获取 token 验证；仅在没有已保存应用、已有应用获取 token 失败，或显式传入 `--new-app` 时注册新应用。注册使用锁定的官方 SDK 1.76.0 `registerApp`，预填“VPS 终端”，默认智能体模板另加 `im:message.group_msg`。手机上需要用户确认；企业策略可能要求管理员审批。注册时 stdout 仅输出 `SETUP_URL <url>` 与 `SETUP_EXPIRES <UTC时间>`，有效期遵从 SDK；其他进度、权限表与错误均输出到 stderr。链接与有效期保存在 `${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt`（0600）。可选二维码工具：在另一终端执行 `sed -n 's/^SETUP_URL //p' "${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt" | qrencode -t ansiutf8`，无需安装 Node 二维码库。
+`setup` 优先读取配置旁 `.env` 的已有应用并获取 token 验证；仅在没有已保存应用、已有应用获取 token 失败，或显式传入 `--new-app` 时注册新应用。注册使用锁定的官方 SDK 1.76.0 `registerApp`，预填“VPS 终端”，默认智能体模板另加 `im:message.group_msg` 与 `im:chat:readonly`（群成员验证必需）。手机上需要用户确认；企业策略可能要求管理员审批。注册时 stdout 输出 `SETUP_URL <url>` 与 `SETUP_EXPIRES <UTC时间>`，有效期遵从 SDK；缺失操作者时还会输出 `SETUP_JOIN_URL <url>`。其他进度、权限表与错误均输出到 stderr；setup 和 selftest 都在 stderr 输出 `CONFIG <绝对路径>`。注册链接与有效期保存在 `${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt`（0600）。可选二维码工具：在另一终端执行 `sed -n 's/^SETUP_URL //p' "${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt" | qrencode -t ansiutf8`，无需安装 Node 二维码库。
 
 确认后先自动合并 `~/.config/feishu-terminal/.env` 的应用凭据，生成 `.env.bak-<timestamp>` 并保留其他行。`${STATE:-$HOME/.local/state/feishu-terminal}/setup-progress.json` 原子保存 `registered`（仅 app_id）、`group_created`（chat_id）、`configured`、`welcomed`、`scopes_checked` 阶段；凭据仅在 `.env`，进度不含 secret。凭据、备份、进度、配置均为 0600。失败后直接重跑 `feishu-terminal setup`，从第一个未完成阶段续接同一应用，不会重复已完成的欢迎消息和权限检查。
 
-创建以话题形式显示消息的普通群（`group_message_type: "thread"`），让扫码用户成为群主和唯一授权操作者，发送中文使用说明，检查权限；它与客户端独立的“话题群”模式不同。保留已有群前，通过当前应用的 tenant token 验证机器人确实在群里；不在则另建群。建群前分页查找当前机器人所在、名为“VPS 终端”的群，以恢复建群响应丢失的情况；有多个候选时停止，先在配置中指定正确群再续接。`--new-group` 为同一应用另建群，失败后仍续接该次操作。重配前先停止服务；旧绑定状态需要按实际 herdr/群归属人工保留或迁移，setup 不删除历史状态。
+创建以话题形式显示消息的普通群（`group_message_type: "thread"`），通常让扫码用户成为群主和唯一授权操作者，发送中文使用说明，检查权限；它与客户端独立的“话题群”模式不同。保留已保存群前，通过当前应用的 tenant token 验证机器人确实在群里；不在则另建群。建群前分页查找名为“VPS 终端”的群，以恢复建群响应丢失的情况；同名群只有同时满足机器人在群、消息模式为 thread、操作者在群才可复用。没有合格候选则新建；多个合格候选时停止，先在配置中指定正确群再续接。`--new-group` 为同一应用另建群，失败后仍续接该次操作。重配前先停止服务；旧绑定状态需要按实际 herdr/群归属人工保留或迁移，setup 不删除历史状态。
 
-`im:message.group_msg` 尚未授权时会明确提示；审批完成前可在群里先 @机器人再写命令。仅移除开头对当前机器人的提及标记，其他内容保持原样。拒绝或过期退出 2；注册成功但操作者 open_id 缺失或无效时，先保存凭据和 `registered` 阶段，再以 `missing_operator` 退出 3，用 `feishu-terminal setup --operator ou_xxx` 指定操作者续接同一应用。其他失败退出 1，完成退出 0。未见 `SETUP OK` 不要启动服务。错误不会回显服务端敏感内容。Lark 租户会明确失败，当前桥接只面向飞书。
+`im:message.group_msg` 尚未授权时会明确提示；全群消息权限审批完成前，每条消息（包括新话题和话题内回复）都必须 @机器人。机器人自己的提及实体可位于开头、中间或结尾，仅合并移除处的水平空白；其他提及和其余空白保持原样。
 
-安装后的命令自动加载配置旁的 `.env`，系统环境变量优先。`FEISHU_TERMINAL_CONFIG` 可显式选择配置；否则优先当前目录已有的 `config.json`，再用安装目录。`STATE` 选择 setup 链接、setup 进度和 selftest 临时状态目录；桥接的状态路径由配置决定。安装器创建 `~/.local/bin/feishu-terminal`，不会启动服务。
+注册没有返回 `user_info.open_id` 且未传 `--operator` 时，先保存凭据，再创建仅有机器人的新群。setup 使用 `im:chat:readonly` 取得入群链接，启动临时 WebSocket 认领连接，只接收本新群的用户消息；第一位非机器人用户通过事件送达的 open_id 先持久化，再在群内确认。全群消息待批时，入群后须发一条 @机器人 消息，使用预置的 `im:message.group_at_msg:readonly`；不依赖需要全群消息授权的历史消息查询。该发言仅用于认领，不执行终端命令。认领截止时间为建群后 15 分钟，重跑不延长；超时退出 3 / `claim_expired`。认领确认丢失时用原 UUID 续接。根据[官方获取群分享链接接口](https://open.feishu.cn/document/server-docs/group/chat/link.md)，请求方法为 POST，权限无需额外增加。只把入群链接交给预期操作者。
 
-`selftest` 是显式的真实写入测试：使用已配置的应用和群，通过真实 Bridge、真实 Feishu API 和显式 herdr endpoint，注入与 SDK 相同结构的消息及卡片事件，逐项输出 PASS/FAIL。测试话题/输出标注 `[selftest]`；验证 echo 输出回读、卡片 PATCH 后回读、`/t screen`、Refresh 回调、Ctrl-C 实际中断、`/t close` 解除绑定与 `/t close --kill` 关闭自建 pane，失败也只清理本次拥有的 pane。用独立临时状态，不改运行服务的绑定；测试群消息保留供检查。也可显式使用 `HERDR_TCP=127.0.0.1:49450 feishu-terminal selftest`。不指定 endpoint 会失败，不会自动使用默认 socket。
+拒绝或注册过期退出 2；操作者 open_id 无效退出 3 / `missing_operator`；可用 `feishu-terminal setup --operator ou_xxx` 指定同一应用下的操作者续接已保存应用和群。其他失败退出 1，完成退出 0。未见 `SETUP OK` 不要启动服务。API 阶段失败只保留数字 HTTP 状态与飞书错误码，不回显服务端消息或敏感内容。Lark 租户会明确失败，当前桥接只面向飞书。
 
-WS 检查读取 SDK `getConnectionStatus().state`，短暂连接后关闭，测试期间不处理真实入站消息；同一应用的 WS 连接可能分摊事件，请在没有用户输入时测试。此测试不证明真实消息/按钮事件已由飞书投递；最后仍需从手机发一个话题并检查真实按钮。若卡片回读缺少更新内容，selftest 会失败，不能把 API 请求成功当成完整通过。源码机器的无凭据测试不执行真实注册或 Feishu 调用。
+CLI、`npm start` 和 systemd 都通过同一解析器默认选择 `~/.config/feishu-terminal/config.json`，自动加载配置旁的 `.env`，系统环境变量优先；当前目录的 `config.json` 不参与选择。`FEISHU_TERMINAL_CONFIG` 可显式选择另一份配置；服务也须通过 systemd override 设置同一绝对路径。setup 会把示例 cwd 和 `./state/...` 占位路径替换为用户 home 和状态目录的绝对路径，保留真实自定义值；服务拒绝不存在或非目录的 cwd。`STATE` 选择 setup 链接、setup 进度和 selftest 临时状态目录；桥接的状态路径由配置决定。安装器创建 `~/.local/bin/feishu-terminal`，不会启动服务。
+
+`selftest` 是显式的真实写入测试：使用已配置的应用和群，通过真实 Bridge、真实 Feishu API 和显式 herdr endpoint，注入与 SDK 相同结构的消息及卡片事件，逐项输出 PASS/FAIL。它打印本次测试端点并提醒其可能与服务端点不同；`--herdr-socket` 不改变服务配置。测试话题/输出标注 `[selftest]`；验证 echo 输出回读、卡片 PATCH 后回读、`/t screen`、Refresh 回调、Ctrl-C 实际中断、`/t close` 解除绑定与 `/t close --kill` 关闭自建 pane，失败也只清理本次拥有的 pane。用独立临时状态，不改运行服务的绑定；测试群消息保留供检查。也可显式使用 `HERDR_TCP=127.0.0.1:49450 feishu-terminal selftest`。不指定 endpoint 会失败，不会自动使用默认 socket。
+
+WS 检查读取 SDK `getConnectionStatus().state`，短暂连接后关闭，测试期间不处理真实入站消息；同一应用的 WS 连接可能分摊事件，请在没有用户输入时测试。此测试不证明真实消息/按钮事件已由飞书投递；最后从手机实际发 `@机器人 pwd` 新话题，再在同一话题发 `@机器人 echo hello`，核对同一 pane 并检查真实按钮；审批后再验证不 @ 的消息。若卡片回读缺少更新内容，selftest 会失败，不能把 API 请求成功当成完整通过。源码机器的无凭据测试不执行真实注册或 Feishu 调用。
 
 ## Use
 
@@ -85,6 +93,7 @@ Audit JSONL stores time, operator, topic, pane, action and byte-length/SHA-256 o
 
 1. In [Feishu Developer Console](https://open.feishu.cn/app), create an **enterprise self-built application** (not a custom webhook bot), enable the **Bot** application capability, and set its available users to include your operators. Copy App ID/Secret only into the runtime env file.
 2. Under **Permissions & Scopes**, request application/tenant permissions:
+   - `im:chat:readonly` — verify bot membership and same-name group mode/operator membership, and obtain the fallback group share link. Setup also checks `im:chat:create`, `im:chat:read`, `im:message.group_at_msg:readonly` and `im:message:readonly` from the preset.
    - `im:message.group_msg` — read all user messages in the bot's group, required for ordinary input without @mentions. The mention-only scope `im:message.group_at_msg:readonly` cannot deliver all terminal input. [Official receive-message event and permission requirements](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive).
    - `im:message:send_as_bot` — create/reply as the bot and update its shared cards. The card PATCH endpoint accepts this as an alternative to broader `im:message` or `im:message:update`. [Official reply API](https://open.feishu.cn/document/server-docs/im-v1/message/reply), [official card PATCH API](https://open.feishu.cn/document/server-docs/im-v1/message-card/patch).
 3. In **Events & Callbacks → Event configuration**, choose **long connection** and subscribe to `im.message.receive_v1`. Start the runtime bridge when saving if the console asks for an established connection. [Official Node SDK long-connection guide](https://github.com/larksuite/node-sdk/tree/v1.76.0#long-connection).
