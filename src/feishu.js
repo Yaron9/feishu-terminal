@@ -59,7 +59,10 @@ export class Feishu {
     this.sendQueue = Promise.resolve(); this.nextSend = 0;
   }
   async start(onEvent, onError = () => {}) {
-    const deliver = event => { Promise.resolve().then(() => onEvent(event)).catch(() => onError('event_failed')); };
+    const deliver = async event => {
+      try { await onEvent(event); }
+      catch (error) { onError('event_failed'); throw error; } // no successful ACK if the claim failed
+    };
     this.dispatcher = new lark.EventDispatcher({ logger: quietLogger }).register({
       'im.message.receive_v1': async raw => {
         const message = (raw.event ?? raw).message;
@@ -75,11 +78,11 @@ export class Feishu {
             }
           } catch { onError('bot_identity_failed'); return; }
         }
-        deliver(messageEvent(raw, this.botOpenId));
+        await deliver(messageEvent(raw, this.botOpenId));
       },
-      'card.action.trigger': raw => {
-        deliver(actionEvent(raw));
-        // Do not wait for a socket request inside Feishu's callback deadline.
+      'card.action.trigger': async raw => {
+        await deliver(actionEvent(raw));
+        // Only the local claim is awaited inside Feishu's callback deadline.
         return { toast: { type: 'info', content: 'Received; checking authorization and card state.' } };
       },
     });

@@ -59,7 +59,7 @@ test('SDK API transport errors are sanitized and ambiguous sends are not retried
   assert.equal(count, 1);
 });
 
-test('SDK message and card frames dispatch and ACK immediately; card type survives compatibility shim', async () => {
+test('SDK message and card ACK waits for durable claim but not execution; card type survives compatibility shim', async () => {
   const seen = [], acknowledgements = [];
   const ws = new FeishuWSClient({ appId: 'fixture', appSecret: 'fixture', logger: quietLogger });
   // No network: capture the pinned SDK encoder output at its websocket boundary.
@@ -71,15 +71,17 @@ test('SDK message and card frames dispatch and ACK immediately; card type surviv
   const frame = (type, eventType, id, event) => ({ method: 1, service: 1, SeqID: '1', LogID: '1', headers: [
     { key: 'type', value: type }, { key: 'message_id', value: id }, { key: 'sum', value: '1' }, { key: 'seq', value: '0' },
   ], payload: Buffer.from(JSON.stringify({ schema: '2.0', header: { event_type: eventType, event_id: id }, event })) });
-  await ws.handleEventData(frame('event', 'im.message.receive_v1', 'e1', {
+  const messageDelivery = ws.handleEventData(frame('event', 'im.message.receive_v1', 'e1', {
     sender: { sender_id: { open_id: 'ou_a' }, sender_type: 'user' }, message: { message_id: 'm1', chat_id: 'oc_a', message_type: 'text', content: '{"text":"pwd"}' },
   }));
-  await ws.handleEventData(frame('card', 'card.action.trigger', 'e2', {
+  const cardDelivery = ws.handleEventData(frame('card', 'card.action.trigger', 'e2', {
     operator: { open_id: 'ou_a' }, context: { open_message_id: 'card', open_chat_id: 'oc_a' },
     action: { value: { topic_id: 'm1', nonce: 'nonce', key: 'enter' } },
   }));
   await eventually(() => seen.length === 2);
-  assert.equal(acknowledgements.length, 2); // handler is deliberately still pending
+  assert.equal(acknowledgements.length, 0); // durable claim is still pending
+  release(); await Promise.all([messageDelivery, cardDelivery]);
+  await eventually(() => acknowledgements.length === 2);
   assert.equal(seen[0].text, 'pwd'); assert.equal(seen[0].eventId, 'e1');
   assert.equal(seen[1].kind, 'button'); assert.equal(seen[1].eventId, 'e2');
   // Protobuf strings are length-delimited but remain plain bytes in the ACK.

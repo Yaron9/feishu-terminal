@@ -92,3 +92,43 @@ test('partly delivered output resumes fixed chunks and UUIDs across transcript g
   assert.equal(texts(h).find(c => c.content === second)?.uuid, failedUuid);
   assert.equal(texts(h).map(c => c.content).join(''), first + second + 'tail');
 });
+
+test('slow topic output cannot block another topic input; callback claims queued input before returning', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.handle(message('date', 'root2'));
+  await h.bridge.tick(); h.advance(1000); h.fake.output('w1:p1', '$ slow');
+  let release, started;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { started = resolve; });
+  h.feishu.patch = async () => { started(); await blocked; };
+  const tick = h.bridge.tick(); await entered;
+  try {
+    const done = h.bridge.handle(message('independent', 'b-input', 'root2'));
+    await eventually(() => writes(h).some(c => c.params.text === 'independent'), 'other topic input while output blocked');
+    await done;
+    await h.feishu.deliver(message('queued', 'queued', 'm1'));
+    const { Store } = await import('../src/store.js');
+    const disk = await new Store(h.store.file).load();
+    assert.equal(await disk.claim(['message:queued']), false);
+  } finally { release(); await tick; }
+});
+
+test('same-topic input stays ordered while a slow topic does not block another', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.handle(message('date', 'root2'));
+  h.bridge.herdr.timeoutMs = 3000;
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const entered = new Promise(resolve => { started = resolve; });
+  // Delay the external socket response, not the bridge or store.
+  h.fake.hold('pane.send_text', () => { started(); return gate; });
+  const first = h.bridge.handle(message('first', 'first', 'm1')); await entered;
+  const second = h.bridge.handle(message('second', 'second', 'm1'));
+  try {
+    await h.feishu.deliver(message('third', 'third', 'm1'));
+    const { Store } = await import('../src/store.js'); const disk = await new Store(h.store.file).load();
+    assert.equal(await disk.claim(['message:third']), false);
+    const other = h.bridge.handle(message('other', 'other', 'root2'));
+    await eventually(() => writes(h).some(c => c.params.text === 'other'), 'other topic while input blocked'); await other;
+    assert.ok(!writes(h).some(c => c.params.text === 'second'));
+  } finally { release(); await first; await second; await h.drain(); }
+  assert.deepEqual(writes(h).filter(c => ['first', 'second', 'third'].includes(c.params.text)).map(c => c.params.text), ['first', 'second', 'third']);
+});

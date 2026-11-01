@@ -8,7 +8,7 @@ import { Bridge } from '../src/bridge.js';
 
 export async function fakeHerdr() {
   const calls = [], panes = new Map(), subscribers = new Map(), sockets = new Set();
-  let workspace = null, sequence = 0, failNext, dropNext;
+  let workspace = null, sequence = 0, failNext, dropNext, holdNext;
   const emit = event => {
     for (const [socket, subscriptions] of subscribers) {
       if (subscriptions.some(s => s.pane_id === event.data.pane_id && s.type === event.event)) socket.write(JSON.stringify(event) + '\n');
@@ -61,7 +61,10 @@ export async function fakeHerdr() {
         }
         // One response per request connection, just like the live herdr server.
         const response = JSON.stringify(error ? { id, error: { code: error, message: error } } : { id, result }) + '\n';
-        if (method === 'events.subscribe') socket.write(response);
+        if (holdNext?.method === method) {
+          const hold = holdNext; holdNext = null;
+          Promise.resolve(hold.wait()).then(() => socket.end(response));
+        } else if (method === 'events.subscribe') socket.write(response);
         else socket.end(response);
       }
     });
@@ -69,6 +72,7 @@ export async function fakeHerdr() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { calls, panes, subscribers, create, emit, workspace: () => workspace, endpoint: { host: '127.0.0.1', port: server.address().port },
     fail(method, code) { failNext = { method, code }; }, drop(method) { dropNext = method; },
+    hold(method, wait) { holdNext = { method, wait }; },
     output(paneId, text) {
       const pane = panes.get(paneId); Object.assign(pane, { text, visible: text, revision: pane.revision + 1 });
       emit({ event: 'pane.output_matched', data: { pane_id: paneId, read: { text, revision: pane.revision } } });

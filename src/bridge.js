@@ -8,12 +8,16 @@ export class Bridge {
   constructor({ herdr, feishu, store, config, now = Date.now, audit, onError = () => {} }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
-    this.queue = Promise.resolve(); this.runtime = new Map(); this.stopped = false;
+    this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
     this.chatId = config.chatIds[0];
   }
-  enqueue(fn) {
-    const result = this.queue.then(fn);
-    this.queue = result.catch(() => this.onError('bridge_operation_failed')); return result;
+  get queue() { return Promise.all([...this.queues.values()]); }
+  enqueue(fn, key = 'control') {
+    const result = (this.queues.get(key) ?? Promise.resolve()).then(fn);
+    const tail = result.catch(() => this.onError('bridge_operation_failed'));
+    this.queues.set(key, tail);
+    tail.then(() => { if (this.queues.get(key) === tail) this.queues.delete(key); });
+    return result;
   }
   state(binding) {
     if (!this.runtime.has(binding.topicId)) this.runtime.set(binding.topicId, {
@@ -29,7 +33,7 @@ export class Bridge {
       if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
     }
     this.resubscribe();
-    await this.feishu.start(event => this.handle(event), this.onError);
+    await this.feishu.start(event => this.accept(event), this.onError);
     if (timers) this.timer = setInterval(() => { this.tick().catch(() => {}); }, 250);
   }
   async stop() {
@@ -40,17 +44,17 @@ export class Bridge {
     this.unsubscribe?.();
     const panes = this.store.list().filter(b => b.chatId === this.chatId).map(b => b.paneId);
     if (panes.length) this.unsubscribe = this.herdr.subscribe(paneSubscriptions(panes), event => {
+      const data = event.data ?? {};
+      const binding = this.store.forPane(data.pane_id ?? data.pane?.pane_id);
+      if (!binding || binding.chatId !== this.chatId) return;
       this.enqueue(async () => {
-        const data = event.data ?? {};
-        const binding = this.store.forPane(data.pane_id ?? data.pane?.pane_id);
-        if (!binding || binding.chatId !== this.chatId) return;
         const state = this.state(binding); state.dirty = true;
         if (data.agent_status) this.status(state, data.agent_status, data.agent);
-      }).catch(() => {});
+      }, binding.topicId).catch(() => {});
     }, connection => {
       for (const state of this.runtime.values()) { state.dirty = true; state.status = 'unknown'; }
       if (connection === 'connected') for (const b of this.store.list()) {
-        this.enqueue(() => this.verify(b)).catch(() => {});
+        this.enqueue(() => this.verify(b), b.topicId).catch(() => {});
       }
     });
   }
@@ -61,7 +65,20 @@ export class Bridge {
     if (status !== 'blocked') state.blockedNotice = false;
     state.status = status; state.agent = agent;
   }
-  handle(event) { return this.enqueue(() => this.receive(event)); }
+  async claimEvent(event) {
+    if (this.stopped || (event.kind === 'message' && event.senderType !== 'user')) return false;
+    const ids = [event.eventId && `event:${event.eventId}`];
+    if (event.kind === 'message') ids.push(event.messageId && `message:${event.messageId}`);
+    else ids.push(event.callbackToken && `callback:${event.callbackToken}`);
+    return this.store.claim(ids);
+  }
+  // SDK callbacks await only the local durable claim, never socket/API work.
+  async accept(event) {
+    if (await this.claimEvent(event)) this.enqueue(() => this.receive(event), event.topicId).catch(() => {});
+  }
+  async handle(event) {
+    if (await this.claimEvent(event)) return this.enqueue(() => this.receive(event), event.topicId);
+  }
   async refuse(event) {
     if (event.chatId && event.openId && await this.store.claim([`refusal:${event.chatId}:${event.openId}`])) {
       if (event.topicId && event.kind === 'message') await this.feishu.reply(event.topicId, 'Access denied.');
@@ -74,10 +91,6 @@ export class Bridge {
     if (event.chatId !== this.chatId || !this.config.operatorOpenIds.includes(event.openId)) {
       await this.refuse(event); return;
     }
-    const ids = [event.eventId && `event:${event.eventId}`];
-    if (event.kind === 'message') ids.push(event.messageId && `message:${event.messageId}`);
-    else ids.push(event.callbackToken && `callback:${event.callbackToken}`);
-    if (!await this.store.claim(ids)) return;
     const binding = this.store.binding(event.chatId, event.topicId);
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
@@ -159,6 +172,9 @@ export class Bridge {
     if (!wasChecking) await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
   }
   async createPane() {
+    return this.enqueue(() => this.createPaneSerial(), 'pane-create');
+  }
+  async createPaneSerial() {
     const { workspaces } = await this.herdr.request('workspace.list');
     const matching = workspaces.filter(w => w.label === 'feishu');
     if (matching.length > 1) throw new Error('Ambiguous feishu workspace');
@@ -246,16 +262,16 @@ export class Bridge {
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
     this.tickPending = true;
-    return this.enqueue(async () => {
-      for (const binding of this.store.list()) {
-        if (binding.chatId !== this.chatId) continue;
+    return Promise.all(this.store.list().filter(b => b.chatId === this.chatId).map(binding =>
+      this.enqueue(async () => {
+        if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
         try {
           if (state.dirty || this.now() - state.lastRead >= 1000 || (state.cardPending && this.now() - state.lastCard >= 1000)) await this.refresh(binding);
           await this.flush(binding);
         } catch { this.onError('output_refresh_failed'); }
-      }
-    }).finally(() => { this.tickPending = false; });
+      }, `output:${binding.topicId}`)
+    )).finally(() => { this.tickPending = false; });
   }
   async refresh(binding, force = false, forceBlocked = false) {
     const state = this.state(binding), now = this.now();
