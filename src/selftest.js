@@ -25,17 +25,20 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     feishu.close(); herdr.close(); return 1;
   }
   print(`SELFTEST herdr ${endpointLabel(herdr.endpoint ?? (socket ? { path: socket } : endpointFromEnv(env)))}; may differ from the service's endpoint.`);
-  const owned = new Set(), replies = new Set();
+  const owned = new Set(), replies = new Set(), sent = new Set();
   let bridge, temp, failed = false, activeStep = 'initialize', patches = 0, patchIds = [];
   const runStep = async (name, fn) => { activeStep = name; signal?.throwIfAborted(); await fn(); print(`PASS ${name}`); };
   const waitFor = test => until(test, { timeoutMs, sleep, now, signal });
   const labelCard = card => ({ ...card, header: { ...card.header,
     title: { ...card.header.title, content: '[selftest] ' + card.header.title.content } } });
   const edge = {
-    send: (chat, text, uuid) => feishu.send(chat, '[selftest] ' + text, uuid),
+    async send(chat, text, uuid) {
+      const id = await feishu.send(chat, '[selftest] ' + text, uuid);
+      sent.add(id); return id;
+    },
     async reply(topic, content, type = 'text', uuid) {
       const id = await feishu.reply(topic, type === 'text' ? '[selftest] ' + content : labelCard(content), type, uuid);
-      replies.add(id); return id;
+      sent.add(id); replies.add(id); return id;
     },
     async patch(id, card) { await feishu.patch(id, labelCard(card)); patches++; patchIds.push(id); },
     close() { feishu.close(); },
@@ -78,9 +81,28 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       const id = await feishu.reply(root, `[selftest] synthetic inbound: ${text}`);
       await deliver(text, id);
     };
+    const readSent = async () => {
+      const messages = [];
+      for (const id of sent) {
+        const message = await feishu.getMessage(id);
+        check(message?.message_id === id);
+        messages.push(message);
+      }
+      return messages;
+    };
+    let historyDenied = false;
     const readback = async text => {
       await bridge.tick();
-      const messages = await feishu.threadMessages(threadId);
+      // Per-id reads verify our own replies/cards without depending on group history.
+      const messages = await readSent();
+      if (!historyDenied) {
+        try { messages.push(...await feishu.threadMessages(threadId)); }
+        catch (error) {
+          if (!['230027', '99991672', '99991676'].includes(String(error.code))) throw error;
+          historyDenied = true;
+          print('NOTE history list needs im:message.group_msg (pending) — verified by message id instead');
+        }
+      }
       // Only Bridge-generated text replies count, never the echo command or synthetic input label.
       return messages.some(m => replies.has(m.message_id) && m.msg_type === 'text' &&
         JSON.parse(m.body?.content || '{}').text?.split(/\r?\n/).some(line => line.replace(/^\[selftest\] /, '').trim() === text));
@@ -145,6 +167,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       await input('/t close --kill'); check(!store.binding(config.chatIds[0], root));
       const { panes } = await herdr.request('pane.list'); check(!panes.some(p => p.pane_id === paneId));
       owned.delete(paneId);
+      await readSent();
     });
   } catch {
     print(`FAIL ${activeStep}`); failed = true;

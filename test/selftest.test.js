@@ -4,9 +4,11 @@ import { mkdtemp, rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { selftest } from '../src/selftest.js';
 import { HerdrClient } from '../src/herdr-client.js';
+import { FeishuError } from '../src/feishu.js';
 import { fakeHerdr } from './helpers.js';
 
-async function run(t, { badReadback = false, missedInterrupt = false, wsFailed = false } = {}) {
+async function run(t, { badReadback = false, missedInterrupt = false, wsFailed = false,
+  historyDenied, perIdDenied = false } = {}) {
   const dir = await mkdtemp(new URL('../.test-selftest-', import.meta.url));
   const fake = await fakeHerdr();
   t.after(async () => { await fake.close(); await rm(dir, { recursive: true, force: true }); });
@@ -30,7 +32,7 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
       }
       return result;
     } };
-  const messages = new Map(), logs = []; let sequence = 0, time = 0, closeCount = 0, patchCount = 0;
+  const messages = new Map(), logs = [], readCalls = []; let sequence = 0, time = 0, closeCount = 0, patchCount = 0, historyCalls = 0;
   const feishu = {
     ws: { getConnectionStatus: () => ({ state: wsFailed ? 'failed' : 'connected' }) },
     async start() {}, close() { closeCount++; },
@@ -43,8 +45,19 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
         body: { content: JSON.stringify(type === 'text' ? { text: content } : content) } }); return id;
     },
     async patch(id, card) { patchCount++; messages.get(id).body.content = JSON.stringify(card); },
-    async getMessage(id) { return structuredClone(messages.get(id)); },
-    async threadMessages() { return badReadback ? [] : structuredClone([...messages.values()]); },
+    async getMessage(id) {
+      readCalls.push(['get', id]);
+      // Keep the root lookup available so denial exercises Bridge output readback.
+      if (perIdDenied && id !== 'om_1') throw new FeishuError(230027);
+      const message = structuredClone(messages.get(id));
+      if (badReadback) message.body.content = '{}';
+      return message;
+    },
+    async threadMessages() {
+      historyCalls++; readCalls.push(['list']);
+      if (historyDenied) throw new FeishuError(historyDenied);
+      return badReadback ? [] : structuredClone([...messages.values()]);
+    },
   };
   const code = await selftest({ config: { chatIds: ['oc_fixture'], operatorOpenIds: ['ou_fixture'], defaultCwd: '/tmp' },
     stateDir: dir, env: { HERDR_TCP: '127.0.0.1:49450' }, herdr, feishu, print: line => logs.push(line),
@@ -52,7 +65,7 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
   assert.ok(fake.panes.has(untouched.pane_id)); assert.equal(fake.panes.size, 1);
   assert.equal(client.closed, true); assert.ok(closeCount > 0);
   assert.deepEqual(await readdir(dir), []);
-  return { code, logs, patchCount, messages, calls: fake.calls };
+  return { code, logs, patchCount, messages, readCalls, historyCalls, calls: fake.calls };
 }
 
 test('selftest uses real Bridge and socket schema, reads output back, patches cards, feeds card callback, keys and both close modes', async t => {
@@ -63,6 +76,43 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   assert.ok(r.calls.some(c => c.method === 'pane.send_keys' && c.params.keys.includes('ctrl+c')));
   assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);
   for (const message of r.messages.values()) assert.ok(message.body.content.includes('[selftest]'));
+  assert.ok(r.historyCalls > 0);
+  const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
+  for (const message of r.messages.values()) {
+    if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
+  }
+});
+
+for (const historyDenied of [230027, 99991672, 99991676]) {
+  test(`selftest verifies replies and patched cards by id when history permission is denied (${historyDenied})`, async t => {
+    const r = await run(t, { historyDenied });
+    assert.equal(r.code, 0, r.logs.join('\n'));
+    assert.equal(r.logs.filter(l => l.startsWith('PASS')).length, 10);
+    assert.equal(r.historyCalls, 1);
+    assert.equal(r.logs.filter(l => l === 'NOTE history list needs im:message.group_msg (pending) — verified by message id instead').length, 1);
+    const firstList = r.readCalls.findIndex(([method]) => method === 'list');
+    assert.ok(r.readCalls.slice(0, firstList).some(([method, id]) => method === 'get' && r.messages.get(id)?.root_id));
+    const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
+    for (const message of r.messages.values()) {
+      if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
+    }
+    assert.ok(r.patchCount >= 3);
+  });
+}
+
+test('selftest fails and cleans owned panes when both history and per-id read permissions are denied', async t => {
+  const r = await run(t, { historyDenied: 230027, perIdDenied: true });
+  assert.equal(r.code, 1);
+  assert.ok(r.logs.includes('FAIL echo -> topic output read back'));
+  assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);
+  assert.ok(!r.logs.some(l => l.includes('verified by message id instead')));
+});
+
+test('selftest does not let available history hide a per-id read failure', async t => {
+  const r = await run(t, { perIdDenied: true });
+  assert.equal(r.code, 1);
+  assert.ok(r.logs.includes('FAIL echo -> topic output read back'));
+  assert.equal(r.historyCalls, 0);
 });
 
 test('selftest cannot pass on successful sends when Feishu readback lacks output; failure cleans only owned panes', async t => {
