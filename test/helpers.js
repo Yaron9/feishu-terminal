@@ -106,6 +106,12 @@ export function message(text, id = 'm1', topicId = id, override = {}) {
     senderType: 'user', openId: 'ou_test', topicId, isReply: topicId !== id, text, ...override };
 }
 
+export function pickerEvent(h, action, index = 0, override = {}) {
+  const card = h.bridge.store.data.actionCards.at(-1);
+  return { kind: 'button', eventId: randomUUID(), chatId: card.chatId, openId: 'ou_test',
+    topicId: card.topicId, messageId: card.messageId, nonce: card.nonce, key: `picker:${action}:${index}`, ...override };
+}
+
 export async function harness(t) {
   const temp = await mkdtemp(new URL('../.test-', import.meta.url));
   const fake = await fakeHerdr();

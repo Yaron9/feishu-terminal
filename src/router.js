@@ -19,6 +19,7 @@ export function route(text, bound = false) {
   const parts = text.trim().split(/\s+/u).slice(1);
   if (parts[0] === 'ls' && parts.length === 1) return { type: 'list' };
   if (parts[0] === 'open' && parts.length === 2) return { type: 'open', paneId: parts[1] };
+  if (parts[0] === 'close' && parts.length === 1) return { type: bound ? 'closePicker' : 'list' };
   if (!bound && ['close', 'k', 'screen', 'ok'].includes(parts[0])) return { type: 'error', message: 'Open a topic first.' };
   if (parts[0] === 'ok' && parts.length === 1) return { type: 'ok' };
   if (parts[0] === 'close' && (parts.length === 1 || (parts.length === 2 && parts[1] === '--kill'))) return { type: 'close', kill: parts[1] === '--kill' };

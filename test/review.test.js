@@ -29,7 +29,7 @@ test('reconnect verifies tab, workspace and missing identity before any kind of 
       await h.bridge.handle(message(text, `bad${i}`, 'm1'));
     assert.equal(writes(h).length, before);
     await h.bridge.handle(message('/t close', 'close', 'm1'));
-    assert.equal(h.store.list().length, 0);
+    assert.equal(h.store.list().length, 1, 'a close command now offers a card; it never silently unbinds');
   }
 });
 

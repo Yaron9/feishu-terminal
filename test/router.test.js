@@ -11,13 +11,14 @@ test('all non-/t payloads, including slash commands, are verbatim', () => {
 test('reserved commands parse strictly with binding requirements', () => {
   assert.deepEqual(route('/t ls'), { type: 'list' });
   assert.deepEqual(route('/t open w1:p2'), { type: 'open', paneId: 'w1:p2' });
-  assert.deepEqual(route('/t close', true), { type: 'close', kill: false });
+  assert.deepEqual(route('/t close', true), { type: 'closePicker' });
+  assert.deepEqual(route('/t close', false), { type: 'list' });
   assert.deepEqual(route('/t close --kill', true), { type: 'close', kill: true });
   assert.deepEqual(route('/t screen', true), { type: 'screen' });
   assert.deepEqual(route('/t ok', true), { type: 'ok' });
   assert.deepEqual(route('/t raw  /compact\n ', true), { type: 'raw', text: ' /compact\n ' });
   for (const text of ['/t', '/t ls x', '/t close --force', '/t open', '/t raw', '/t wat', '/t ok extra']) assert.equal(route(text, true).type, 'error');
-  for (const text of ['/t close', '/t screen', '/t k enter', '/t raw a', '/t ok']) assert.equal(route(text, false).type, 'error');
+  for (const text of ['/t close --kill', '/t screen', '/t k enter', '/t raw a', '/t ok']) assert.equal(route(text, false).type, 'error');
   assert.equal(route(undefined).type, 'error');
 });
 test('key allowlist rejects the entire batch before sending any keys', () => {

@@ -4,6 +4,7 @@ import { clean, screenCard, screenText, newOutput, splitText } from './render.js
 import { paneSubscriptions } from './herdr-client.js';
 import { auditRecord, appendAudit } from './store.js';
 import { paneLabel } from './panes.js';
+import { PanePicker } from './picker.js';
 
 export class Bridge {
   constructor({ herdr, feishu, store, config, now = Date.now, audit, onError = () => {} }) {
@@ -11,6 +12,7 @@ export class Bridge {
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
     this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
     this.chatId = config.chatIds[0];
+    this.picker = new PanePicker(this);
   }
   get queue() { return Promise.all([...this.queues.values()]); }
   enqueue(fn, key = 'control') {
@@ -81,10 +83,10 @@ export class Bridge {
   }
   // SDK callbacks await only the local durable claim, never socket/API work.
   async accept(event) {
-    if (await this.claimEvent(event)) this.enqueue(() => this.receive(event), event.topicId).catch(() => {});
+    if (await this.claimEvent(event)) this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId).catch(() => {});
   }
   async handle(event) {
-    if (await this.claimEvent(event)) return this.enqueue(() => this.receive(event), event.topicId);
+    if (await this.claimEvent(event)) return this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId);
   }
   async refuse(event) {
     if (event.chatId && event.openId && await this.store.claim([`refusal:${event.chatId}:${event.openId}`])) {
@@ -105,6 +107,7 @@ export class Bridge {
       await this.log(event, binding, action.type, event.text ?? '');
       if (action.type === 'error') { await this.feishu.reply(event.topicId, action.message); return; }
       if (action.type === 'list') { await this.list(event); return; }
+      if (action.type === 'closePicker') { await this.picker.show(event, binding); return; }
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
       if (action.type === 'create') {
         if (event.isReply) { await this.feishu.reply(event.topicId, 'This topic is not bound. Use /t open <pane_id> in the group.'); return; }
@@ -119,7 +122,13 @@ export class Bridge {
         return;
       }
       if (action.type === 'close') {
-        if (action.kill) { await this.verify(binding); await this.herdr.request('pane.close', { pane_id: binding.paneId }); }
+        if (action.kill) {
+          await this.verify(binding);
+          const { panes } = await this.herdr.request('pane.list');
+          if (!panes.some(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId))
+            throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+          await this.herdr.request('pane.close', { pane_id: binding.paneId });
+        }
         await this.store.unbind(binding.chatId, binding.topicId); this.runtime.delete(binding.topicId); this.resubscribe();
         await this.feishu.reply(binding.topicId, action.kill ? 'Pane closed; topic unbound.' : 'Topic unbound; pane is still running.');
         return;
@@ -151,12 +160,12 @@ export class Bridge {
   log(event, binding, action, text = '') {
     return this.audit(auditRecord({ openId: event.openId, topicId: binding?.topicId ?? event.topicId, paneId: binding?.paneId, action, text }));
   }
-  async identity(paneId) {
+  async identity(paneId, allowDesktop = false) {
     const [{ pane }, { workspaces }] = await Promise.all([
       this.herdr.request('pane.get', { pane_id: paneId }), this.herdr.request('workspace.list'),
     ]);
     if (pane?.pane_id !== paneId || !pane.terminal_id || !pane.tab_id ||
-      !workspaces.some(w => w.workspace_id === pane.workspace_id && w.label === 'feishu')) throw new Error('Unconfirmed pane identity');
+      !workspaces.some(w => w.workspace_id === pane.workspace_id && (allowDesktop || w.label === 'feishu'))) throw new Error('Unconfirmed pane identity');
     return { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id };
   }
   async verify(binding) {
@@ -165,7 +174,7 @@ export class Bridge {
     if (!this.sameGeneration(expected, binding)) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
     try {
       if (!binding || binding.frozen || !binding.identity) throw new Error('Unverified binding');
-      const current = await this.identity(binding.paneId);
+      const current = await this.identity(binding.paneId, binding.allowDesktop);
       const latest = this.store.binding(binding.chatId, binding.topicId);
       if (!this.sameGeneration(binding, latest) || latest.frozen || Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
         throw new Error('Identity mismatch');
@@ -230,14 +239,13 @@ export class Bridge {
       owned: this.store.data.createdTerminals?.includes(pane.terminal_id) });
   }
   async list(event) {
-    const { panes } = await this.herdr.request('pane.list');
-    const text = panes.map(p => this.label(p)).join('\n') || 'No panes.';
-    for (const part of splitText(text)) await this.feishu.reply(event.topicId, part);
+    await this.picker.show(event);
   }
-  async open(event, paneId) {
+  async open(event, paneId, expectedTerminalId) {
     const existing = this.store.forPane(paneId);
     if (existing && !existing.frozen) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
-    const identity = await this.identity(paneId);
+    const identity = await this.identity(paneId, Boolean(expectedTerminalId));
+    if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
       await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
         lastTranscript: undefined, nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
@@ -251,9 +259,10 @@ export class Bridge {
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
     const topicId = await this.feishu.send(event.chatId, `终端：${this.label(pane)}`);
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity });
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
+    return topicId;
   }
   async input(binding, text) {
     await this.verify(binding);
@@ -289,12 +298,17 @@ export class Bridge {
     state.dirty = true;
   }
   async button(event, binding) {
+    if (event.key?.startsWith('picker:')) { await this.picker.button(event); return; }
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
       (event.key !== 'refresh' && !validKeys([event.key]))) {
       await this.feishu.reply(event.topicId || event.messageId, 'Stale or foreign card. Use /t screen for the current card.'); return;
     }
     const state = this.state(binding);
-    if (event.key !== 'refresh') await this.verify(binding);
+    if (!Number.isFinite(binding.cardCreatedAt) || this.now() - binding.cardCreatedAt >= 600000 || this.now() < binding.cardCreatedAt) {
+      await this.feishu.reply(event.topicId, '卡片已过期，请重新 /t screen'); return;
+    }
+    try { await this.verify(binding); }
+    catch { await this.feishu.reply(event.topicId, '终端已变化，请重新 /t ls'); return; }
     if (event.key !== 'refresh') {
       const { agents } = await this.herdr.request('agent.list');
       if (!agents.some(a => a.pane_id === binding.paneId && a.agent && a.agent_status === 'blocked')) {
@@ -327,10 +341,11 @@ export class Bridge {
   }
   async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
-    const [{ read: visible }, { read: recent }, { agents }] = await this.readVerified(binding, () => Promise.all([
+    const [{ read: visible }, { read: recent }, { agents }, { panes }] = await this.readVerified(binding, () => Promise.all([
       this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }),
       this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 }),
       this.herdr.request('agent.list'),
+      this.herdr.request('pane.list'),
     ]));
     const agent = agents.find(a => a.pane_id === binding.paneId && a.agent);
     this.status(state, forceBlocked ? 'blocked' : agent?.agent_status ?? 'unknown', agent?.agent ?? null);
@@ -341,7 +356,9 @@ export class Bridge {
     }
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
-    const signature = createHash('sha256').update(visible.text + '\0' + state.status).digest('hex');
+    const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
+    if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane)).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     state.visible = visible.text; state.nextSignature = signature;
     if (!deferCard) await this.refreshCard(binding);
@@ -364,7 +381,7 @@ export class Bridge {
         const { panes } = await this.herdr.request('pane.list');
         const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
         if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
-        pending = { nonce, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
+        pending = { nonce, createdAt: now, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
           card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
         if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
       }
@@ -393,7 +410,7 @@ export class Bridge {
         // version always has a fresh nonce; consumed versions are never reused.
         await this.store.transaction(data => {
           const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
-          if (b?.pendingCard?.nonce === pending.nonce) Object.assign(b, { cardId, nonce: pending.nonce, pendingCard: null });
+          if (b?.pendingCard?.nonce === pending.nonce) Object.assign(b, { cardId, nonce: pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null });
         });
       } catch (error) {
         state.cardFailures = (state.cardFailures ?? 0) + 1;

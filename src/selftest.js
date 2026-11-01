@@ -158,7 +158,15 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       await until(() => readback(interrupted), { timeoutMs: Math.min(timeoutMs, 10000), sleep, now, signal });
     });
     await runStep('/t close (unbind)', async () => {
-      await input('/t close'); check(!store.binding(config.chatIds[0], root));
+      await input('/t close');
+      const card = store.data.actionCards.at(-1);
+      check(card?.kind === 'close' && card.topicId === root);
+      await bridge.handle(actionEvent({ header: { event_id: randomUUID() }, event: {
+        operator: { open_id: config.operatorOpenIds[0] }, token: randomUUID(),
+        context: { open_chat_id: config.chatIds[0], open_message_id: card.messageId },
+        action: { value: { topic_id: root, nonce: card.nonce, key: 'picker:unbind:0' } },
+      } }));
+      check(!store.binding(config.chatIds[0], root));
       check((await herdr.request('pane.get', { pane_id: paneId })).pane?.pane_id === paneId);
     });
     await runStep('/t close --kill (owned pane closed)', async () => {

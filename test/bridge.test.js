@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message } from './helpers.js';
+import { harness, message, pickerEvent } from './helpers.js';
 
 const writes = fake => fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
 const records = edge => edge.calls.filter(c => c.type === 'reply' && c.msgType === 'text');
@@ -126,14 +126,16 @@ test('Refresh consumes nonce and schedules an unchanged blocked card after the t
   assert.equal(card.elements[1].actions[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
 });
 
-test('/t open binds desktop pane with a fresh topic; list includes agent status; close unbinds and only --kill destroys', async t => {
+test('/t open binds desktop pane with a fresh topic; picker includes agent status; close offers unbind and --kill destroys', async t => {
   const h = await harness(t); const desktop = h.fake.create(); desktop.agent = 'claude'; desktop.agent_status = 'idle';
-  await h.bridge.handle(message('/t ls', 'list')); assert.ok(records(h.feishu).at(-1).content.includes('w1:p1 · claude · idle'));
+  await h.bridge.handle(message('/t ls', 'list')); assert.match(JSON.stringify(cards(h.feishu).at(-1).content), /claude 空闲.*桌面.*未绑定.*w1:p1/);
   await h.bridge.handle(message('/t open w1:p1', 'open'));
   const binding = h.store.forPane('w1:p1'); assert.ok(binding.topicId.startsWith('bot-'));
   assert.equal(writes(h.fake).length, 0);
   await h.bridge.handle(message('/t open w1:p1', 'reopen')); assert.equal(h.store.list().length, 1);
   await h.bridge.handle(message('/t close', 'close', binding.topicId));
+  assert.equal(h.store.list().length, 1);
+  await h.bridge.handle(pickerEvent(h, 'unbind'));
   assert.equal(h.store.list().length, 0); assert.ok(h.fake.panes.has('w1:p1'));
   await h.bridge.handle(message('old topic', 'old', binding.topicId)); assert.equal(h.store.list().length, 0);
   await h.bridge.handle(message('/t open w1:p1', 'open2'));
