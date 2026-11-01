@@ -17,6 +17,9 @@ export function route(text, bound = false) {
   const raw = /^\/t\s+raw(?:[ \t]|\r?\n)([\s\S]*)$/u.exec(text);
   if (raw) return bound ? { type: 'raw', text: raw[1] } : { type: 'error', message: 'Open a topic first.' };
   const parts = text.trim().split(/\s+/u).slice(1);
+  // Phone smart punctuation applies only to option tokens in this grammar.
+  // Raw payloads and ordinary terminal input have already returned verbatim.
+  if (parts[0] === 'close' && parts.length > 1) parts[1] = parts[1].replace(/^[—–](?=[a-z])/iu, '--');
   if (parts[0] === 'ls' && parts.length === 1) return { type: 'list' };
   if (parts[0] === 'open' && parts.length === 2) return { type: 'open', paneId: parts[1] };
   if (parts[0] === 'close' && parts.length === 1) return { type: bound ? 'closePicker' : 'list' };

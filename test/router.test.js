@@ -26,3 +26,17 @@ test('key allowlist rejects the entire batch before sending any keys', () => {
   for (const keys of [[], Array(9).fill('enter'), ['ENTER'], ['ctrl+c', 'shell'], ['\x03'], ['enter;rm'], ['0'], ['f999']]) assert.equal(validKeys(keys), false);
   assert.equal(route('/t k ctrl+c invalid', true).type, 'error');
 });
+
+test('phone option dashes normalize only in the /t command grammar', () => {
+  for (const option of ['—kill', '–kill', '--kill']) {
+    assert.deepEqual(route(`/t close ${option}`, true), { type: 'close', kill: true });
+    assert.equal(route(`/t close ${option}`, false).type, 'error');
+  }
+  for (const text of ['echo a—b –kill', '/compact —kill', ' /t close —kill']) {
+    assert.deepEqual(route(text, true), { type: 'input', text });
+    assert.deepEqual(route(text), { type: 'create', text });
+  }
+  assert.deepEqual(route('/t raw echo —kill –kill --kill', true), { type: 'raw', text: 'echo —kill –kill --kill' });
+  assert.deepEqual(route('/t open —pane'), { type: 'open', paneId: '—pane' });
+  for (const option of ['—force', '–force', 'x—kill', '——kill', '—']) assert.equal(route(`/t close ${option}`, true).type, 'error');
+});
