@@ -76,7 +76,7 @@ export class Feishu {
               if (!data?.open_id) throw new FeishuError('missing_bot_identity');
               this.botOpenId = data.open_id;
             }
-          } catch { onError('bot_identity_failed'); return; }
+          } catch { onError('bot_identity_failed'); throw new FeishuError('bot_identity_failed'); }
         }
         await deliver(messageEvent(raw, this.botOpenId));
       },

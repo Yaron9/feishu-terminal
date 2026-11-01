@@ -140,7 +140,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     });
     await runStep('/t close --kill (owned pane closed)', async () => {
       // Rebind only the pane this run created; preserve /t close semantics.
-      await store.bind({ chatId: config.chatIds[0], topicId: root, paneId });
+      await store.bind({ chatId: config.chatIds[0], topicId: root, paneId, identity: await bridge.identity(paneId) });
       await input('/t close --kill'); check(!store.binding(config.chatIds[0], root));
       const { panes } = await herdr.request('pane.list'); check(!panes.some(p => p.pane_id === paneId));
       owned.delete(paneId);

@@ -14,9 +14,10 @@ test('reserved commands parse strictly with binding requirements', () => {
   assert.deepEqual(route('/t close', true), { type: 'close', kill: false });
   assert.deepEqual(route('/t close --kill', true), { type: 'close', kill: true });
   assert.deepEqual(route('/t screen', true), { type: 'screen' });
+  assert.deepEqual(route('/t ok', true), { type: 'ok' });
   assert.deepEqual(route('/t raw  /compact\n ', true), { type: 'raw', text: ' /compact\n ' });
-  for (const text of ['/t', '/t ls x', '/t close --force', '/t open', '/t raw', '/t wat']) assert.equal(route(text, true).type, 'error');
-  for (const text of ['/t close', '/t screen', '/t k enter', '/t raw a']) assert.equal(route(text, false).type, 'error');
+  for (const text of ['/t', '/t ls x', '/t close --force', '/t open', '/t raw', '/t wat', '/t ok extra']) assert.equal(route(text, true).type, 'error');
+  for (const text of ['/t close', '/t screen', '/t k enter', '/t raw a', '/t ok']) assert.equal(route(text, false).type, 'error');
   assert.equal(route(undefined).type, 'error');
 });
 test('key allowlist rejects the entire batch before sending any keys', () => {

@@ -66,6 +66,16 @@ test('SDK HTTP errors preserve definite card failure codes for replacement', asy
   await assert.rejects(edge.patch('gone', {}), error => error.code === '230011');
 });
 
+test('failed bot identity lookup rejects delivery instead of acknowledging unclaimed input', async () => {
+  let dispatcher, delivered = false;
+  const edge = new Feishu({ client: { request: async () => { throw new Error('offline'); } },
+    ws: { start({ eventDispatcher }) { dispatcher = eventDispatcher; }, close() {} } });
+  await edge.start(() => { delivered = true; });
+  await assert.rejects(dispatcher.invoke({ schema: '2.0', header: { event_type: 'im.message.receive_v1' },
+    event: { message: { mentions: [{ key: '@_bot', id: { open_id: 'ou_bot' } }], message_type: 'text', content: '{"text":"@_bot pwd"}' } } }));
+  assert.equal(delivered, false);
+});
+
 test('SDK message and card ACK waits for durable claim but not execution; card type survives compatibility shim', async () => {
   const seen = [], acknowledgements = [];
   const ws = new FeishuWSClient({ appId: 'fixture', appSecret: 'fixture', logger: quietLogger });
