@@ -1,0 +1,15 @@
+{
+  "name": "feishu-terminal",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Feishu topics as a local herdr remote control channel",
+  "engines": { "node": ">=22" },
+  "bin": { "feishu-terminal": "bin/feishu-terminal.js" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env bin/feishu-terminal.js",
+    "test": "node --test test/*.test.js",
+    "test:live": "node scripts/live-herdr.js"
+  },
+  "dependencies": { "@larksuiteoapi/node-sdk": "1.76.0" }
+}
