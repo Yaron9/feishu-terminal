@@ -3,6 +3,7 @@ import { route, validKeys } from './router.js';
 import { clean, screenCard, screenText, newOutput, splitText } from './render.js';
 import { paneSubscriptions } from './herdr-client.js';
 import { auditRecord, appendAudit } from './store.js';
+import { paneLabel } from './panes.js';
 
 export class Bridge {
   constructor({ herdr, feishu, store, config, now = Date.now, audit, onError = () => {} }) {
@@ -217,14 +218,20 @@ export class Bridge {
     const created = matching.length
       ? await this.herdr.request('tab.create', { ...params, workspace_id: matching[0].workspace_id })
       : await this.herdr.request('workspace.create', { ...params, label: 'feishu' });
-    return created.root_pane;
+    const pane = created.root_pane;
+    if (pane?.terminal_id) await this.store.transaction(data => {
+      data.createdTerminals ??= [];
+      if (!data.createdTerminals.includes(pane.terminal_id)) data.createdTerminals.push(pane.terminal_id);
+    });
+    return pane;
+  }
+  label(pane) {
+    return paneLabel(pane, { bound: this.store.list().some(b => b.chatId === this.chatId && b.paneId === pane.pane_id),
+      owned: this.store.data.createdTerminals?.includes(pane.terminal_id) });
   }
   async list(event) {
-    const [{ panes }, { agents }] = await Promise.all([this.herdr.request('pane.list'), this.herdr.request('agent.list')]);
-    const text = panes.map(p => {
-      const agent = agents.find(a => a.pane_id === p.pane_id && a.agent);
-      return `${p.pane_id} · ${agent?.agent ?? 'shell'} · ${agent?.agent_status ?? p.agent_status}`;
-    }).join('\n') || 'No panes.';
+    const { panes } = await this.herdr.request('pane.list');
+    const text = panes.map(p => this.label(p)).join('\n') || 'No panes.';
     for (const part of splitText(text)) await this.feishu.reply(event.topicId, part);
   }
   async open(event, paneId) {
@@ -240,7 +247,10 @@ export class Bridge {
       await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
     }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
-    const topicId = await this.feishu.send(event.chatId, `Terminal ${paneId}. Reply here to send input. /t screen shows the terminal.`);
+    const { panes } = await this.herdr.request('pane.list');
+    const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
+    if (!pane) throw new Error('Unconfirmed pane identity');
+    const topicId = await this.feishu.send(event.chatId, `终端：${this.label(pane)}`);
     await this.store.bind({ chatId: event.chatId, topicId, paneId, identity });
     await this.verify(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
@@ -351,8 +361,11 @@ export class Bridge {
       let pending = binding.pendingCard;
       if (!pending) {
         const nonce = randomUUID();
+        const { panes } = await this.herdr.request('pane.list');
+        const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
+        if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
         pending = { nonce, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
-          card: screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
+          card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
         if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
       }
       try {
