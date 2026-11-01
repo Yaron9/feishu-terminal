@@ -18,6 +18,35 @@ Configure exactly one group in `chatIds`, allowed Feishu `operatorOpenIds`, and 
 
 For persistent Linux service installation, see [deploy/README.md](deploy/README.md). Do not point an existing state file at a different herdr session: pane IDs are local to one server.
 
+## 一次扫码安装
+
+在运行 herdr 的 Linux 主机上执行（Node.js >=22）。首次安装不需要已有应用凭据，也不需要手动填写群 ID：
+
+```sh
+bash deploy/install.sh
+export PATH="$HOME/.local/bin:$PATH"
+export FEISHU_TERMINAL_CONFIG="$HOME/.config/feishu-terminal/config.json"
+feishu-terminal setup
+# 手机飞书打开 SETUP_URL 所示的完整链接，确认创建应用。
+# 等待 SETUP OK 后再继续：
+systemctl --user daemon-reload
+systemctl --user enable --now feishu-terminal
+# 显式指定隔离的 ftest herdr socket；替换为指挥者提供的实际路径：
+feishu-terminal selftest --herdr-socket /absolute/path/to/ftest.sock
+```
+
+`setup` 使用锁定的官方 SDK 1.76.0 `registerApp`，只创建新应用，预填“VPS 终端”，默认智能体模板另加 `im:message.group_msg`。手机上需要用户确认；企业策略可能要求管理员审批。stdout 仅输出 `SETUP_URL <url>` 与 `SETUP_EXPIRES <UTC时间>`，有效期遵从 SDK；其他进度、权限表与错误均输出到 stderr。链接与有效期保存在 `${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt`（0600）。可选二维码工具：在另一终端执行 `sed -n 's/^SETUP_URL //p' "${STATE:-$HOME/.local/state/feishu-terminal}/setup-url.txt" | qrencode -t ansiutf8`，无需安装 Node 二维码库。
+
+确认后自动合并 `~/.config/feishu-terminal/.env` 的应用凭据，先生成 `.env.bak-<timestamp>`；保留其他行。凭据、备份、配置均为 0600，不打印 secret。创建以话题形式显示消息的普通群（`group_message_type: "thread"`），让扫码用户成为群主和唯一授权操作者，发送中文使用说明，检查权限；它与客户端独立的“话题群”模式不同。已有真实 `chatIds` 时保留群；新应用必须已经在这个群里，否则使用 `feishu-terminal setup --new-group` 创建新群。每次重跑都是新的注册，不支持续接；重配前先停止服务，旧绑定状态需要按实际 herdr/群归属人工保留或迁移，setup 不删除历史状态。
+
+`im:message.group_msg` 尚未授权时会明确提示；审批完成前可在群里先 @机器人再写命令。仅移除开头对当前机器人的提及标记，其他内容保持原样。拒绝或过期退出 2，其他失败退出 1，完成退出 0。注册成功后若建群/欢迎消息/权限检查失败，已保存的凭据和群配置保留，错误不会回显服务端敏感内容。Lark 租户会明确失败，当前桥接只面向飞书。
+
+安装后的命令自动加载配置旁的 `.env`，系统环境变量优先。`FEISHU_TERMINAL_CONFIG` 可显式选择配置；否则优先当前目录已有的 `config.json`，再用安装目录。`STATE` 仅选择 setup 链接和 selftest 临时状态目录；桥接的状态路径由配置决定。安装器创建 `~/.local/bin/feishu-terminal`，不会启动服务。
+
+`selftest` 是显式的真实写入测试：使用已配置的应用和群，通过真实 Bridge、真实 Feishu API 和显式 herdr endpoint，注入与 SDK 相同结构的消息及卡片事件，逐项输出 PASS/FAIL。测试话题/输出标注 `[selftest]`；验证 echo 输出回读、卡片 PATCH 后回读、`/t screen`、Refresh 回调、Ctrl-C 实际中断、`/t close` 解除绑定与 `/t close --kill` 关闭自建 pane，失败也只清理本次拥有的 pane。用独立临时状态，不改运行服务的绑定；测试群消息保留供检查。也可显式使用 `HERDR_TCP=127.0.0.1:49450 feishu-terminal selftest`。不指定 endpoint 会失败，不会自动使用默认 socket。
+
+WS 检查读取 SDK `getConnectionStatus().state`，短暂连接后关闭，测试期间不处理真实入站消息；同一应用的 WS 连接可能分摊事件，请在没有用户输入时测试。此测试不证明真实消息/按钮事件已由飞书投递；最后仍需从手机发一个话题并检查真实按钮。若卡片回读缺少更新内容，selftest 会失败，不能把 API 请求成功当成完整通过。源码机器的无凭据测试不执行真实注册或 Feishu 调用。
+
 ## Use
 
 Use a dedicated Feishu **topic group** for this machine. Send text as a new top-level post to create a shell pane in the `feishu` workspace; that post becomes its topic root and its exact text is submitted as the first input. Each additional pane gets its own tab in the same workspace, without stealing desktop focus. Reply in that topic to continue. Only text message bodies are supported; files, rich-text posts and images receive a short explanation.

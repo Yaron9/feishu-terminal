@@ -8,9 +8,9 @@ bash deploy/install.sh
 
 The installer copies `src/`, `bin/`, package files and README to `~/.local/share/feishu-terminal`, runs `npm ci --omit=dev`, creates private config/state directories and writes `~/.config/systemd/user/feishu-terminal.service` with `Restart=always`. Existing `config.json` and `.env` are preserved. It does not enable or start the service. For updates, stop the service first, rerun the installer, and restart after reviewing configuration.
 
-1. Edit `~/.config/feishu-terminal/config.json`: exactly one `chatIds` entry, allowed operator `open_id`s and an existing absolute `defaultCwd`. The generated config uses your home as cwd and `~/.local/state/feishu-terminal` for state/audit.
-2. Edit `~/.config/feishu-terminal/.env`: put `FEISHU_APP_ID` and `FEISHU_APP_SECRET` here, only on the runtime machine. Set `HERDR_SOCKET_PATH` if the intended herdr session uses a different socket. Unset `HERDR_TCP` after isolated tests. This file is read by systemd; quote values containing spaces and use literal values, not shell commands.
-3. Complete the [Feishu console checklist](../README.md#feishu-console-checklist), publish the app, and add the bot to the configured topic group.
+1. Add `~/.local/bin` to PATH and run `feishu-terminal setup`; open the printed link in Feishu and confirm. Setup saves credentials, creates a topic group, configures the operator, posts usage and checks scopes. See [一次扫码安装](../README.md#一次扫码安装). The generated config uses your home as cwd and `~/.local/state/feishu-terminal` for state/audit.
+2. Set `HERDR_SOCKET_PATH` in `~/.config/feishu-terminal/.env` if the intended herdr session uses a different socket. Unset `HERDR_TCP` after isolated tests. The CLI and systemd both load this private file; quote values containing spaces and use literal values, not shell commands.
+3. Wait for any tenant approval required for `im:message.group_msg`; until approval, @mention the bot before commands. The [Feishu console checklist](../README.md#feishu-console-checklist) remains a manual fallback if the official launcher cannot configure the app under your tenant policy.
 4. Keep using `herdr attach` on that machine to interact with the same panes. Ensure the bridge user can access the intended herdr socket. The bridge does not start or upgrade herdr.
 
 ```sh
