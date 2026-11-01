@@ -22,8 +22,9 @@ test('reconnect verifies tab, workspace and missing identity before any kind of 
   for (const change of [p => { p.tab_id = 'w1:t99'; }, p => { p.workspace_id = 'other'; }, p => { delete p.terminal_id; }]) {
     const h = await harness(t); await h.bridge.handle(message('pwd')); await h.subscribed();
     change(h.fake.panes.get('w1:p1')); h.fake.disconnectSubscribers();
+    await eventually(() => h.store.binding('oc_test', 'm1').frozen, 'reconnect freezes before resubscribing');
     await eventually(() => h.fake.subscribers.size === 0);
-    await h.subscribed(); const before = writes(h).length;
+    const before = writes(h).length;
     for (const [i, text] of ['next', '/t raw next', '/t k enter', '/t close --kill'].entries())
       await h.bridge.handle(message(text, `bad${i}`, 'm1'));
     assert.equal(writes(h).length, before);
@@ -63,7 +64,12 @@ test('uncertain shell text or Enter freezes ordinary input across restart until 
 test('idle or done output missed during restart, reconnect or between polls flushes after stability', async t => {
   for (const mode of ['restart', 'reconnect', 'missed-working']) {
     const h = await harness(t); await h.bridge.handle(message('pwd')); await h.subscribed();
-    if (mode === 'reconnect') { h.fake.disconnectSubscribers(); await eventually(() => h.fake.subscribers.size === 0); }
+    if (mode === 'reconnect') {
+      const verified = h.fake.calls.filter(c => c.method === 'pane.get').length;
+      h.fake.disconnectSubscribers();
+      await eventually(() => h.fake.calls.filter(c => c.method === 'pane.get').length > verified, 'reconnect verification');
+      await h.drain();
+    }
     Object.assign(h.fake.panes.get('w1:p1'), { agent: 'codex', agent_status: mode === 'restart' ? 'done' : 'idle', text: '$ completed', visible: '$ completed' });
     if (mode === 'restart') await h.restart();
     if (mode === 'reconnect') await h.subscribed();

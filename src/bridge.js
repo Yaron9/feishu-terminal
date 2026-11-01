@@ -23,7 +23,7 @@ export class Bridge {
     if (!this.runtime.has(binding.topicId)) this.runtime.set(binding.topicId, {
       status: 'unknown', agent: null, dirty: true, lastRead: -Infinity, lastCard: -Infinity,
       lastChange: this.now(), current: binding.lastTranscript ?? '', previous: binding.lastTranscript ?? '',
-      pending: false, settle: false, blockedNotice: false,
+      pending: false, settle: false, blockedNotice: false, verified: false,
     });
     return this.runtime.get(binding.topicId);
   }
@@ -31,7 +31,8 @@ export class Bridge {
     for (const b of this.store.list()) {
       this.state(b);
       if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
-      if (b.chatId === this.chatId && b.pendingCard) await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
+      if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && b.pendingCard)
+        await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
     }
     this.resubscribe();
     await this.feishu.start(event => this.accept(event), this.onError);
@@ -43,19 +44,23 @@ export class Bridge {
   }
   resubscribe() {
     this.unsubscribe?.();
-    const panes = this.store.list().filter(b => b.chatId === this.chatId).map(b => b.paneId);
+    const panes = this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(b => b.paneId);
     if (panes.length) this.unsubscribe = this.herdr.subscribe(paneSubscriptions(panes), event => {
       const data = event.data ?? {};
       const binding = this.store.forPane(data.pane_id ?? data.pane?.pane_id);
-      if (!binding || binding.chatId !== this.chatId) return;
+      if (!binding || binding.chatId !== this.chatId || binding.frozen || !this.state(binding).verified) return;
       this.enqueue(async () => {
         const state = this.state(binding); state.dirty = true;
         if (data.agent_status) this.status(state, data.agent_status, data.agent);
       }, binding.topicId).catch(() => {});
     }, connection => {
-      for (const state of this.runtime.values()) { state.dirty = true; state.status = 'unknown'; }
-      if (connection === 'connected') for (const b of this.store.list()) {
-        this.enqueue(() => this.verify(b), b.topicId).catch(() => {});
+      if (connection === 'disconnected') {
+        this.unsubscribe?.();
+        for (const state of this.runtime.values()) { state.dirty = true; state.status = 'unknown'; state.verified = false; }
+        this.enqueue(async () => {
+          for (const b of this.store.list().filter(b => b.chatId === this.chatId && !b.frozen)) await this.verify(b).catch(() => {});
+          if (!this.stopped) this.resubscribe();
+        }, 'reconnect').catch(() => {});
       }
     });
   }
@@ -105,6 +110,7 @@ export class Bridge {
         const pane = await this.createPane();
         const identity = await this.identity(pane.pane_id);
         await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity });
+        await this.verify(this.store.binding(event.chatId, event.messageId));
         this.resubscribe();
         const created = this.store.binding(event.chatId, event.messageId);
         await this.log(event, created, 'first_input', action.text);
@@ -133,7 +139,7 @@ export class Bridge {
       }
       if (this.store.binding(event.chatId, event.topicId)?.needs_check) {
         let screen = '[screen unavailable; use /t screen]';
-        try { screen = screenText((await this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 })).read.text); } catch {}
+        try { screen = screenText((await this.readVerified(binding, () => this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }))).read.text); } catch {}
         await this.feishu.reply(event.topicId, `Input needs checking; input was not retried. Inspect the screen, optionally /t k ctrl+u, then /t ok before more input.\n${screen}`); return;
       }
       // Never echo upstream error messages: they may contain terminal content.
@@ -153,15 +159,31 @@ export class Bridge {
     return { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id };
   }
   async verify(binding) {
+    const expected = binding;
     binding = this.store.binding(binding.chatId, binding.topicId);
     try {
       if (!binding || binding.frozen || !binding.identity) throw new Error('Unverified binding');
       const current = await this.identity(binding.paneId);
-      if (Object.keys(current).some(key => current[key] !== binding.identity[key])) throw new Error('Identity mismatch');
+      const latest = this.store.binding(binding.chatId, binding.topicId);
+      if (!latest || latest.frozen || Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
+        throw new Error('Identity mismatch');
+      this.state(binding).verified = true;
     } catch {
-      if (binding) await this.store.update(binding.chatId, binding.topicId, { frozen: true });
+      if (binding) {
+        await this.store.update(binding.chatId, binding.topicId, { frozen: true, outputBatch: null, pendingCard: null });
+        this.runtime.delete(binding.topicId);
+        this.resubscribe();
+      }
       throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     }
+  }
+  async readVerified(binding, read) {
+    await this.verify(binding);
+    const result = await read();
+    // Neither read API carries terminal identity. Discard both snapshots if
+    // the server changed between verification and the completed reads.
+    await this.verify(binding);
+    return result;
   }
   async writeInput(binding, method, params, allowClear = false) {
     await this.verify(binding);
@@ -200,11 +222,13 @@ export class Bridge {
     if (existing) {
       await this.store.update(existing.chatId, existing.topicId, { identity, frozen: false, lastTranscript: undefined, nonce: randomUUID(), pendingCard: null });
       this.runtime.delete(existing.topicId);
+      await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
       await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
     }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
     const topicId = await this.feishu.send(event.chatId, `Terminal ${paneId}. Reply here to send input. /t screen shows the terminal.`);
     await this.store.bind({ chatId: event.chatId, topicId, paneId, identity });
+    await this.verify(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
   }
   async input(binding, text) {
@@ -213,7 +237,7 @@ export class Bridge {
     const state = this.state(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
     if (!state.initialized) {
-      const { read } = await this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 });
+      const { read } = await this.readVerified(binding, () => this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 }));
       if (binding.lastTranscript === undefined) {
         state.previous = clean(read.text); state.current = state.previous;
         await this.store.update(binding.chatId, binding.topicId, { lastTranscript: state.previous });
@@ -265,7 +289,7 @@ export class Bridge {
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
     this.tickPending = true;
-    return Promise.all(this.store.list().filter(b => b.chatId === this.chatId).map(binding =>
+    return Promise.all(this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(binding =>
       this.enqueue(async () => {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
@@ -279,11 +303,11 @@ export class Bridge {
   }
   async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
-    const [{ read: visible }, { read: recent }, { agents }] = await Promise.all([
+    const [{ read: visible }, { read: recent }, { agents }] = await this.readVerified(binding, () => Promise.all([
       this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }),
       this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 }),
       this.herdr.request('agent.list'),
-    ]);
+    ]));
     const agent = agents.find(a => a.pane_id === binding.paneId && a.agent);
     this.status(state, forceBlocked ? 'blocked' : agent?.agent_status ?? 'unknown', agent?.agent ?? null);
     state.lastRead = now; state.dirty = false;
@@ -304,9 +328,10 @@ export class Bridge {
   async publishCard(binding) {
     const state = this.state(binding), now = this.now();
     binding = this.store.binding(binding.chatId, binding.topicId);
-    if (!binding) return;
+    if (!binding || binding.frozen || !state.verified) return;
     // A manual screen request and a blocked notification still obey 1 Hz.
     if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && (state.cardPending || binding.pendingCard)) {
+      await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
         const nonce = randomUUID();
@@ -317,6 +342,7 @@ export class Bridge {
       try {
         let cardId = pending.targetId;
         if (cardId) {
+          await this.verify(binding);
           try { await this.feishu.patch(cardId, pending.card); }
           catch (error) {
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
@@ -331,6 +357,7 @@ export class Bridge {
             pending.attemptAt = this.now();
             await this.store.update(binding.chatId, binding.topicId, { pendingCard: pending });
           }
+          await this.verify(binding);
           cardId = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
         }
         // The old nonce stays valid until publication succeeds. A pending
@@ -350,6 +377,9 @@ export class Bridge {
     }
   }
   async flush(binding) {
+    binding = this.store.binding(binding.chatId, binding.topicId);
+    if (!binding || binding.frozen || !this.state(binding).verified) return;
+    await this.verify(binding);
     const state = this.state(binding);
     let batch = this.store.binding(binding.chatId, binding.topicId).outputBatch;
     if (!batch) {
@@ -370,6 +400,7 @@ export class Bridge {
         chunk.attemptAt = this.now();
         await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
       }
+      await this.verify(binding);
       await this.feishu.reply(binding.topicId, chunk.text, 'text', chunk.uuid);
       batch.next++;
       await this.store.update(binding.chatId, binding.topicId, { outputBatch: batch });
