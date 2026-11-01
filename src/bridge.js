@@ -213,7 +213,7 @@ export class Bridge {
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
     const signature = createHash('sha256').update(visible.text + '\0' + state.status).digest('hex');
-    state.cardPending = force || signature !== state.signature || state.blockedNotice;
+    state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     // A manual screen request and a blocked notification still obey 1 Hz.
     if (now - state.lastCard >= 1000 && state.cardPending) {
       binding = this.store.binding(binding.chatId, binding.topicId);
@@ -226,7 +226,7 @@ export class Bridge {
         const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
         await this.store.update(binding.chatId, binding.topicId, { cardId });
       }
-      state.lastCard = now; state.signature = signature; state.blockedNotice = false; state.cardPending = false;
+      state.lastCard = this.now(); state.signature = signature; state.blockedNotice = false; state.cardPending = false;
     }
   }
   async flush(binding) {

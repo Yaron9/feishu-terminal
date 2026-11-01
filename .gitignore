@@ -10,3 +10,4 @@ logs/
 config.json
 state/
 *.tmp
+.test-*/
