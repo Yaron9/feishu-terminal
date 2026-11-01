@@ -59,6 +59,13 @@ test('SDK API transport errors are sanitized and ambiguous sends are not retried
   assert.equal(count, 1);
 });
 
+test('SDK HTTP errors preserve definite card failure codes for replacement', async () => {
+  const edge = new Feishu({ client: { im: { message: { patch: async () => {
+    throw { response: { status: 400, data: { code: 230011 } } };
+  } } } }, ws: { close() {} } });
+  await assert.rejects(edge.patch('gone', {}), error => error.code === '230011');
+});
+
 test('SDK message and card ACK waits for durable claim but not execution; card type survives compatibility shim', async () => {
   const seen = [], acknowledgements = [];
   const ws = new FeishuWSClient({ appId: 'fixture', appSecret: 'fixture', logger: quietLogger });

@@ -107,7 +107,7 @@ export class Feishu {
             this.nextSend = Date.now() + Math.max(1000 * 2 ** attempt, Math.min(30000, Number(error.response?.headers?.['retry-after'] || 0) * 1000));
             continue;
           }
-          throw new FeishuError(status ?? code ?? 'network_error');
+          throw new FeishuError(code ?? status ?? 'network_error');
         }
         if (response.code && response.code !== 0) {
           if ([99991400, 230020].includes(response.code) && attempt < 4) {

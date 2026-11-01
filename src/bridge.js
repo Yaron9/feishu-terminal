@@ -267,13 +267,14 @@ export class Bridge {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
         try {
-          if (state.dirty || this.now() - state.lastRead >= 1000 || (state.cardPending && this.now() - state.lastCard >= 1000)) await this.refresh(binding);
-          await this.flush(binding);
+          if (state.dirty || this.now() - state.lastRead >= 1000) await this.refresh(binding, false, false, true);
         } catch { this.onError('output_refresh_failed'); }
+        try { await this.flush(binding); } catch { this.onError('output_flush_failed'); }
+        try { await this.refreshCard(binding); } catch { this.onError('card_refresh_failed'); }
       }, `output:${binding.topicId}`)
     )).finally(() => { this.tickPending = false; });
   }
-  async refresh(binding, force = false, forceBlocked = false) {
+  async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
     const [{ read: visible }, { read: recent }, { agents }] = await Promise.all([
       this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }),
@@ -291,19 +292,38 @@ export class Bridge {
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
     const signature = createHash('sha256').update(visible.text + '\0' + state.status).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
+    state.visible = visible.text; state.nextSignature = signature;
+    if (!deferCard) await this.refreshCard(binding);
+  }
+  async refreshCard(binding) {
+    const state = this.state(binding), now = this.now();
     // A manual screen request and a blocked notification still obey 1 Hz.
-    if (now - state.lastCard >= 1000 && state.cardPending) {
+    if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && state.cardPending) {
       binding = this.store.binding(binding.chatId, binding.topicId);
+      if (!binding) return;
       const nonce = randomUUID();
-      const card = screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: visible.text });
-      await this.store.update(binding.chatId, binding.topicId, { nonce });
-      // Do not advance the signature on failure: the next tick will retry.
-      if (binding.cardId) await this.feishu.patch(binding.cardId, card);
-      else {
-        const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
-        await this.store.update(binding.chatId, binding.topicId, { cardId });
+      const card = screenCard({ paneId: binding.paneId, topicId: binding.topicId, nonce, status: state.status, text: state.visible });
+      try {
+        // Replacement publishes card ID and nonce in the same atomic update.
+        if (binding.cardId) {
+          await this.store.update(binding.chatId, binding.topicId, { nonce });
+          try { await this.feishu.patch(binding.cardId, card); }
+          catch (error) {
+            if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
+            const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
+            await this.store.update(binding.chatId, binding.topicId, { cardId, nonce });
+          }
+        } else {
+          const cardId = await this.feishu.reply(binding.topicId, card, 'interactive');
+          await this.store.update(binding.chatId, binding.topicId, { cardId, nonce });
+        }
+      } catch (error) {
+        state.cardFailures = (state.cardFailures ?? 0) + 1;
+        state.cardRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.cardFailures - 1));
+        throw error;
       }
-      state.lastCard = this.now(); state.signature = signature; state.blockedNotice = false; state.cardPending = false;
+      state.cardFailures = 0; state.cardRetryAt = 0;
+      state.lastCard = this.now(); state.signature = state.nextSignature; state.blockedNotice = false; state.cardPending = false;
     }
   }
   async flush(binding) {

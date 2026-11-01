@@ -132,3 +132,27 @@ test('same-topic input stays ordered while a slow topic does not block another',
   } finally { release(); await first; await second; await h.drain(); }
   assert.deepEqual(writes(h).filter(c => ['first', 'second', 'third'].includes(c.params.text)).map(c => c.params.text), ['first', 'second', 'third']);
 });
+
+test('recalled and expired cards are replaced atomically without blocking transcript output', async t => {
+  for (const code of ['230011', '230031', '230110']) {
+    const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
+    const before = h.store.binding('oc_test', 'm1');
+    h.feishu.patch = async () => { throw Object.assign(new Error('card gone'), { code }); };
+    h.fake.output('w1:p1', '$ result'); h.advance(1000); await h.bridge.tick();
+    h.advance(1500); await h.bridge.tick();
+    assert.equal(texts(h).at(-1)?.content, 'result');
+    const after = h.store.binding('oc_test', 'm1');
+    assert.notEqual(after.cardId, before.cardId); assert.notEqual(after.nonce, before.nonce);
+  }
+});
+
+test('transient card errors back off while plain output continues', async t => {
+  const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
+  let attempts = 0;
+  h.feishu.patch = async () => { attempts++; throw Object.assign(new Error('offline'), { code: 'network_error' }); };
+  h.fake.output('w1:p1', '$ result'); h.advance(1000); await h.bridge.tick();
+  h.advance(1500); await h.bridge.tick();
+  assert.equal(texts(h).at(-1)?.content, 'result');
+  const count = attempts;
+  h.advance(500); await h.bridge.tick(); assert.equal(attempts, count);
+});
