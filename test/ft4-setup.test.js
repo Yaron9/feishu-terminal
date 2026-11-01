@@ -19,6 +19,8 @@ async function fixture(t, openId = 'ou_owner') {
       let response;
       if (url.endsWith('/internal')) response = { tenant_access_token: 'private_token' };
       else if (url.endsWith('/members/is_in_chat')) response = { data: { is_in_chat: true } };
+      else if (url.includes('/members?')) response = { data: { items: [{ member_id_type: 'open_id', member_id: 'ou_owner' }], has_more: false } };
+      else if (/\/chats\/[^/?]+\?user_id_type=/.test(url)) response = { data: { group_message_type: 'thread' } };
       else if (url.includes('/chats?') && init.method === 'GET') response = { data: { items: [], has_more: false } };
       else if (url.includes('/chats?')) response = { data: { chat_id: 'oc_created' } };
       else if (url.includes('/messages?')) response = { data: { message_id: 'om_welcome' } };

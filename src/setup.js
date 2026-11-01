@@ -178,6 +178,24 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       if (typeof response.data?.is_in_chat !== 'boolean') throw new SetupError('invalid_membership_response');
       return response.data.is_in_chat;
     };
+    const reusableGroup = async chatId => {
+      if (!await isMember(chatId)) return false;
+      stage = 'group_info';
+      const info = await api(`/open-apis/im/v1/chats/${encodeURIComponent(chatId)}?user_id_type=open_id`, { token });
+      if (info.data?.group_message_type !== 'thread') return false;
+      stage = 'operator_membership';
+      let pageToken; const pages = new Set();
+      do {
+        const query = new URLSearchParams({ member_id_type: 'open_id', page_size: '100', ...(pageToken ? { page_token: pageToken } : {}) });
+        const members = await api(`/open-apis/im/v1/chats/${encodeURIComponent(chatId)}/members?${query}`, { token });
+        if (!Array.isArray(members.data?.items)) throw new SetupError('invalid_member_list');
+        if (members.data.items.some(m => m.member_id_type === 'open_id' && m.member_id === openId)) return true;
+        pageToken = members.data.has_more ? members.data.page_token : null;
+        if (members.data.has_more && (!pageToken || pages.has(pageToken))) throw new SetupError('invalid_member_list');
+        pages.add(pageToken);
+      } while (pageToken);
+      return false;
+    };
     const resetGroup = () => {
       for (const key of ['group_created', 'configured', 'welcomed', 'scopes_checked', 'welcome_uuid', 'claim']) delete progress[key];
     };
@@ -203,9 +221,10 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
         if (response.data.has_more && (!pageToken || pages.has(pageToken))) throw new SetupError('invalid_group_list');
         pages.add(pageToken);
       } while (pageToken);
-      if (matches.size > 1) throw new SetupError('ambiguous_setup_groups');
-      const candidate = [...matches][0];
-      if (candidate && await isMember(candidate)) chatId = candidate;
+      const verified = [];
+      for (const candidate of matches) if (await reusableGroup(candidate)) verified.push(candidate);
+      if (verified.length > 1) throw new SetupError('ambiguous_setup_groups');
+      chatId = verified[0];
     }
     if (!chatId) {
       stage = 'group_create';

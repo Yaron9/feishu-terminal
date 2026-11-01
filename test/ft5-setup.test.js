@@ -149,3 +149,25 @@ test('claim saves the first operator across a lost acknowledgement and retries w
   assert.deepEqual((await f.config()).operatorOpenIds, ['ou_claimed']);
   assert.equal(f.calls.filter(c => c.url.includes('/chats?') && c.method === 'POST').length, 1);
 });
+
+for (const condition of ['bot absent', 'wrong mode', 'operator absent', 'all verified']) {
+  test(`same-name group reuse: ${condition}`, async t => {
+    const f = await fixture(t), fetchImpl = f.options.fetchImpl;
+    let memberPages = 0;
+    assert.equal(await f.run({ fetchImpl: async (url, init) => {
+      let data;
+      if (url.includes('/chats?') && init.method === 'GET') data = { items: [{ chat_id: 'oc_candidate', name: 'VPS 终端' }], has_more: false };
+      else if (url.includes('/oc_candidate/members/is_in_chat')) data = { is_in_chat: condition !== 'bot absent' };
+      else if (url.includes('/oc_candidate/members?')) {
+        memberPages++;
+        assert.ok(url.includes('member_id_type=open_id'));
+        data = url.includes('page_token=next') ? { items: condition === 'operator absent' ? [] : [{ member_id_type: 'open_id', member_id: 'ou_owner' }], has_more: false }
+          : { items: [{ member_id_type: 'open_id', member_id: 'ou_other' }], has_more: true, page_token: 'next' };
+      } else if (url.includes('/chats/oc_candidate?')) data = { group_message_type: condition === 'wrong mode' ? 'chat' : 'thread' };
+      else return fetchImpl(url, init);
+      return { ok: true, status: 200, json: async () => ({ code: 0, data }) };
+    } }), 0, f.err.join('\n'));
+    assert.deepEqual((await f.config()).chatIds, [condition === 'all verified' ? 'oc_candidate' : 'oc_created']);
+    if (condition === 'all verified') assert.equal(memberPages, 2);
+  });
+}
