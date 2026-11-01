@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import { Feishu, FeishuWSClient, quietLogger, messageEvent, actionEvent } from '../src/feishu.js';
 import { eventually } from './helpers.js';
 
+test('mention-only fallback strips only this bot initial marker and preserves other users and following payload', async () => {
+  const raw = { message: { message_type: 'text', content: JSON.stringify({ text: '@_user_1 /t raw   exact  ' }),
+    mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' } }] } };
+  assert.equal(messageEvent(raw, 'ou_bot').text, '/t raw   exact  ');
+  assert.equal(messageEvent(raw, 'ou_other').text, '@_user_1 /t raw   exact  ');
+  const seen = []; let handler, lookups = 0;
+  const ws = { start({ eventDispatcher }) { handler = eventDispatcher; }, close() {} };
+  const client = { request: async payload => { lookups++; assert.equal(payload.url, '/open-apis/bot/v3/info'); return { code: 0, bot: { open_id: 'ou_bot' } }; } };
+  const edge = new Feishu({ client, ws });
+  await edge.start(event => seen.push(event));
+  await handler.invoke({ schema: '2.0', header: { event_type: 'im.message.receive_v1' }, event: raw });
+  await eventually(() => seen.length === 1);
+  assert.equal(seen[0].text, '/t raw   exact  '); assert.equal(lookups, 1); edge.close();
+});
+
 test('SDK edge normalizes actual event envelopes and flattened SDK handler payloads without altering text', () => {
   const event = { sender: { sender_id: { open_id: 'ou_a' }, sender_type: 'user' },
     message: { message_id: 'm2', root_id: 'm1', parent_id: 'child', chat_id: 'oc_a', chat_type: 'topic_group', message_type: 'text', content: JSON.stringify({ text: '/compact\n  ' }) } };
