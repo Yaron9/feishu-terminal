@@ -8,7 +8,7 @@ import { parseEnv } from 'node:util';
 import { runtimePaths } from './runtime.js';
 import { acquireLock } from './instance-lock.js';
 
-export const NEEDED_SCOPES = ['im:chat:create', 'im:chat:read', 'im:message.group_at_msg:readonly',
+export const NEEDED_SCOPES = ['im:chat:create', 'im:chat:read', 'im:chat:readonly', 'im:message.group_at_msg:readonly',
   'im:message.group_msg', 'im:message:send_as_bot', 'im:message:readonly'];
 
 export const WELCOME = 'VPS 终端已就绪。新发一个话题（例如 pwd）即可创建终端；在话题内回复会发送到同一终端。\n' +
@@ -18,7 +18,11 @@ export const WELCOME = 'VPS 终端已就绪。新发一个话题（例如 pwd）
   '仅群内授权操作者可以控制。全群消息权限审批完成前，每条消息（包括新话题和话题内回复）都必须 @机器人。';
 
 export class SetupError extends Error {
-  constructor(code) { super(code); this.code = code; }
+  constructor(code, { status, platformCode } = {}) {
+    super(code); this.code = code;
+    if (Number.isInteger(status) && status >= 100 && status <= 599) this.status = status;
+    if (Number.isSafeInteger(platformCode) && platformCode >= 0) this.platformCode = platformCode;
+  }
 }
 
 // Private temporary files, fsync, then atomic replacement on the same filesystem.
@@ -86,7 +90,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
         const retry = Number(response.headers?.get('retry-after')) || 0;
         await sleep(Math.max(1000 * 2 ** attempt, Math.min(30000, retry * 1000))); continue;
       }
-      if (!response.ok || (data.code !== undefined && data.code !== 0)) throw new SetupError('api_failed');
+      if (!response.ok || (data.code !== undefined && data.code !== 0)) throw new SetupError('api_failed', { status: response.status, platformCode: data.code });
       return data;
     }
   };
@@ -126,7 +130,7 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
     const result = saved ? { client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET,
       user_info: { open_id: progress.operator_open_id, tenant_brand: progress.tenant_brand } } : await registerApp({ createOnly: true,
       appPreset: { name: 'VPS 终端', desc: '飞书话题 ↔ VPS herdr 终端' },
-      addons: { preset: true, scopes: { tenant: ['im:message.group_msg'] } }, signal: registrationSignal,
+      addons: { preset: true, scopes: { tenant: ['im:message.group_msg', 'im:chat:readonly'] } }, signal: registrationSignal,
       onQRCodeReady({ url, expireIn }) {
         const parsed = new URL(url);
         if (parsed.protocol !== 'https:' || !['open.feishu.cn', 'open.larksuite.com'].includes(parsed.hostname)) throw new SetupError('invalid_setup_url');
@@ -237,7 +241,9 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
     // Never log upstream messages, payloads, credentials, device codes or tokens.
     const denied = ['access_denied', 'expired_token'].includes(error.code);
     const safeCode = error instanceof SetupError ? error.code : 'operation_failed';
-    stderr(denied ? `SETUP ${error.code}: 请重新运行 setup。` : `SETUP failed (${stage}/${safeCode}): check network, private files, app permissions and group membership.`);
+    const details = error instanceof SetupError ?
+      `${error.status === undefined ? '' : ` http_status=${error.status}`}${error.platformCode === undefined ? '' : ` feishu_code=${error.platformCode}`}` : '';
+    stderr(denied ? `SETUP ${error.code}: 请重新运行 setup。` : `SETUP failed (${stage}/${safeCode}${details}): check network, private files, app permissions and group membership.`);
     return denied ? 2 : error.code === 'missing_operator' ? 3 : 1;
   } finally { await release?.(); }
 }

@@ -43,7 +43,7 @@ test('setup registers with exact pinned SDK options, creates owner topic group, 
   assert.equal(f.code, 0);
   assert.equal(f.options.createOnly, true);
   assert.deepEqual(f.options.appPreset, { name: 'VPS 终端', desc: '飞书话题 ↔ VPS herdr 终端' });
-  assert.deepEqual(f.options.addons, { preset: true, scopes: { tenant: ['im:message.group_msg'] } });
+  assert.deepEqual(f.options.addons, { preset: true, scopes: { tenant: ['im:message.group_msg', 'im:chat:readonly'] } });
   assert.match(f.out[0], /^SETUP_URL https:\/\/open.feishu.cn\//);
   assert.match(f.out[1], /^SETUP_EXPIRES \d{4}-/); assert.equal(f.out.length, 2);
   assert.equal(await readFile(join(f.paths.stateDir, 'setup-url.txt'), 'utf8'), f.out.join('\n') + '\n');

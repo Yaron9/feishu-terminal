@@ -62,3 +62,19 @@ test('welcome requires every top-level and in-topic message to mention the bot u
   assert.match(WELCOME, /全群消息权限审批完成前/);
   assert.match(WELCOME, /每条消息（包括新话题和话题内回复）都必须 @机器人/);
 });
+
+test('setup requires chat readonly and reports only numeric platform code and HTTP status on stage failure', async t => {
+  const f = await fixture(t);
+  const fetchImpl = f.options.fetchImpl;
+  assert.equal(await f.run({ fetchImpl: async (url, init) => url.includes('/chats?') ? {
+    ok: false, status: 403, json: async () => ({ code: 99991672, msg: 'private_secret private_token device_code', data: { private: 'payload' } }),
+  } : fetchImpl(url, init) }), 1);
+  assert.match(f.err.join('\n'), /group_lookup\/api_failed.*http_status=403.*feishu_code=99991672/);
+  assert.doesNotMatch(f.err.join('\n'), /private_secret|private_token|device_code|payload/);
+  assert.deepEqual(f.registration.addons.scopes.tenant, ['im:message.group_msg', 'im:chat:readonly']);
+  f.err.length = 0;
+  assert.equal(await f.run({ fetchImpl: async (url, init) => url.endsWith('/scopes') ? {
+    ok: true, status: 200, json: async () => ({ code: 0, data: { scopes: NEEDED_SCOPES.filter(s => s !== 'im:chat:readonly').map(scope_name => ({ scope_name, grant_status: 1 })) } }),
+  } : fetchImpl(url, init) }), 1);
+  assert.match(f.err.join('\n'), /required_scopes_missing/);
+});
