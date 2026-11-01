@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newOutput, splitText, screenText, screenCard, clean } from '../src/render.js';
+import { newOutput, splitText, screenText, screenCard, clean, pickerCard } from '../src/render.js';
+
+test('picker labels cannot inject card markup or mentions and completed cards contain no actionable buttons', () => {
+  const label = '<at id=all>everyone</at> **bold** `code`';
+  const card = { kind: 'list', entries: [{ label }], topicId: 'topic', nonce: 'nonce' };
+  assert.deepEqual(pickerCard(card).elements[0], { tag: 'div', text: { tag: 'plain_text', content: label } });
+  assert.deepEqual(pickerCard(card, '已关闭').elements, [{ tag: 'div', text: { tag: 'plain_text', content: '已关闭' } }]);
+});
 
 test('diff handles appends, rolling scrollback, partial lines, rewrites and unchanged revisions', () => {
   for (const [before, after, expected] of [

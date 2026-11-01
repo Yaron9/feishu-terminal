@@ -9,6 +9,21 @@ async function fixture(t, options) {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return { dir, store: await new Store(join(dir, 'state.json'), options).load() };
 }
+
+test('unbound picker nonces survive restart, consume atomically once and cannot consume a replacement version', async t => {
+  const { store } = await fixture(t);
+  const card = { messageId: 'picker', chatId: 'chat', topicId: 'topic', nonce: 'first', createdAt: 0, entries: [] };
+  await store.saveActionCard(card, 0);
+  const restored = await new Store(store.file).load();
+  assert.deepEqual(restored.actionCard('picker'), card);
+  const claims = await Promise.all([restored.consumeActionCard(card), restored.consumeActionCard(card)]);
+  assert.deepEqual(claims, [true, false]);
+  await restored.saveActionCard({ ...card, nonce: 'second' }, 1);
+  assert.equal(await restored.consumeActionCard(card), false);
+  assert.equal((await new Store(store.file).load()).actionCard('picker').nonce, 'second');
+  await restored.saveActionCard({ ...card, messageId: 'new' }, 600000);
+  assert.equal(restored.actionCard('picker'), undefined);
+});
 test('bindings, nonce, card and transcript survive atomic restart; uniqueness is enforced', async t => {
   const { dir, store } = await fixture(t);
   await store.bind({ chatId: 'oc_a', topicId: 'm1', paneId: 'w1:p1' });

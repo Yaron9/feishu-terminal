@@ -77,6 +77,20 @@ export class Store {
       b.nonce = randomUUID(); return true;
     });
   }
+  actionCard(messageId) { return structuredClone(this.data.actionCards?.find(c => c.messageId === messageId)); }
+  saveActionCard(card, now) {
+    return this.transaction(data => {
+      data.actionCards = (data.actionCards ?? []).filter(c => c.messageId !== card.messageId && now - c.createdAt < 600000);
+      data.actionCards.push(card);
+    });
+  }
+  consumeActionCard(card) {
+    return this.transaction(data => {
+      const index = (data.actionCards ?? []).findIndex(c => c.messageId === card.messageId && c.nonce === card.nonce);
+      if (index < 0) return false;
+      data.actionCards.splice(index, 1); return true;
+    });
+  }
   unbind(chatId, topicId) {
     return this.transaction(data => { data.bindings = data.bindings.filter(b => !(b.chatId === chatId && b.topicId === topicId)); });
   }

@@ -52,6 +52,25 @@ export function splitText(text, maxBytes = 12000) {
 
 const BUTTONS = [['Enter', 'enter'], ['Esc', 'esc'], ['1', '1'], ['2', '2'], ['3', '3'], ['y', 'y'], ['n', 'n'], ['Ctrl-C', 'ctrl+c'], ['Refresh', 'refresh']];
 
+export function pickerCard(card, result) {
+  const elements = [];
+  const text = content => ({ tag: 'div', text: { tag: 'plain_text', content } });
+  const buttons = (items, index) => ({ tag: 'action', actions: items.map(([label, action]) => ({
+    tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
+    value: { topic_id: card.topicId, nonce: card.nonce, key: `picker:${action}:${index}` },
+  })) });
+  if (result) elements.push(text(result));
+  else card.entries.forEach((entry, index) => {
+    elements.push(text(card.kind === 'confirm' ? `确定关闭「${entry.label}」？里面的会话会结束` : entry.label));
+    elements.push(buttons(card.kind === 'list' ? [['打开', 'open'], ['关闭', 'close']] :
+      card.kind === 'confirm' ? [['确定关闭', 'kill'], ['取消', 'cancel']] :
+        [['仅解绑', 'unbind'], ['关闭终端', 'kill'], ['取消', 'cancel']], index));
+  });
+  if (!elements.length) elements.push(text('暂无终端'));
+  return { config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: card.kind === 'list' ? '选择终端' : '关闭终端' } }, elements };
+}
+
 export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text }) {
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
