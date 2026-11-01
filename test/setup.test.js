@@ -4,7 +4,11 @@ import { mkdtemp, readFile, writeFile, readdir, stat, rm } from 'node:fs/promise
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { registerApp as sdkRegisterApp, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
-import { setup, setupApi, NEEDED_SCOPES, saveCredentials } from '../src/setup.js';
+import { setup, setupApi, NEEDED_SCOPES, saveCredentials, WELCOME } from '../src/setup.js';
+
+test('welcome describes picker buttons, both close choices and direct kill', () => {
+  for (const text of ['/t ls', '打开', '关闭', '仅解绑', '关闭终端', '取消', '/t close --kill', '再次确认', '10 分钟']) assert.ok(WELCOME.includes(text));
+});
 
 async function fixture(t, { outcome, existing = false, pending = false, newGroup = false } = {}) {
   const dir = await mkdtemp(new URL('../.test-setup-', import.meta.url));

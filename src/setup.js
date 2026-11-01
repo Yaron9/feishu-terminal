@@ -13,8 +13,9 @@ export const NEEDED_SCOPES = ['im:chat:create', 'im:chat:read', 'im:chat:readonl
   'im:message.group_msg', 'im:message:send_as_bot', 'im:message:readonly'];
 
 export const WELCOME = 'VPS 终端已就绪。新发一个话题（例如 pwd）即可创建终端；在话题内回复会发送到同一终端。\n' +
-  '/t ls 列出终端；/t open <pane_id> 绑定已有终端；/t screen 刷新屏幕；/t k ctrl+c 发送按键；' +
-  '/t raw <text> 只输入、不回车；/t close 解除绑定；/t close --kill 关闭终端。\n' +
+  '/t ls 显示终端摘要卡片，点「打开」进入话题，点「关闭」选择操作；/t open <pane_id> 仍可绑定已有终端；/t screen 刷新屏幕；/t k ctrl+c 发送按键；' +
+  '/t raw <text> 只输入、不回车；话题内 /t close 弹出「仅解绑 / 关闭终端 / 取消」，群内 /t close 显示终端选择卡片；/t close --kill 直接关闭终端。\n' +
+  '桌面终端或工作中、等待确认的智能体关闭前需再次确认；卡片有效期 10 分钟，每张只能操作一次。\n' +
   '等待操作时卡片显示 Enter、Esc、1/2/3、y/n、Ctrl-C 按钮，点击发送对应按键；Refresh 刷新屏幕。' +
   '仅群内授权操作者可以控制。全群消息权限审批完成前，每条消息（包括新话题和话题内回复）都必须 @机器人。';
 

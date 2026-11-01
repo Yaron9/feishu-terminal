@@ -65,9 +65,9 @@ Use a dedicated Feishu **topic group** for this machine. Send text as a new top-
 
 | Input | Behavior |
 | --- | --- |
-| `/t ls` | List all panes, including desktop-created panes, agent kind and status |
+| `/t ls` | Show a terminal picker with readable summaries and 打开 / 关闭 buttons; text fallback if card publication fails |
 | `/t open w1:p2` | Bind a pane in workspace `feishu` to a fresh topic; explicitly reverify a frozen binding in its existing topic |
-| `/t close` | Unbind this topic; pane keeps running |
+| `/t close` | In a bound topic, offer 仅解绑 / 关闭终端 / 取消; at top level, show the terminal picker |
 | `/t close --kill` | Close the pane and unbind |
 | `/t screen` | Refresh the live screen card (still subject to 1 Hz limit) |
 | `/t ok` | Confirm that you inspected an uncertain input result and enable input again |
@@ -75,9 +75,13 @@ Use a dedicated Feishu **topic group** for this machine. Send text as a new top-
 | `/t raw some text` | Send text without Enter, preserving everything after the one separator |
 | Any other text, including `/compact`, `/help`, command lines | Forward verbatim to the bound pane |
 
+手机操作：发送 `/t ls`，按摘要选择「打开」即可新建并绑定一个话题，同时显示屏幕卡片；已有绑定会显示话题 ID。摘要依次显示标题（缺省为目录名）、智能体及中文状态（空闲 / 工作中 / 等待确认 / 完成 / 未知，普通终端为 shell）、当前目录（主目录缩为 `~`）、来源（飞书创建 / 桌面）、绑定状态，最后是 pane ID。点击「关闭」或在绑定话题发送 `/t close`，再选「仅解绑」（保留会话）、「关闭终端」或「取消」。桌面终端以及工作中、等待确认的智能体还会出现「确定关闭」确认，会话将结束。显式 `/t close --kill` 仍直接关闭，不弹卡片。
+
+每张选择卡片只有一次有效操作，操作后显示结果并移除按钮；进入下一步确认时换发新的随机 nonce。卡片和 nonce 持久保存，重启不会恢复已用按钮。卡片 10 分钟过期，每次点击都检查群、操作者、卡片 ID、话题、nonce 和终端真实身份；终端已变化时显示 `终端已变化，请重新 /t ls`，不会关闭不在当前列表中的终端。此前版本创建的终端缺少来源记录，保守显示「桌面」并要求二次确认。
+
 Recognized agents receive `agent.prompt`, which handles bracketed paste and refuses blocked prompts; shells receive `pane.send_text` followed by `pane.send_keys` Enter. A failed or uncertain write is never automatically retried. Before shell writes the bridge persists `needs_check`; it clears that flag only after success. If the result is uncertain, the bridge posts the screen and refuses ordinary input, raw text and other keys until you inspect it and send `/t ok`. You can first clear the input line with `/t k ctrl+u`; clearing alone does not acknowledge the screen. This protection survives restart. Replies in an unbound topic do not create new panes. Text outside a bound topic creates a pane only when it is a top-level post. Use a dedicated group: ordinary operator text there is executable input.
 
-Bindings persist herdr's `terminal_id`, workspace ID and tab ID. On startup, every subscription reconnect, before writing, before and after output reads, and before publication, the bridge confirms the terminal identity, its recorded tab and the workspace label `feishu`. A missing identity, changed terminal/tab/workspace, or failed verification freezes the binding, removes its subscription and discards pending cards and output. Frozen bindings cannot read or publish until explicit rebind. Legacy bindings without identity also freeze. Use `/t open <pane_id>` to explicitly rebind after inspecting `/t ls`, or `/t close` to unbind. `/t ok` does not clear an identity freeze; `--kill` also requires verified identity.
+Bindings persist herdr's `terminal_id`, workspace ID and tab ID. On startup, every subscription reconnect, before writing, before and after output reads, and before publication, the bridge confirms the terminal identity, its recorded tab and workspace. Text `/t open` retains its `feishu` workspace restriction; the picker can also bind desktop panes in other existing workspaces, explicitly recording that permission and still checking their exact terminal/tab/workspace IDs. A missing identity, changed terminal/tab/workspace, or failed verification freezes the binding, removes its subscription and discards pending cards and output. Frozen bindings cannot read or publish until explicit rebind. Legacy bindings without identity also freeze. Inspect `/t ls` before explicitly rebinding with `/t open <pane_id>`; a close card also refuses a changed identity. `/t ok` does not clear an identity freeze; `--kill` also requires verified identity.
 
 Each topic has one screen card, edited at most once per second, showing the last 40 visible rows, capped at 120 Unicode code points per row with explicit truncation markers. Agent `working -> idle/done` transitions and shell output quiet for about 1.5 seconds post only new `recent_unwrapped` output as normal thread messages. An idle/done agent first seen after restart, reconnect or a missed working event also flushes changed output after that stable window; working/blocked/unknown agents keep waiting. Diff and chunk boundaries use Unicode code points. Comparison uses content, so unchanged/zero revisions do not suppress new text. Reads retain up to 2,000 recent rows; history lost from herdr scrollback cannot be recovered. Rewritten TUI screens are a best-effort transcript; the live card is the authoritative view.
 
