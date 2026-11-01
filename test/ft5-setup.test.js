@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { setup, NEEDED_SCOPES } from '../src/setup.js';
+import { setup, NEEDED_SCOPES, WELCOME } from '../src/setup.js';
 
 async function fixture(t) {
   const dir = await mkdtemp(new URL('../.test-ft5-setup-', import.meta.url));
@@ -56,4 +56,9 @@ test('setup prints the absolute selected config path to stderr only', async t =>
   assert.equal(await f.run(), 0);
   assert.ok(f.err.includes(`CONFIG ${f.paths.configFile}`));
   assert.ok(!f.out.some(line => line.includes(f.paths.configFile)));
+});
+
+test('welcome requires every top-level and in-topic message to mention the bot until approval', () => {
+  assert.match(WELCOME, /全群消息权限审批完成前/);
+  assert.match(WELCOME, /每条消息（包括新话题和话题内回复）都必须 @机器人/);
 });

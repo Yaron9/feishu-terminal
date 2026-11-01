@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import { Feishu, FeishuWSClient, quietLogger, messageEvent, actionEvent } from '../src/feishu.js';
 import { eventually } from './helpers.js';
 
+test('own mention entities are removed at front, back and middle without changing unrelated whitespace or mentions', () => {
+  const mentions = [{ key: '@_user_1', id: { open_id: 'ou_bot' } },
+    { key: '@_user_2', id: { open_id: 'ou_bot' } }, { key: '@_user_10', id: { open_id: 'ou_other' } }];
+  for (const [text, expected] of [
+    ['@_user_1 pwd', 'pwd'], ['pwd @_user_1', 'pwd'], ['/t ls @_user_1', '/t ls'],
+    ['echo  a @_user_1   b\n  c  ', 'echo  a b\n  c  '],
+    ['@_user_1 @_user_2 /t ls @_user_1', '/t ls'],
+    ['@_user_10 @_user_1 /t raw   exact  ', '@_user_10 /t raw   exact  '],
+    ['echo  @_user_10\n  keep  ', 'echo  @_user_10\n  keep  '],
+    ['echo@_user_1hello', 'echohello'], ['@_user_1', ''],
+  ]) {
+    const raw = { message: { message_type: 'text', content: JSON.stringify({ text }), mentions } };
+    assert.equal(messageEvent(raw, 'ou_bot').text, expected, text);
+  }
+});
+
 test('mention-only fallback strips only this bot initial marker and preserves other users and following payload', async () => {
   const raw = { message: { message_type: 'text', content: JSON.stringify({ text: '@_user_1 /t raw   exact  ' }),
     mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' } }] } };

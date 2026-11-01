@@ -28,9 +28,22 @@ export function messageEvent(raw, botOpenId) {
   if (message.message_type === 'text') {
     try { text = JSON.parse(message.content).text; } catch { /* unsupported */ }
   }
-  // Only strip an initial mention of this bot, preserving other mentions and payload whitespace.
-  const botMention = botOpenId && message.mentions?.find(m => m.id?.open_id === botOpenId);
-  if (botMention?.key && typeof text === 'string' && text.startsWith(botMention.key)) text = text.slice(botMention.key.length).replace(/^[ \t]+/, '');
+  if (botOpenId && typeof text === 'string') {
+    const mentions = (message.mentions ?? []).filter(m => typeof m.key === 'string' && m.key);
+    const ownKeys = new Set(mentions.filter(m => m.id?.open_id === botOpenId).map(m => m.key));
+    if (ownKeys.size) {
+      // Match all entities longest-first so another user's key cannot match a bot-key prefix.
+      const keys = [...new Set(mentions.map(m => m.key))].sort((a, b) => b.length - a.length).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const matches = [...text.matchAll(new RegExp(keys.join('|'), 'g'))].filter(match => ownKeys.has(match[0]));
+      for (const match of matches.reverse()) {
+        let left = match.index, right = left + match[0].length;
+        while (left > 0 && /[ \t]/.test(text[left - 1])) left--;
+        while (right < text.length && /[ \t]/.test(text[right])) right++;
+        const separator = left > 0 && right < text.length && (left < match.index || right > match.index + match[0].length) ? ' ' : '';
+        text = text.slice(0, left) + separator + text.slice(right);
+      }
+    }
+  }
   return { kind: 'message', eventId: raw.header?.event_id ?? raw.event_id,
     messageId: message.message_id, chatId: message.chat_id, chatType: message.chat_type,
     openId: event.sender?.sender_id?.open_id, senderType: event.sender?.sender_type,
