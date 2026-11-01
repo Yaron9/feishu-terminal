@@ -4,6 +4,7 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
+import { parseEnv } from 'node:util';
 import { runtimePaths } from './runtime.js';
 import { acquireLock } from './instance-lock.js';
 
@@ -91,7 +92,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
   };
 }
 
-export async function setup({ newGroup = false, paths = runtimePaths(), registerApp = sdkRegisterApp,
+export async function setup({ newGroup = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
   fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, signal } = {}) {
   let release, ready = Promise.resolve(), stage = 'registration';
   const abort = new AbortController();
@@ -100,7 +101,12 @@ export async function setup({ newGroup = false, paths = runtimePaths(), register
     await mkdir(dirname(paths.configFile), { recursive: true, mode: 0o700 });
     release = await acquireLock(paths.configFile + '.setup.lock');
     const config = JSON.parse(await readOptional(paths.configFile, '{}'));
-    const result = await registerApp({ createOnly: true,
+    const progressFile = join(paths.stateDir, 'setup-progress.json');
+    let progress = JSON.parse(await readOptional(progressFile, '{}'));
+    const env = parseEnv(await readOptional(paths.envFile, ''));
+    const saved = progress.registered?.app_id && progress.registered.app_id === env.FEISHU_APP_ID && env.FEISHU_APP_SECRET;
+    const result = saved ? { client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET,
+      user_info: { open_id: progress.operator_open_id, tenant_brand: progress.tenant_brand } } : await registerApp({ createOnly: true,
       appPreset: { name: 'VPS 终端', desc: '飞书话题 ↔ VPS herdr 终端' },
       addons: { preset: true, scopes: { tenant: ['im:message.group_msg'] } }, signal: registrationSignal,
       onQRCodeReady({ url, expireIn }) {
@@ -120,10 +126,15 @@ export async function setup({ newGroup = false, paths = runtimePaths(), register
       },
     });
     await ready;
-    const openId = result.user_info?.open_id;
+    const openId = operator ?? result.user_info?.open_id;
+    if (!saved) {
+      stage = 'credentials';
+      await saveCredentials(paths.envFile, result.client_id, result.client_secret);
+      progress = { registered: { app_id: result.client_id }, tenant_brand: result.user_info?.tenant_brand };
+    }
+    if (/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) progress.operator_open_id = openId;
+    await atomicPrivateWrite(progressFile, JSON.stringify(progress, null, 2) + '\n');
     if (!/^ou_[A-Za-z0-9]+$/.test(openId ?? '')) throw new SetupError('missing_operator');
-    stage = 'credentials';
-    await saveCredentials(paths.envFile, result.client_id, result.client_secret);
     // Keep the product on Feishu; never send Lark credentials to Feishu endpoints.
     if (result.user_info?.tenant_brand === 'lark') throw new SetupError('lark_tenant_unsupported');
     const api = setupApi({ fetchImpl, sleep, signal: registrationSignal });
@@ -165,6 +176,6 @@ export async function setup({ newGroup = false, paths = runtimePaths(), register
     const denied = ['access_denied', 'expired_token'].includes(error.code);
     const safeCode = error instanceof SetupError ? error.code : 'operation_failed';
     stderr(denied ? `SETUP ${error.code}: 请重新运行 setup。` : `SETUP failed (${stage}/${safeCode}): check network, private files, app permissions and group membership.`);
-    return denied ? 2 : 1;
+    return denied ? 2 : error.code === 'missing_operator' ? 3 : 1;
   } finally { await release?.(); }
 }

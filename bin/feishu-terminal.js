@@ -13,14 +13,19 @@ let bridge, releaseLock, commandAbort;
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
-    console.log('feishu-terminal [setup [--new-group] | selftest --herdr-socket <path>]'); return;
+    console.log('feishu-terminal [setup [--new-group] [--operator ou_xxx] | selftest --herdr-socket <path>]'); return;
   }
   if (command === 'setup') {
-    if (args.some(arg => arg !== '--new-group')) throw new Error('Invalid setup option');
+    const options = {};
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--new-group') options.newGroup = true;
+      else if (args[i] === '--operator' && /^ou_[A-Za-z0-9]+$/.test(args[i + 1] ?? '')) options.operator = args[++i];
+      else throw new Error('Invalid setup option');
+    }
     const paths = prepareEnvironment();
     const { setup } = await import('../src/setup.js');
     commandAbort = new AbortController();
-    process.exitCode = await setup({ paths, newGroup: args.includes('--new-group'), signal: commandAbort.signal }); return;
+    process.exitCode = await setup({ paths, ...options, signal: commandAbort.signal }); return;
   }
   if (command === 'selftest') {
     if (args.length && (args.length !== 2 || args[0] !== '--herdr-socket' || !args[1] || args[1].startsWith('--'))) throw new Error('Invalid selftest option');
