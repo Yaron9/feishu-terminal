@@ -3,8 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 export function runtimePaths(env = process.env, cwd = process.cwd()) {
-  const configFile = resolve(env.FEISHU_TERMINAL_CONFIG ||
-    (existsSync(join(cwd, 'config.json')) ? join(cwd, 'config.json') : join(homedir(), '.config/feishu-terminal/config.json')));
+  const configFile = resolve(cwd, env.FEISHU_TERMINAL_CONFIG || join(homedir(), '.config/feishu-terminal/config.json'));
   return { configFile, envFile: join(dirname(configFile), '.env'),
     stateDir: resolve(env.STATE || join(homedir(), '.local/state/feishu-terminal')) };
 }

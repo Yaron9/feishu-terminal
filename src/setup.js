@@ -98,6 +98,7 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
   const abort = new AbortController();
   const registrationSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
   try {
+    stderr(`CONFIG ${resolve(paths.configFile)}`);
     await mkdir(dirname(paths.configFile), { recursive: true, mode: 0o700 });
     release = await acquireLock(paths.configFile + '.setup.lock');
     const config = JSON.parse(await readOptional(paths.configFile, '{}'));

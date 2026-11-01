@@ -54,8 +54,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.local/share/feishu-terminal
-Environment=FEISHU_TERMINAL_CONFIG=%h/.config/feishu-terminal/config.json
-EnvironmentFile=%h/.config/feishu-terminal/.env
+# The CLI selects the installed config (or FEISHU_TERMINAL_CONFIG) and loads its sibling .env.
 ExecStart="$node_path" "%h/.local/share/feishu-terminal/bin/feishu-terminal.js"
 Restart=always
 RestartSec=5

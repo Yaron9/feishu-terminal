@@ -31,7 +31,8 @@ async function main() {
   if (command === 'selftest') {
     if (args.length && (args.length !== 2 || args[0] !== '--herdr-socket' || !args[1] || args[1].startsWith('--'))) throw new Error('Invalid selftest option');
     if (!args.length && !process.env.HERDR_TCP) throw new Error('Explicit selftest endpoint required');
-    prepareEnvironment();
+    const paths = prepareEnvironment();
+    console.error(`CONFIG ${paths.configFile}`);
     const { selftest } = await import('../src/selftest.js');
     commandAbort = new AbortController();
     process.exitCode = await selftest({ config: await loadConfig(), socket: args[1], signal: commandAbort.signal }); return;

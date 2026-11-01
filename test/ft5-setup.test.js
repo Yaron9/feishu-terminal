@@ -50,3 +50,10 @@ test('setup preserves custom cwd and state paths', async t => {
   assert.equal(await f.run(), 0);
   for (const [key, value] of Object.entries(custom)) assert.equal((await f.config())[key], value);
 });
+
+test('setup prints the absolute selected config path to stderr only', async t => {
+  const f = await fixture(t);
+  assert.equal(await f.run(), 0);
+  assert.ok(f.err.includes(`CONFIG ${f.paths.configFile}`));
+  assert.ok(!f.out.some(line => line.includes(f.paths.configFile)));
+});

@@ -7,12 +7,15 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { runtimePaths } from '../src/runtime.js';
 
-test('runtime selects installed layout, local config, explicit config and STATE without reading credentials', async t => {
+test('runtime ignores cwd config and selects only the installed layout or explicit config and sibling dotenv', async t => {
   const dir = await mkdtemp(new URL('../.test-runtime-', import.meta.url)); t.after(() => rm(dir, { recursive: true, force: true }));
   const paths = runtimePaths({}, dir);
   assert.equal(paths.configFile, join(homedir(), '.config/feishu-terminal/config.json'));
   await writeFile(join(dir, 'config.json'), '{}');
-  assert.equal(runtimePaths({}, dir).configFile, join(dir, 'config.json'));
+  assert.equal(runtimePaths({}, dir).configFile, paths.configFile);
+  const explicit = runtimePaths({ FEISHU_TERMINAL_CONFIG: join(dir, 'custom.json') }, dir);
+  assert.equal(explicit.configFile, join(dir, 'custom.json'));
+  assert.equal(explicit.envFile, join(dir, '.env'));
   assert.equal(runtimePaths({ FEISHU_TERMINAL_CONFIG: join(dir, 'custom.json'), STATE: dir }, dir).stateDir, dir);
 });
 
@@ -36,5 +39,6 @@ test('selftest CLI returns 1 on invalid configuration before any live API or soc
   await assert.rejects(promisify(execFile)(process.execPath, [fileURLToPath(cli), 'selftest', '--herdr-socket', '/not-used.sock'], {
     env: { FEISHU_TERMINAL_CONFIG: join(dir, 'missing.json'), FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture_secret',
       SystemRoot: process.env.SystemRoot || '' }, windowsHide: true,
-  }), error => error.code === 1 && error.stderr.includes('startup_failed') && !error.stderr.includes('fixture_secret'));
+  }), error => error.code === 1 && error.stderr.includes('startup_failed') &&
+    error.stderr.includes(`CONFIG ${join(dir, 'missing.json')}`) && !error.stderr.includes('fixture_secret'));
 });
