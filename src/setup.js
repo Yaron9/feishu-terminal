@@ -78,6 +78,7 @@ export async function saveCredentials(file, appId, appSecret) {
 export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', sleep = delay, signal } = {}) {
   return async (path, { method = 'GET', body, token } = {}) => {
     for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
       let response, data;
       try {
         const timeout = AbortSignal.timeout(15000);
@@ -91,7 +92,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
       }
       if ((response.status === 429 || [99991400, 230020].includes(data.code)) && attempt < 4) {
         const retry = Number(response.headers?.get('retry-after')) || 0;
-        await sleep(Math.max(1000 * 2 ** attempt, Math.min(30000, retry * 1000))); continue;
+        await sleep(Math.max(1000 * 2 ** attempt, Math.min(30000, retry * 1000)), undefined, { signal }); continue;
       }
       if (!response.ok || (data.code !== undefined && data.code !== 0)) throw new SetupError('api_failed', { status: response.status, platformCode: data.code });
       return data;

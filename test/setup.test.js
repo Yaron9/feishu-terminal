@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, readdir, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { registerApp as sdkRegisterApp, defaultHttpInstance } from '@larksuiteoapi/node-sdk';
 import { setup, setupApi, NEEDED_SCOPES, saveCredentials } from '../src/setup.js';
 
@@ -110,6 +111,17 @@ test('HTTP throttling honors slow retry; ambiguous network writes and upstream e
   calls = 0;
   const broken = setupApi({ fetchImpl: async () => { calls++; throw new Error('secret token device_code'); } });
   await assert.rejects(broken('/test', { method: 'POST', body: {} }), { message: 'network_error' }); assert.equal(calls, 1);
+});
+
+test('setup API cancellation interrupts throttling without another request', async () => {
+  const abort = new AbortController(); let calls = 0;
+  const api = setupApi({ signal: abort.signal, sleep: (ms, value, options) => delay(Math.min(ms, 5), value, options),
+    fetchImpl: async () => {
+      calls++; abort.abort();
+      return { ok: false, status: 429, json: async () => ({ code: 99991400 }) };
+    } });
+  await assert.rejects(api('/test'), { name: 'AbortError' });
+  assert.equal(calls, 1);
 });
 
 test('actual 1.76.0 registerApp encodes addons and handles HTTP device-flow slow_down, denial and expiry without network', async t => {
