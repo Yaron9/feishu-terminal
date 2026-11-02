@@ -115,10 +115,10 @@ export function mockFeishu(now) {
 // and explicit screen cards are deliberately excluded from output assertions.
 export function outputReplies(feishu) {
   return feishu.calls.filter(c => c.type === 'reply' && (c.msgType === 'text' ||
-    (c.content.schema === '2.0' && /^(🤖 |💻 输出$)/u.test(c.content.header.title.content))))
+    (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content))))
     .map(c => {
       if (c.msgType === 'text') return c;
-      let text = c.content.body.elements[0].content.replace(/^（仅显示末尾）\n\n?/, '');
+      let text = c.content.body.elements[0].content.replace(/^(?:<font[^>]*>[^<]*<\/font>|（仅显示末尾）)\n\n?/, '');
       if (text.startsWith('```text\n')) text = text.slice(8, -4).replace(/`\u200b/g, '`');
       return { ...c, card: c.content, content: text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&') };
     });

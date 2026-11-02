@@ -7,7 +7,7 @@ import { registerApp as sdkRegisterApp, defaultHttpInstance } from '@larksuiteoa
 import { setup, setupApi, NEEDED_SCOPES, saveCredentials, WELCOME } from '../src/setup.js';
 
 test('welcome describes picker buttons, both close choices and direct kill', () => {
-  for (const text of ['/t ls', '打开', '关闭', '仅解绑', '关闭终端', '取消', '/t close --kill', '再次确认', '10 分钟']) assert.ok(WELCOME.includes(text));
+  for (const text of ['/t ls', '打开', '关闭', '仅解绑', '关闭终端', '取消', '/t close --kill', '再问一次', '10 分钟']) assert.ok(WELCOME.includes(text));
 });
 
 async function fixture(t, { outcome, existing = false, pending = false, newGroup = false } = {}) {
@@ -64,7 +64,7 @@ test('setup registers with exact pinned SDK options, creates owner topic group, 
   assert.equal(group.body.group_message_type, 'thread'); assert.equal(group.body.owner_id, 'ou_fixture');
   assert.deepEqual(group.body.user_id_list, ['ou_fixture']); assert.equal(group.headers.Authorization, 'Bearer tenant_fixture');
   const welcome = JSON.parse(f.calls.find(c => c.url.includes('/messages?')).body.content).text;
-  for (const command of ['/t ls', '/t open', '/t screen', '/t k', '/t raw', '/t close', 'Refresh']) assert.ok(welcome.includes(command));
+  for (const command of ['/t ls', '/t open', '/t screen', '/t k', '/t raw', '/t close', '刷新']) assert.ok(welcome.includes(command));
   assert.ok(f.err.includes('SETUP OK'));
   assert.ok(![...f.out, ...f.err].join('\n').match(/secret_fixture|tenant_fixture|device_code/));
   for (const file of [f.paths.envFile, f.paths.configFile, join(f.paths.stateDir, 'setup-url.txt'), join(f.dir, backups[0])]) {

@@ -96,7 +96,7 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   assert.ok(r.historyCalls > 0);
   const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
   for (const message of r.messages.values()) {
-    if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
+    if (!message.body.content.includes('模拟输入：')) assert.ok(readIds.has(message.message_id));
   }
 });
 
@@ -147,7 +147,7 @@ for (const historyDenied of [230027, 99991672, 99991676]) {
     assert.ok(r.readCalls.slice(0, firstList).some(([method, id]) => method === 'get' && r.messages.get(id)?.root_id));
     const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
     for (const message of r.messages.values()) {
-      if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
+      if (!message.body.content.includes('模拟输入：')) assert.ok(readIds.has(message.message_id));
     }
     assert.ok(r.patchCount >= 3);
   });

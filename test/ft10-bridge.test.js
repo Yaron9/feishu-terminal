@@ -34,7 +34,7 @@ test('Claude cards distinguish desktop input, assistant and tools; Feishu input 
   await h.bridge.tick();
   const cards = conversation(h);
   assert.deepEqual(cards.map(c => c.content.header.title.content),
-    ['🤖 Claude', '🧑 电脑端输入', '🤖 Claude', '🧑 电脑端输入', '🤖 Claude · 工作中…']);
+    ['🤖 Claude · 已完成', '🧑 电脑端输入', '🤖 Claude · 已完成', '🧑 电脑端输入', '🤖 Claude · 工作中']);
   assert.equal(cards[0].content.body.elements[1].header.title.content, '🔧 工具调用 (1)');
   assert.equal(cards[0].content.body.elements[1].expanded, false);
   assert.ok(!JSON.stringify(h.feishu.calls).includes('old history'));
@@ -99,7 +99,7 @@ test('raw Feishu input is matched, a rejected blocked prompt does not suppress d
   const { h, file, topic, pane } = await setup(t);
   await h.bridge.handle(message('/t raw raw text', 'raw', topic));
   await appendFile(file, user('raw text')); await h.bridge.tick();
-  assert.equal(conversation(h).length, 1); assert.equal(conversation(h)[0].content.header.title.content, '🤖 Claude · 工作中…');
+  assert.equal(conversation(h).length, 1); assert.equal(conversation(h)[0].content.header.title.content, '🤖 Claude · 工作中');
   pane.agent_status = 'blocked';
   await h.bridge.handle(message('blocked question', 'blocked', topic));
   await appendFile(file, user('blocked question')); h.advance(2000); await h.bridge.tick();
@@ -142,7 +142,7 @@ test('fallback shell uses one compact output card and /t screen returns the enti
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   h.fake.output('w1:p1', '$ ' + Array.from({ length: 90 }, (_, i) => `line ${i}`).join('\n') + '\n❯ \n✻ Worked for 3s\n╰─────╯');
   await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  const output = conversation(h).filter(c => c.content.header.title.content === '💻 输出');
+  const output = conversation(h).filter(c => c.content.header.title.content === '💻 命令输出');
   assert.equal(output.length, 1);
   assert.match(output[0].content.body.elements[0].content, /line 30/);
   assert.ok(!output[0].content.body.elements[0].content.includes('line 29\n'));

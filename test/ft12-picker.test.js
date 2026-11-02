@@ -22,7 +22,7 @@ test('picker opens a replaced frozen pane by rebinding and recovering its existi
   const { h, old, pane } = await replaced(t);
   await h.bridge.handle(message('/t ls', 'list'));
   const label = JSON.stringify(h.feishu.calls.at(-1).content);
-  assert.match(label, /已冻结（点打开重新绑定）/);
+  assert.match(label, /已暂停同步（点打开重新绑定）/);
   assert.doesNotMatch(label, /已绑定话题/);
   assert.deepEqual(h.store.data.actionCards.at(-1).entries[0].identity, {
     terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id,
@@ -36,7 +36,7 @@ test('picker opens a replaced frozen pane by rebinding and recovering its existi
   assert.deepEqual(active.identity, { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id });
   assert.notEqual(active.cardId, old.cardId);
   const replies = h.feishu.calls.slice(before).filter(c => c.type === 'reply');
-  assert.ok(replies.some(c => c.topicId === old.topicId && c.content === 'Pane rebound; identity verified.'));
+  assert.ok(replies.some(c => c.topicId === old.topicId && c.content === '已重新绑定到当前终端'));
   assert.ok(replies.some(c => c.topicId === old.topicId && c.msgType === 'interactive' &&
     JSON.stringify(c.content).includes('📍 已从终端列表恢复')));
   assert.match(result(h), /已在话题.*已置顶/);
@@ -55,7 +55,7 @@ test('frozen picker rows and topic close use live identity and keep desktop/busy
       }
       await h.bridge.handle(source === 'list' ? message('/t ls', 'list') : message('/t close', 'close', old.topicId));
       if (source === 'list') await click(h, 'close');
-      assert.match(h.store.data.actionCards.at(-1).entries[0].label, /已冻结（点打开重新绑定）/);
+      assert.match(h.store.data.actionCards.at(-1).entries[0].label, /已暂停同步（点打开重新绑定）/);
       await click(h, 'kill');
       if (mode !== 'idle') {
         assert.equal(kills(h).length, 0, `${source}/${mode}`);

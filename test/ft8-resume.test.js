@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { harness, message, pickerEvent } from './helpers.js';
 
-const screens = h => h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive' && c.content.header?.title.content !== '选择终端');
+const screens = h => h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive' && !c.content.header?.title.content.startsWith('终端列表'));
 const writes = h => h.fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt', 'pane.close'].includes(c.method));
 const screenClick = binding => ({ kind: 'button', eventId: randomUUID(), chatId: binding.chatId, openId: 'ou_test',
   topicId: binding.topicId, messageId: binding.cardId, nonce: binding.nonce, key: 'enter' });
@@ -41,7 +41,7 @@ test('picker recovery replies in the existing topic, commits a new screen nonce,
   assert.ok(!retired.card.elements.some(e => e.actions));
   const result = h.feishu.calls.find(c => c.type === 'patch' && c.id === picker.messageId).card;
   assert.match(result.elements[0].text.content, /^已在话题「.*」\(\d{2}:\d{2}\)，已置顶；看不到可点 \[移到新话题\]$/);
-  assert.equal(result.elements.length, 3); // Preserve the other pane's row and the move escape.
+  assert.equal(result.elements.length, 4); // Preserve the other pane's row, grey id and the move escape.
   assert.ok(!JSON.stringify(result).includes('"url"'));
   const move = result.elements.find(e => e.actions).actions;
   assert.equal(move.length, 1); assert.equal(move[0].text.content, '移到新话题');

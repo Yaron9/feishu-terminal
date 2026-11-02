@@ -113,7 +113,7 @@ for (const offset of [0, 4]) {
     h.fake.drop('pane.send_text');
     await step('needs_check screen', () => h.bridge.handle(message('/t raw uncertain', 'uncertain', topic)));
     assert.equal(h.bridge.store.forPane(pane.pane_id).needs_check, true);
-    assert.match(h.feishu.calls.at(-1).content, /Input needs checking/);
+    assert.match(h.feishu.calls.at(-1).content, /请先检查输入是否成功/);
     await h.restart();
     await step('restart refresh', () => h.bridge.tick());
     assert.ok(reads(h.fake).every(c => c.params.lines <= 6 + offset));

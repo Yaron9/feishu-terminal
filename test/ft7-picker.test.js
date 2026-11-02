@@ -15,9 +15,9 @@ test('ls and top-level close show one labeled row per pane with open/close butto
   for (const [i, text] of ['/t ls', '/t close'].entries()) {
     await h.bridge.handle(message(text, `list${i}`));
     const card = h.feishu.calls.at(-1).content;
-    assert.equal(card.elements.length, 4);
+    assert.equal(card.elements.length, 7);
     assert.deepEqual(card.elements.filter(e => e.actions).map(e => e.actions.map(a => a.text.content)), [['打开', '关闭'], ['打开', '关闭']]);
-    assert.match(JSON.stringify(card), /桌面.*未绑定.*w1:p1/);
+    assert.match(JSON.stringify(card), /电脑端已有.*未绑定.*w1:p1/);
   }
   assert.ok(!h.fake.calls.some(c => ['pane.close', 'pane.send_text', 'pane.send_keys'].includes(c.method)));
 });
@@ -52,7 +52,7 @@ test('open on a bound pane resumes the topic and never creates or rebinds it', a
 test('picker close offers unbind/kill/cancel and unbind keeps the terminal alive', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   await h.bridge.handle(message('/t ls', 'list')); await click(h, 'close');
-  assert.deepEqual(patches(h).at(-1).card.elements[1].actions.map(a => a.text.content), ['仅解绑', '关闭终端', '取消']);
+  assert.deepEqual(patches(h).at(-1).card.elements.find(e => e.actions).actions.map(a => a.text.content), ['仅解绑', '关闭终端', '取消']);
   const old = pickerEvent(h, 'kill');
   await click(h, 'unbind');
   assert.equal(h.store.list().length, 0); assert.equal(kills(h).length, 0);
@@ -165,7 +165,7 @@ test('failed picker publication falls back to labeled text; an empty list has a 
   const h = await harness(t); h.fake.create();
   const reply = h.feishu.reply.bind(h.feishu);
   h.feishu.reply = (topic, content, type, uuid) => type === 'interactive' ? Promise.reject(new Error('send failed')) : reply(topic, content, type, uuid);
-  await h.bridge.handle(message('/t ls', 'list')); assert.match(h.feishu.calls.at(-1).content, /shell.*桌面.*未绑定.*w1:p1/);
+  await h.bridge.handle(message('/t ls', 'list')); assert.match(h.feishu.calls.at(-1).content, /命令行.*电脑端已有.*未绑定/);
   h.feishu.reply = reply; h.fake.panes.clear(); await h.bridge.handle(message('/t ls', 'empty'));
   assert.match(JSON.stringify(h.feishu.calls.at(-1).content), /暂无终端/);
 });

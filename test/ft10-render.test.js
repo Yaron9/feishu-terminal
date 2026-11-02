@@ -4,10 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { assistantCard, userCard, outputCard, screenCard, stripChrome } from '../src/render.js';
 
 export const sampleCards = () => ({
-  assistant: assistantCard('The **fix** is ready.\n\n- Checked the bridge.', ['🔧 Bash: Run the tests']),
-  desktop: userCard('Please check the rendering.'),
-  live: screenCard({ paneId: 'pane', label: 'project · claude', topicId: 'topic', nonce: 'nonce', status: 'working', text: '╭────╮\n❯ \nChecking the bridge\n✻ Worked for 2s\n╰────╯' }),
-  blocked: screenCard({ paneId: 'pane', label: 'project · claude', topicId: 'topic', nonce: 'nonce', status: 'blocked', text: 'Allow command? [y/n]' }),
+  assistant: assistantCard('**修复**已完成。\n\n- 已检查消息同步。', ['🔧 Bash: 运行测试']),
+  desktop: userCard('请检查卡片显示。'),
+  live: screenCard({ paneId: 'pane', label: '项目 · Claude', topicId: 'topic', nonce: 'nonce', status: 'working', text: '╭────╮\n❯ \n正在检查消息同步\n✻ Worked for 2s\n╰────╯' }),
+  blocked: screenCard({ paneId: 'pane', label: '项目 · Claude', topicId: 'topic', nonce: 'nonce', status: 'blocked', text: '允许执行这条命令吗？ [y/n]' }),
   shell: outputCard('$ pwd\n/home/project\n$ '),
   screen: outputCard('❯ prompt\n╰────╯', { full: true }),
 });
@@ -25,7 +25,7 @@ test('cards bound Unicode and escaped worst-case payloads below 28 KB, with tail
     assert.ok(cards.every(card => Buffer.byteLength(JSON.stringify(card)) < 28000), char);
     assert.match(cards[0].body.elements[0].content, /仅显示末尾/);
     assert.equal(cards[0].body.elements[1].expanded, false);
-    assert.equal(Array.from(cards[1].body.elements[0].content.replace(/^（仅显示末尾）\n\n/, '')).length <= 1500 * 5, true);
+    assert.equal(Array.from(cards[1].body.elements[0].content.replace(/^<font[^>]*>[^<]*<\/font>\n\n/, '')).length <= 1500 * 5, true);
     assert.ok(!JSON.stringify(cards).includes('\ufffd'));
   }
 });
@@ -35,9 +35,9 @@ test('live preview strips frames, prompts, spinner/status chrome and stays at te
   const stripped = stripChrome(text); assert.match(stripped, /^reply\nline 0/);
   assert.ok(!/❯|Thinking|Worked for|─/.test(stripped));
   const card = screenCard({ paneId: 'pane', topicId: 'topic', nonce: 'nonce', text, status: 'idle' });
-  const lines = card.elements[0].content.slice(8, -4).split('\n'); assert.equal(lines.length, 10);
+  const lines = card.elements[0].content.split('```')[1].slice(5).trimEnd().split('\n'); assert.equal(lines.length, 10);
   assert.equal(lines[0], 'line 10'); assert.equal(lines.at(-1), 'line 19');
-  assert.match(card.header.title.content, /● 空闲/);
+  assert.match(card.header.title.content, /● · 空闲/);
   assert.ok(!JSON.stringify(assistantCard('<at id=all>all</at>')).includes('<at'));
   assert.ok(!JSON.stringify(userCard('<at id=all>all</at>')).includes('<at'));
 });

@@ -37,7 +37,7 @@ test('many tool batches share one turn card with bounded cumulative text and pat
   records.push({ role: 'user', text: 'desktop start' }, { role: 'assistant', text: 'Start' });
   await poll(); const id = binding().cardId;
   assert.equal(desktop(h).length, 1); assert.equal(replies(h).length, 1);
-  assert.equal(replies(h)[0].content.header.title.content, '🤖 Claude · 工作中…');
+  assert.equal(replies(h)[0].content.header.title.content, '🤖 Claude · 工作中');
   for (let i = 0; i < 24; i++) {
     records.push({ role: 'assistant', text: `Step ${i}` }, { role: 'tool', text: `🔧 Bash: command ${i}` });
     await poll(250);
@@ -60,8 +60,8 @@ test('blocked buttons are on the turn card, consume a nonce once, and rotate aft
   records.push({ role: 'assistant', text: 'Need permission' }); await poll();
   pane.agent_status = 'blocked'; await poll(2000);
   const old = binding(), card = patches(h, old.cardId).at(-1).card;
-  assert.equal(card.header.title.content, '🤖 Claude · 等待确认');
-  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 9);
+  assert.equal(card.header.title.content, '🤖 Claude · 等待你确认');
+  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 5);
   assert.ok(buttons(card).every(b => b.value.nonce === old.nonce));
   const writes = () => h.fake.calls.filter(c => c.method === 'pane.send_keys').length;
   const before = writes(); await h.bridge.handle(click(old)); await h.bridge.handle(click(old));
@@ -80,7 +80,7 @@ test('settle finalizes the same card without controls and the next assistant ite
   const first = binding(); pane.agent_status = 'blocked'; await poll(2000);
   pane.agent_status = 'done'; await poll(2000);
   const done = patches(h, first.cardId).at(-1).card;
-  assert.equal(done.header.title.content, '🤖 Claude'); assert.equal(buttons(done).length, 0);
+  assert.equal(done.header.title.content, '🤖 Claude · 已完成'); assert.equal(buttons(done).length, 0);
   assert.equal(binding().turn.settled, true);
   await poll(10000); assert.equal(replies(h).length, 1);
   records.push({ role: 'assistant', text: 'Second answer' }); await poll();
@@ -99,7 +99,7 @@ test('a user turn does not settle on the previous idle sample before its first a
   records.push({ role: 'assistant', text: 'The answer belongs on this card' }); await poll(2000);
   assert.equal(binding().cardId, first.cardId); assert.equal(replies(h).length, 1);
   pane.agent_status = 'idle'; await poll(2000);
-  assert.equal(binding().turn.settled, true); assert.equal(patches(h, first.cardId).at(-1).card.header.title.content, '🤖 Claude');
+  assert.equal(binding().turn.settled, true); assert.equal(patches(h, first.cardId).at(-1).card.header.title.content, '🤖 Claude · 已完成');
 });
 
 test('desktop echo precedes its turn; Feishu input starts a turn without an echo and earlier turns are finalized', async t => {
@@ -112,7 +112,7 @@ test('desktop echo precedes its turn; Feishu input starts a turn without an echo
   await poll(2000);
   assert.equal(replies(h).length, 2); assert.equal(desktop(h).length, 1);
   assert.ok(h.feishu.calls.indexOf(desktop(h)[0]) < h.feishu.calls.indexOf(replies(h)[1]));
-  assert.equal(patches(h, first.cardId).at(-1).card.header.title.content, '🤖 Claude');
+  assert.equal(patches(h, first.cardId).at(-1).card.header.title.content, '🤖 Claude · 已完成');
   assert.equal(binding().turn.text, 'Desktop answer'); assert.deepEqual(binding().sentInputs, []);
 });
 
@@ -282,7 +282,7 @@ test('turn text, tools and worst-case escaped blocked cards stay bounded and ret
     assert.ok(Array.from(turn.tools).length <= 1500); assert.equal(turn.truncated, true);
     const card = turnCard({ turn, topicId: 'topic', nonce: 'nonce' });
     assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000, char);
-    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 9);
+    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 5);
     assert.equal(JSON.stringify(card).includes('\ufffd'), false);
   }
 });

@@ -1,0 +1,1387 @@
+{
+  "assistant": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "green",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 已完成"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "**修复**已完成。\n\n- 已检查消息同步。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='green'>已完成</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "desktop": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "🧑 电脑端输入"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "请检查卡片显示。"
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>这是你在电脑端发送的内容；回复显示在下方，可在本话题继续。</font>"
+        }
+      ]
+    }
+  },
+  "live": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "● · 工作中 · 项目 · Claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n正在检查消息同步\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>pane</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "blocked": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "● · 等待你确认 · 项目 · Claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n允许执行这条命令吗？ [y/n]\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "**等待你确认：** 允许执行这条命令吗？ \\[y/n\\]\n<font color='grey'>点按钮等于在终端里按对应的键</font>"
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Esc 取消"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "esc"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "y 同意"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "y"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "n 拒绝"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "n"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Ctrl-C 中断"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "ctrl+c"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "刷新"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "refresh"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>pane</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "shell": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "💻 命令输出"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "```text\n$ pwd\n/home/project\n```"
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "screen": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "💻 当前屏幕"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "```text\n❯ prompt\n╰────╯\n```"
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>这是终端当前屏幕，保留原始界面。在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnWorking": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 工作中"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "正在检查项目，稍后给你结果。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>工作中</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnBlocked": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 等待你确认"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "正在检查项目，稍后给你结果。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "**等待你确认：** 允许执行这条命令吗？\n<font color='grey'>点按钮等于在终端里按对应的键</font>"
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Esc 取消"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "esc"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "1 是，执行"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "1"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "2 始终允许"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "2"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "3 否，取消"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "3"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "y 同意"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "y"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "n 拒绝"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "n"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Ctrl-C 中断"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "ctrl+c"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "刷新"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "refresh"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>等待你确认</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnEnter": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 等待你确认"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "正在检查项目，稍后给你结果。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "**等待你确认：** 请按 Enter 继续\n<font color='grey'>点按钮等于在终端里按对应的键</font>"
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Enter 继续"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "enter"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Esc 取消"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "esc"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "y 同意"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "y"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "n 拒绝"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "n"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "Ctrl-C 中断"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "ctrl+c"
+                  }
+                }
+              ]
+            },
+            {
+              "tag": "column",
+              "width": "weighted",
+              "weight": 1,
+              "elements": [
+                {
+                  "tag": "button",
+                  "text": {
+                    "tag": "plain_text",
+                    "content": "刷新"
+                  },
+                  "type": "default",
+                  "value": {
+                    "topic_id": "topic",
+                    "nonce": "nonce",
+                    "key": "refresh"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>等待你确认</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnDone": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "green",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 已完成"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "检查完成，测试已通过。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='green'>已完成</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnError": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "red",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 出错"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "<font color='red'>错误：测试未通过，请检查日志。</font>"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='red'>出错</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnClipped": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 工作中"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>内容较长，仅显示末尾约 1500 字；完整内容在电脑端</font>\n\n仅保留末尾的回复。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>工具较多，仅显示末尾</font>\n\n<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>工作中</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "turnRecovered": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude · 工作中"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "📍 已从终端列表恢复"
+        },
+        {
+          "tag": "markdown",
+          "content": "正在检查项目，稍后给你结果。"
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+            }
+          ]
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>工作中</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "shellIdle": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "命令行 · 空闲 · 项目命令行"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p2</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "shellRunning": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "命令行 · 运行中 · 项目命令行"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n正在安装依赖…\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p2</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "statusIdle": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "● · 空闲 · 项目 · Claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n等待下一条消息。\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "statusDone": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "green",
+      "title": {
+        "tag": "plain_text",
+        "content": "● · 已完成 · 项目 · Claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n任务已完成。\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "statusError": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "red",
+      "title": {
+        "tag": "plain_text",
+        "content": "● · 出错 · 项目 · Claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\n错误：连接已断开。\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "shellClipped": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "💻 命令输出"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>显示最近 60 行；超长行仅显示末尾，完整内容在电脑端</font>\n```text\n输出第 11 行\n输出第 12 行\n输出第 13 行\n输出第 14 行\n输出第 15 行\n输出第 16 行\n输出第 17 行\n输出第 18 行\n输出第 19 行\n输出第 20 行\n输出第 21 行\n输出第 22 行\n输出第 23 行\n输出第 24 行\n输出第 25 行\n输出第 26 行\n输出第 27 行\n输出第 28 行\n输出第 29 行\n输出第 30 行\n输出第 31 行\n输出第 32 行\n输出第 33 行\n输出第 34 行\n输出第 35 行\n输出第 36 行\n输出第 37 行\n输出第 38 行\n输出第 39 行\n输出第 40 行\n输出第 41 行\n输出第 42 行\n输出第 43 行\n输出第 44 行\n输出第 45 行\n输出第 46 行\n输出第 47 行\n输出第 48 行\n输出第 49 行\n输出第 50 行\n输出第 51 行\n输出第 52 行\n输出第 53 行\n输出第 54 行\n输出第 55 行\n输出第 56 行\n输出第 57 行\n输出第 58 行\n输出第 59 行\n输出第 60 行\n输出第 61 行\n输出第 62 行\n输出第 63 行\n输出第 64 行\n输出第 65 行\n输出第 66 行\n输出第 67 行\n输出第 68 行\n输出第 69 行\n输出第 70 行\n```"
+        },
+        {
+          "tag": "markdown",
+          "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        }
+      ]
+    }
+  },
+  "pickerList": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "终端列表（共 1 个）"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "[打开] 把终端接到一个话题里同步 · [关闭] 解绑或关闭终端 · [移到新话题] 原话题找不到时用"
+        }
+      },
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": "**项目终端**\nClaude · 空闲 · 目录 \\~ · 电脑端已有 · 已绑定话题「检查项目」(07:58)"
+        }
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "打开"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:open:0"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "关闭"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:close:0"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "移到新话题"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:move:0"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "pickerEmpty": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "终端列表（共 0 个）"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "[打开] 把终端接到一个话题里同步 · [关闭] 解绑或关闭终端 · [移到新话题] 原话题找不到时用"
+        }
+      },
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "暂无终端"
+        }
+      }
+    ]
+  },
+  "pickerClose": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "关闭终端"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "仅解绑：话题停止同步，终端继续在 VPS 上运行\n关闭终端：结束终端里的程序（如 Claude 会话），不可恢复"
+        }
+      },
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": "**项目终端**\nClaude · 空闲 · 目录 \\~ · 电脑端已有 · 已绑定话题「检查项目」(07:58)"
+        }
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "仅解绑"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:unbind:0"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "关闭终端"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:kill:0"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "取消"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:cancel:0"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "pickerConfirm": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "red",
+      "title": {
+        "tag": "plain_text",
+        "content": "关闭终端"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "确定关闭「项目终端」？里面的会话会结束，正在运行的程序和未保存的内容将丢失，不可恢复。"
+        }
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "确定关闭"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:kill:0"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "取消"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:cancel:0"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "note",
+        "elements": [
+          {
+            "tag": "lark_md",
+            "content": "<font color='grey'>w1:p1</font>"
+          }
+        ]
+      }
+    ]
+  },
+  "pickerRecovered": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "终端列表（共 1 个）"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "已在话题「检查项目」(07:58)，已置顶；看不到可点 [移到新话题]"
+        }
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "移到新话题"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "picker:move:0"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "pickerResult": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "关闭终端"
+      }
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "已解绑"
+        }
+      }
+    ]
+  },
+  "retired": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "plain_text",
+          "content": "已移至下方新卡片"
+        }
+      }
+    ]
+  }
+}

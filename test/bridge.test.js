@@ -46,7 +46,7 @@ test('recognized agent uses agent.prompt; blocked prompt displays one live card 
   await h.bridge.handle(message('do next', 'm3', 'm1'));
   assert.equal(writes(h.fake).at(-1).method, 'agent.prompt');
   const card = cards(h.feishu).at(-1).content;
-  assert.equal(card.header.template, 'orange'); assert.equal(card.elements.slice(1).flatMap(e => e.actions).length, 9);
+  assert.equal(card.header.template, 'orange'); assert.equal(card.elements.flatMap(e => e.actions ?? []).length, 5);
   assert.ok(!records(h.feishu).some(c => String(c.content).includes('fixture error')));
 });
 
@@ -75,7 +75,7 @@ test('fallback agent output waits through working and flushes working -> done as
   h.fake.status('w1:p1', 'done'); await h.drain(); await h.bridge.tick();
   assert.equal(records(h.feishu).length, 1);
   assert.equal(records(h.feishu)[0].content, '中文🙂'.repeat(500));
-  assert.equal(records(h.feishu)[0].card.header.title.content, '🤖 Codex');
+  assert.equal(records(h.feishu)[0].card.header.title.content, '🤖 Codex · 已完成');
   assert.match(records(h.feishu)[0].card.body.elements[0].content, /仅显示末尾/);
   assert.ok(Buffer.byteLength(JSON.stringify(records(h.feishu)[0].card)) < 28000);
   const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
@@ -126,12 +126,12 @@ test('Refresh consumes nonce and schedules an unchanged blocked card after the t
   assert.equal(cards(h.feishu).length, 1); assert.notEqual(h.store.binding('oc_test', 'm1').nonce, before.nonce);
   h.advance(900); await h.bridge.tick(); assert.equal(cards(h.feishu).length, 2);
   const card = cards(h.feishu).at(-1).card;
-  assert.equal(card.elements[1].actions[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
+  assert.equal(card.elements.find(e => e.actions).actions[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
 });
 
 test('/t open binds desktop pane with a fresh topic; picker includes agent status; close offers unbind and --kill destroys', async t => {
   const h = await harness(t); const desktop = h.fake.create(); desktop.agent = 'claude'; desktop.agent_status = 'idle';
-  await h.bridge.handle(message('/t ls', 'list')); assert.match(JSON.stringify(cards(h.feishu).at(-1).content), /claude 空闲.*桌面.*未绑定.*w1:p1/);
+  await h.bridge.handle(message('/t ls', 'list')); assert.match(JSON.stringify(cards(h.feishu).at(-1).content), /Claude · 空闲.*电脑端已有.*未绑定.*w1:p1/);
   await h.bridge.handle(message('/t open w1:p1', 'open'));
   const binding = h.store.forPane('w1:p1'); assert.ok(binding.topicId.startsWith('bot-'));
   assert.equal(writes(h.fake).length, 0);
@@ -153,5 +153,5 @@ test('ambiguous failed terminal write is not retried or followed by Enter', asyn
   assert.equal(writes(h.fake).length, 3); assert.equal(writes(h.fake).at(-1).method, 'pane.send_text');
   await h.bridge.handle(message('danger', 'm2', 'm1'));
   assert.equal(writes(h.fake).length, 3);
-  assert.ok(records(h.feishu).at(-1).content.includes('not retried'));
+  assert.ok(records(h.feishu).at(-1).content.includes('没有重复发送'));
 });

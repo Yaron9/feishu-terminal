@@ -12,7 +12,7 @@ test('restored binding freezes reused pane identity and only explicit rebind per
   await h.bridge.handle(message('echo unsafe', 'm2', 'm1'));
   assert.equal(writes(h).length, before);
   assert.equal(restored.binding('oc_test', 'm1').frozen, true);
-  assert.match(texts(h).at(-1).content, /\/t open.*\/t close/);
+  assert.match(texts(h).at(-1).content, /已暂停同步.*\/t ls.*打开.*重新绑定/);
   await h.bridge.handle(message('/t open w1:p1', 'rebind', 'm1'));
   await h.bridge.handle(message('echo safe', 'm3', 'm1'));
   assert.equal(writes(h).length, before + 2);
@@ -192,13 +192,13 @@ test('restart reconciles an uncertain card patch by publishing the same pending 
   h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
   const old = h.store.binding('oc_test', 'm1'); let visibleNonce;
   h.feishu.patch = async (id, card) => {
-    visibleNonce = card.elements[1].actions[0].value.nonce;
+    visibleNonce = card.elements.find(e => e.actions).actions[0].value.nonce;
     throw Object.assign(new Error('response lost after server applied patch'), { code: 'network_error' });
   };
   h.fake.output('w1:p1', 'Changed approval'); h.advance(1000); await h.bridge.tick();
   const pendingNonce = visibleNonce;
   assert.equal(h.store.binding('oc_test', 'm1').nonce, old.nonce);
-  h.feishu.patch = async (id, card) => { assert.equal(card.elements[1].actions[0].value.nonce, pendingNonce); };
+  h.feishu.patch = async (id, card) => { assert.equal(card.elements.find(e => e.actions).actions[0].value.nonce, pendingNonce); };
   const restored = await h.restart();
   assert.equal(restored.binding('oc_test', 'm1').nonce, pendingNonce);
   assert.equal(restored.binding('oc_test', 'm1').pendingCard, null);
@@ -211,7 +211,7 @@ test('ambiguous output pauses before UUID deduplication expires instead of resen
   const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
   const reply = h.feishu.reply.bind(h.feishu); let attempts = 0;
   h.feishu.reply = async (topic, content, type, uuid) => {
-    if (type === 'interactive' && content.header?.title.content === '💻 输出') { attempts++; throw new Error('unknown delivery'); }
+    if (type === 'interactive' && content.header?.title.content === '💻 命令输出') { attempts++; throw new Error('unknown delivery'); }
     return reply(topic, content, type, uuid);
   };
   h.fake.output('w1:p1', '$ result'); await h.drain(); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
