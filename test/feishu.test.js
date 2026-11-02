@@ -138,5 +138,8 @@ test('SDK message and card ACK waits for durable claim but not execution; card t
   assert.ok(acknowledgements[1].includes(Buffer.from('card')));
   assert.ok(!acknowledgements[1].includes(Buffer.from('event')));
   assert.ok(acknowledgements[1].includes(Buffer.from('"code":200')));
+  assert.ok(acknowledgements[1].includes(Buffer.from(Buffer.from(JSON.stringify({
+    toast: { type: 'info', content: '已收到，处理中…' },
+  })).toString('base64'))));
   release(); edge.close(); ws.wsConfig.getWSInstance = () => undefined; ws.close({ force: true });
 });

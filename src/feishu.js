@@ -97,7 +97,7 @@ export class Feishu {
       'card.action.trigger': async raw => {
         await deliver(actionEvent(raw));
         // Only the local claim is awaited inside Feishu's callback deadline.
-        return { toast: { type: 'info', content: 'Received; checking authorization and card state.' } };
+        return { toast: { type: 'info', content: '已收到，处理中…' } };
       },
     });
     await this.ws.start({ eventDispatcher: this.dispatcher });
