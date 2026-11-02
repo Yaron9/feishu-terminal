@@ -8,9 +8,11 @@ const EXPIRED = '卡片已过期，请重新 /t ls';
 // One nonce covers all buttons on a card; an action invalidates every sibling.
 export class PanePicker {
   constructor(bridge) { this.bridge = bridge; }
-  entry(pane) {
+  async entry(pane, chatId) {
     const b = this.bridge.store.forPane(pane.pane_id);
+    const topic = b?.chatId === chatId ? await this.bridge.topicDescription(b) : null;
     return { paneId: pane.pane_id, label: this.bridge.label(pane),
+      topicDescription: topic, canMove: Boolean(topic),
       identity: (!b?.frozen && b?.identity) || { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id },
       bindingTopic: b?.topicId ?? null, generation: b?.generation ?? null };
   }
@@ -20,7 +22,7 @@ export class PanePicker {
     const selected = binding ? panes.filter(p => p.pane_id === binding.paneId) : panes;
     if (binding && !selected.length) { await b.feishu.reply(event.topicId, CHANGED); return; }
     const card = { kind: binding ? 'close' : 'list', chatId: event.chatId, topicId: event.topicId,
-      entries: selected.map(p => this.entry(p)), createdAt: b.now(), nonce: randomUUID() };
+      entries: await Promise.all(selected.map(p => this.entry(p, event.chatId))), createdAt: b.now(), nonce: randomUUID() };
     try {
       card.messageId = await b.feishu.reply(event.topicId, pickerCard(card), 'interactive');
       await b.store.saveActionCard(card, b.now());
@@ -50,12 +52,14 @@ export class PanePicker {
     const b = this.bridge, card = b.store.actionCard(event.messageId);
     const stale = async () => b.feishu.reply(event.topicId || event.messageId, '卡片已失效或过期，请重新 /t ls');
     if (!card || card.chatId !== event.chatId || card.topicId !== event.topicId || card.nonce !== event.nonce) { await stale(); return; }
-    const match = /^picker:(open|close|unbind|kill|cancel):(\d+)$/.exec(event.key);
-    const allowed = card.kind === 'list' ? ['open', 'close'] : card.kind === 'confirm' ? ['kill', 'cancel'] : ['unbind', 'kill', 'cancel'];
+    const match = /^picker:(open|move|close|unbind|kill|cancel):(\d+)$/.exec(event.key);
+    const allowed = card.kind === 'list' ? ['open', 'close', 'move'] : card.kind === 'recovered' ? ['move'] :
+      card.kind === 'confirm' ? ['kill', 'cancel'] : ['unbind', 'kill', 'cancel'];
     const entry = match && card.entries[Number(match[2])];
-    if (!entry || !allowed.includes(match[1])) { await stale(); return; }
+    if (!entry || !allowed.includes(match[1]) || (match[1] === 'move' && !entry.canMove) ||
+      (card.kind === 'recovered' && Number(match[2]) !== card.result.index)) { await stale(); return; }
     if (!await b.store.consumeActionCard(card)) { await stale(); return; }
-    const finish = result => b.feishu.patch(card.messageId, pickerCard(card, result));
+    const finish = result => b.feishu.patch(card.messageId, pickerCard({ ...card, kind: card.kind === 'recovered' ? 'list' : card.kind }, result));
     if (!Number.isFinite(card.createdAt) || b.now() - card.createdAt >= 600000 || b.now() < card.createdAt) { await finish(EXPIRED); return; }
     let pane;
     try { pane = await this.verify(entry); }
@@ -69,7 +73,17 @@ export class PanePicker {
     try {
       if (action === 'open' && binding) {
         await b.open(event, entry.paneId, entry.identity.terminalId);
-        await finish({ index: Number(match[2]), text: `已在话题「${b.label(pane)}」，已置顶` }); return;
+        const current = b.store.forPane(entry.paneId), index = Number(match[2]);
+        const next = { ...card, kind: 'recovered', nonce: randomUUID(), createdAt: b.now(),
+          entries: card.entries.map((e, i) => i === index ? { ...e, bindingTopic: current.topicId,
+            generation: current.generation, identity: current.identity, canMove: true } : e),
+          result: { index, text: `已在话题${await b.topicDescription(current)}，已置顶；看不到可点 [移到新话题]` } };
+        await b.feishu.patch(card.messageId, pickerCard(next));
+        await b.store.saveActionCard(next, b.now()); return;
+      }
+      if (action === 'move') {
+        await b.move(event, entry.paneId, entry);
+        await finish({ index: Number(match[2]), text: '已移到新话题，在列表最上面' }); return;
       }
       if (action === 'open') {
         const topicId = await b.open(event, entry.paneId, entry.identity.terminalId);
@@ -103,7 +117,7 @@ export class PanePicker {
       }
       await finish(action === 'kill' ? '已关闭' : '已解绑');
     } catch (error) {
-      await finish(error.message === CHANGED ? CHANGED : '操作未完成，请重新 /t ls 检查；不会自动重试');
+      await finish(error.message === CHANGED || error.code === 'binding_unverified' ? CHANGED : '操作未完成，请重新 /t ls 检查；不会自动重试');
     }
   }
 }

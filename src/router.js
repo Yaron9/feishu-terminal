@@ -8,7 +8,7 @@ export function validKeys(keys) {
   return Array.isArray(keys) && keys.length >= 1 && keys.length <= 8 && keys.every(key => KEYS.has(key));
 }
 
-export const HELP = '/t ls | /t open <pane_id> | /t close [--kill] | /t k <1–8 keys> | /t screen | /t raw <text> | /t ok';
+export const HELP = '/t ls | /t open <pane_id> | /t move [<pane_id>] | /t close [--kill] | /t k <1–8 keys> | /t screen | /t raw <text> | /t ok';
 
 // Nothing except the exact /t token is reserved. Payload whitespace is data.
 export function route(text, bound = false) {
@@ -22,6 +22,8 @@ export function route(text, bound = false) {
   if (parts[0] === 'close' && parts.length > 1) parts[1] = parts[1].replace(/^[—–](?=[a-z])/iu, '--');
   if (parts[0] === 'ls' && parts.length === 1) return { type: 'list' };
   if (parts[0] === 'open' && parts.length === 2) return { type: 'open', paneId: parts[1] };
+  if (parts[0] === 'move' && parts.length === 2) return { type: 'move', paneId: parts[1] };
+  if (parts[0] === 'move' && parts.length === 1) return bound ? { type: 'move' } : { type: 'error', message: 'Use /t move <pane_id> in the group.' };
   if (parts[0] === 'close' && parts.length === 1) return { type: bound ? 'closePicker' : 'list' };
   if (!bound && ['close', 'k', 'screen', 'ok'].includes(parts[0])) return { type: 'error', message: 'Open a topic first.' };
   if (parts[0] === 'ok' && parts.length === 1) return { type: 'ok' };

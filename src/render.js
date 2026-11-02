@@ -93,6 +93,7 @@ export function splitText(text, maxBytes = 12000) {
 const BUTTONS = [['Enter', 'enter'], ['Esc', 'esc'], ['1', '1'], ['2', '2'], ['3', '3'], ['y', 'y'], ['n', 'n'], ['Ctrl-C', 'ctrl+c'], ['Refresh', 'refresh']];
 
 export function pickerCard(card, result) {
+  result ??= card.result;
   const elements = [];
   const text = content => ({ tag: 'div', text: { tag: 'plain_text', content } });
   const buttons = (items, index) => ({ tag: 'action', actions: items.map(([label, action]) => ({
@@ -101,17 +102,19 @@ export function pickerCard(card, result) {
   })) });
   if (result && typeof result === 'object') card.entries.forEach((entry, index) => {
     elements.push(text(index === result.index ? result.text : entry.label));
+    if (card.kind === 'recovered' && index === result.index) elements.push(buttons([['移到新话题', 'move']], index));
   });
   else if (result) elements.push(text(result));
   else card.entries.forEach((entry, index) => {
-    elements.push(text(card.kind === 'confirm' ? `确定关闭「${entry.label}」？里面的会话会结束` : entry.label));
-    elements.push(buttons(card.kind === 'list' ? [['打开', 'open'], ['关闭', 'close']] :
+    const label = entry.label + (entry.topicDescription ? `\n${entry.label.includes('已冻结') ? '话题' : '已绑定话题'}${entry.topicDescription}` : '');
+    elements.push(text(card.kind === 'confirm' ? `确定关闭「${entry.label}」？里面的会话会结束` : label));
+    elements.push(buttons(card.kind === 'list' ? [['打开', 'open'], ['关闭', 'close'], ...(entry.canMove ? [['移到新话题', 'move']] : [])] :
       card.kind === 'confirm' ? [['确定关闭', 'kill'], ['取消', 'cancel']] :
         [['仅解绑', 'unbind'], ['关闭终端', 'kill'], ['取消', 'cancel']], index));
   });
   if (!elements.length) elements.push(text('暂无终端'));
   return { config: { wide_screen_mode: true, update_multi: true },
-    header: { template: 'blue', title: { tag: 'plain_text', content: card.kind === 'list' ? '选择终端' : '关闭终端' } }, elements };
+    header: { template: 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? '选择终端' : '关闭终端' } }, elements };
 }
 
 export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text, note }) {

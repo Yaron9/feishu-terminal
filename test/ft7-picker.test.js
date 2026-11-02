@@ -43,7 +43,8 @@ test('open on a bound pane resumes the topic and never creates or rebinds it', a
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   await h.bridge.handle(message('/t ls', 'list'));
   await click(h, 'open');
-  assert.match(result(h), /已在话题「.*」，已置顶/); noButtons(h);
+  assert.match(result(h), /已在话题「.*」\(\d{2}:\d{2}\)，已置顶；看不到可点 \[移到新话题\]/);
+  assert.deepEqual(patches(h).at(-1).card.elements.flatMap(e => e.actions ?? []).map(b => b.text.content), ['移到新话题']);
   assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
   assert.equal(h.store.list().length, 1);
 });

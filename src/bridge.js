@@ -114,11 +114,13 @@ export class Bridge {
       if (action.type === 'list') { await this.list(event); return; }
       if (action.type === 'closePicker') { await this.picker.show(event, binding); return; }
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
+      if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
       if (action.type === 'create') {
         if (event.isReply) { await this.feishu.reply(event.topicId, 'This topic is not bound. Use /t open <pane_id> in the group.'); return; }
         const pane = await this.createPane();
         const identity = await this.identity(pane.pane_id);
-        await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity });
+        await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity,
+          topicRoot: { text: event.text, createdAt: Number.isFinite(event.createdAt) ? event.createdAt : this.now() } });
         await this.verify(this.store.binding(event.chatId, event.messageId));
         this.resubscribe();
         const created = this.store.binding(event.chatId, event.messageId);
@@ -343,12 +345,74 @@ export class Bridge {
     const { panes } = await this.herdr.request('pane.list');
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
-    const topicId = await this.feishu.send(event.chatId, `终端：${this.label(pane)}`);
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...(expectedTerminalId ? { allowDesktop: true } : {}) });
+    const text = `终端：${this.label(pane)}`, createdAt = this.now();
+    const topicId = await this.feishu.send(event.chatId, text);
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: { text, createdAt },
+      ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
     return topicId;
+  }
+  async topicDescription(binding) {
+    let root = this.store.binding(binding.chatId, binding.topicId)?.topicRoot;
+    if (!root) {
+      try {
+        const message = await this.feishu.getMessage(binding.topicId);
+        const text = JSON.parse(message.body.content).text;
+        const createdAt = Number(message.create_time);
+        if (typeof text === 'string' && Number.isFinite(createdAt)) {
+          root = { text, createdAt };
+          await this.updateGeneration(binding, { topicRoot: root });
+        }
+      } catch { /* Legacy roots may be unavailable; moving remains possible. */ }
+    }
+    const chars = Array.from(root?.text ?? binding.topicId);
+    const title = chars.slice(0, 30).join('') + (chars.length > 30 ? '…' : '');
+    const time = Number.isFinite(root?.createdAt) ? new Date(root.createdAt + 8 * 3600000).toISOString().slice(11, 16) : '--:--';
+    return `「${title}」(${time})`;
+  }
+  move(event, paneId, expected) {
+    // Share open's pane lock, then drain output and status publication before
+    // changing destinations. No old batch/UUID can leak into the new topic.
+    return this.enqueue(async () => {
+      const binding = this.store.forPane(paneId);
+      if (!binding || binding.chatId !== event.chatId || (expected &&
+        (expected.bindingTopic !== binding.topicId || expected.generation !== binding.generation)))
+        throw new Error('终端已变化，请重新 /t ls');
+      return this.enqueue(() => this.enqueue(async () => {
+        await this.verify(binding);
+        if (this.store.binding(binding.chatId, binding.topicId).outputBatch) {
+          await this.flush(binding);
+          if (this.store.binding(binding.chatId, binding.topicId).outputBatch) throw new Error('Output delivery pending');
+        }
+        const { panes } = await this.herdr.request('pane.list');
+        const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
+        if (!pane) throw new Error('终端已变化，请重新 /t ls');
+        const text = `终端：${this.label(pane)}`, createdAt = this.now();
+        await this.verify(binding);
+        const topicId = await this.feishu.send(event.chatId, text);
+        await this.verify(binding);
+        const moved = await this.store.transaction(data => {
+          const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+          if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
+          Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
+            cardCreatedAt: null, pendingCard: null, retiredCardId: undefined, outputBatch: null,
+            topicRoot: { text, createdAt } });
+          return structuredClone(current);
+        });
+        const state = this.state(binding);
+        this.runtime.delete(binding.topicId);
+        this.runtime.set(topicId, { ...state, verified: false, lastCard: -Infinity, cardRetryAt: 0,
+          retireRetryAt: 0, cardPending: true, dirty: true });
+        await this.verify(moved); this.resubscribe();
+        try { await this.refresh(moved, true); }
+        finally {
+          await this.feishu.reply(binding.topicId, `已移到新话题「${text}」`).catch(() => {});
+        }
+        return topicId;
+      }, `card:${binding.topicId}`), `output:${binding.topicId}`);
+    }, `open:${paneId}`);
   }
   async recoverOpen(event, binding, expectedTerminalId) {
     const label = await this.resumeTopic(binding, expectedTerminalId);

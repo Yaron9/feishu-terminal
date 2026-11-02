@@ -48,7 +48,8 @@ export function messageEvent(raw, botOpenId) {
     messageId: message.message_id, chatId: message.chat_id, chatType: message.chat_type,
     openId: event.sender?.sender_id?.open_id, senderType: event.sender?.sender_type,
     topicId: message.root_id || message.parent_id || message.message_id,
-    isReply: Boolean(message.root_id || message.parent_id), text };
+    isReply: Boolean(message.root_id || message.parent_id), text,
+    ...(message.create_time ? { createdAt: Number(message.create_time) } : {}) };
 }
 
 export function actionEvent(raw) {

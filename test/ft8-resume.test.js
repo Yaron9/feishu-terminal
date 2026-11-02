@@ -40,10 +40,12 @@ test('picker recovery replies in the existing topic, commits a new screen nonce,
   assert.match(JSON.stringify(retired.card), /已移至下方新卡片/);
   assert.ok(!retired.card.elements.some(e => e.actions));
   const result = h.feishu.calls.find(c => c.type === 'patch' && c.id === picker.messageId).card;
-  assert.match(result.elements[0].text.content, /^已在话题「.*」，已置顶$/);
-  assert.equal(result.elements.length, 2); // Preserve the other pane's row.
+  assert.match(result.elements[0].text.content, /^已在话题「.*」\(\d{2}:\d{2}\)，已置顶；看不到可点 \[移到新话题\]$/);
+  assert.equal(result.elements.length, 3); // Preserve the other pane's row and the move escape.
   assert.ok(!JSON.stringify(result).includes('"url"'));
-  assert.ok(!result.elements.some(e => e.actions));
+  const move = result.elements.find(e => e.actions).actions;
+  assert.equal(move.length, 1); assert.equal(move[0].text.content, '移到新话题');
+  assert.notEqual(move[0].value.nonce, picker.nonce);
   const before = writes(h).length;
   await h.bridge.handle(screenClick(old)); assert.equal(writes(h).length, before);
   await h.bridge.handle(screenClick(active)); assert.equal(writes(h).length, before + 1);
