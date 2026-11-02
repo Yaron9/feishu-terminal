@@ -1,3 +1,4 @@
+import { cardVersion, renderSchema, patchStoredCard, retirementCard } from './card-schema.js';
 import { backgroundView, screenActivity } from './transcripts/background.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
@@ -86,7 +87,16 @@ export class Bridge {
     if (status !== 'blocked') state.blockedNotice = false;
     state.status = status; state.agent = agent;
   }
+  rememberCard(id, card, kind) {
+    return this.store.transaction(data => {
+      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind };
+    });
+  }
+  patchCard(id, card, kind) { return patchStoredCard(this, id, card, kind); }
   async claimEvent(event) {
+    if (event.kind === 'button') this.onError('card_action_received ' + JSON.stringify({
+      kind: 'button', topic: typeof event.topicId === 'string' ? event.topicId : null,
+      cardId: typeof event.messageId === 'string' ? event.messageId : null }));
     if (this.stopped || (event.kind === 'message' && event.senderType !== 'user')) return false;
     const ids = [event.eventId && `event:${event.eventId}`];
     if (event.kind === 'message') ids.push(event.messageId && `message:${event.messageId}`);
@@ -177,6 +187,7 @@ export class Bridge {
     const identity = await this.identity(pane.pane_id);
     const root = this.newRoot(pane, action.text);
     const topicId = await this.feishu.send(event.chatId, root.card);
+    await this.rememberCard(topicId, root.card, 'root');
     await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata });
     const created = this.store.binding(event.chatId, topicId);
     await this.store.transaction(data => {
@@ -202,7 +213,7 @@ export class Bridge {
   }
   newRoot(pane, fallback) {
     const title = topicTitle(pane, fallback), card = topicCard(pane, title);
-    return { card, metadata: { type: 'interactive', text: title, publishedTitle: title,
+    return { card, metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
       createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
   async syncTopicTitle(binding, pane) {
@@ -225,7 +236,7 @@ export class Bridge {
     const attempted = { ...root, lastAttemptAt: now };
     await this.updateGeneration(binding, { topicRoot: attempted });
     try {
-      await this.feishu.patch(binding.topicId, topicCard(pane, title));
+      await this.patchCard(binding.topicId, topicCard(pane, title), 'root');
       await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title } });
     } catch (error) {
       if (['230031', '230011', '230110'].includes(String(error.code)))
@@ -407,6 +418,7 @@ export class Bridge {
     if (!pane) throw new Error('Unconfirmed pane identity');
     const root = this.newRoot(pane);
     const topicId = await this.feishu.send(event.chatId, root.card);
+    await this.rememberCard(topicId, root.card, 'root');
     await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
@@ -458,6 +470,7 @@ export class Bridge {
           const root = this.newRoot(pane), text = root.metadata.text;
           await this.verify(binding);
           const topicId = await this.feishu.send(event.chatId, root.card);
+          await this.rememberCard(topicId, root.card, 'root');
           await this.verify(binding);
           const moved = await this.store.transaction(data => {
             const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
@@ -466,7 +479,7 @@ export class Bridge {
               cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
-              retiredCardId: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
+              retiredCardId: undefined, retiredCardKind: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
               topicRoot: root.metadata });
             for (const pointer of data.topicPointers ?? []) {
               if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
@@ -726,14 +739,14 @@ export class Bridge {
       const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id;
       return { nonce, createdAt: this.now(), targetId: resume || newTurn ? null : binding.cardId ?? null,
         ...((resume || (newTurn && !binding.cardTurnId)) && binding.cardId ? {
-          previousCardId: binding.cardId,
+          previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status',
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
         uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn),
         card: turnCard({ turn, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
     }
     return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
-      ...(resume && binding.cardId ? { previousCardId: binding.cardId } : {}),
+      ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
       uuid: randomUUID(), signature: state.nextSignature,
       card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
         agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
@@ -749,10 +762,7 @@ export class Bridge {
     if (attempts < 3) {
       if (!await this.updateGeneration(current, { retiredCardAttempts: attempts + 1 })) return;
       try {
-        await this.feishu.patch(current.retiredCardId, {
-          config: { wide_screen_mode: true, update_multi: true },
-          elements: [{ tag: 'div', text: { tag: 'plain_text', content: '已移至下方新卡片' } }],
-        });
+        await this.patchCard(current.retiredCardId, retirementCard(), current.retiredCardKind);
       } catch (error) {
         const code = String(error.code ?? error.cause?.code ?? '');
         const transient = ['network_error', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN',
@@ -771,7 +781,7 @@ export class Bridge {
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
       if (this.sameGeneration(binding, b) && b.retiredCardId === current.retiredCardId) {
-        delete b.retiredCardId; delete b.retiredCardAt; delete b.retiredCardAttempts;
+        delete b.retiredCardId; delete b.retiredCardKind; delete b.retiredCardAt; delete b.retiredCardAttempts;
       }
     });
   }
@@ -802,7 +812,7 @@ export class Bridge {
       if (!await this.updateGeneration(binding, { menuAttemptAt: this.now() })) return;
       let id = pending.targetId;
       if (id) {
-        try { await this.feishu.patch(id, pending.card); }
+        try { await this.patchCard(id, pending.card, 'menu'); }
         catch (error) {
           if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
           id = null; pending.targetId = null;
@@ -812,7 +822,8 @@ export class Bridge {
       if (!id) {
         if (this.now() - pending.createdAt >= 55 * 60 * 1000) throw new Error('Menu retry window expired');
         await this.verify(binding);
-        id = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
+        id = await this.feishu.reply(binding.topicId, renderSchema(pending.card, cardVersion(pending.card)), 'interactive', pending.uuid);
+        await this.rememberCard(id, pending.card, 'menu');
       }
       await this.updateGeneration(binding, { pendingMenuCard: null,
         menuCardId: pending.menu.kind ? id : null, menuNonce: pending.menu.kind ? pending.nonce : null,
@@ -881,7 +892,7 @@ export class Bridge {
         if (cardId) {
           await this.verify(binding);
           if (pending.turnId && !await this.updateGeneration(binding, { cardAttemptId: cardId, cardAttemptAt: this.now() })) return;
-          try { await this.feishu.patch(cardId, pending.card); }
+          try { await this.patchCard(cardId, pending.card, binding.cardTurnId ? 'turn' : 'status'); }
           catch (error) {
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
             pending.targetId = null; cardId = null;
@@ -896,7 +907,8 @@ export class Bridge {
             if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
           }
           await this.verify(binding);
-          cardId = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
+          cardId = await this.feishu.reply(binding.topicId, renderSchema(pending.card, cardVersion(pending.card)), 'interactive', pending.uuid);
+          await this.rememberCard(cardId, pending.card, pending.turnId ? 'turn' : 'status');
         }
         // The old nonce stays valid until publication succeeds. A pending
         // version always has a fresh nonce; consumed versions are never reused.
@@ -907,7 +919,7 @@ export class Bridge {
               cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce });
             if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
             if (pending.previousCardId && pending.previousCardId !== cardId) {
-              b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt; delete b.retiredCardAttempts;
+              b.retiredCardKind = pending.previousCardKind; b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt; delete b.retiredCardAttempts;
             }
           }
         });

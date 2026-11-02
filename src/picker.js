@@ -27,6 +27,7 @@ export class PanePicker {
       entries: await Promise.all(selected.map(p => this.entry(p, event.chatId))), createdAt: b.now(), nonce: randomUUID() };
     try {
       card.messageId = await b.feishu.reply(event.topicId, pickerCard(card), 'interactive');
+      await b.rememberCard(card.messageId, pickerCard(card), 'picker');
       await b.store.saveActionCard(card, b.now());
     } catch (error) {
       if (binding) throw error;
@@ -36,7 +37,7 @@ export class PanePicker {
   async replace(card, kind, entry) {
     const b = this.bridge;
     const next = { ...card, kind, entries: [entry], nonce: randomUUID() };
-    await b.feishu.patch(card.messageId, pickerCard(next));
+    await b.patchCard(card.messageId, pickerCard(next), 'picker');
     await b.store.saveActionCard(next, b.now());
   }
   async verify(entry) {
@@ -61,7 +62,7 @@ export class PanePicker {
     if (!entry || !allowed.includes(match[1]) || (match[1] === 'move' && !entry.canMove) ||
       (card.kind === 'recovered' && Number(match[2]) !== card.result.index)) { await stale(); return; }
     if (!await b.store.consumeActionCard(card)) { await stale(); return; }
-    const finish = result => b.feishu.patch(card.messageId, pickerCard({ ...card, kind: card.kind === 'recovered' ? 'list' : card.kind }, result));
+    const finish = result => b.patchCard(card.messageId, pickerCard({ ...card, kind: card.kind === 'recovered' ? 'list' : card.kind }, result), 'picker');
     if (!Number.isFinite(card.createdAt) || b.now() - card.createdAt >= 600000 || b.now() < card.createdAt) { await finish(EXPIRED); return; }
     let pane;
     try { pane = await this.verify(entry); }
@@ -80,7 +81,7 @@ export class PanePicker {
           entries: card.entries.map((e, i) => i === index ? { ...e, bindingTopic: current.topicId,
             generation: current.generation, identity: current.identity, canMove: true } : e),
           result: { index, text: `已在话题${await b.topicDescription(current)}，已置顶；看不到可点 [移到新话题]` } };
-        await b.feishu.patch(card.messageId, pickerCard(next));
+        await b.patchCard(card.messageId, pickerCard(next), 'picker');
         await b.store.saveActionCard(next, b.now()); return;
       }
       if (action === 'move') {

@@ -159,7 +159,7 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
     tag: 'column_set', flex_mode: 'none', columns: buttons.slice(i, i + 3).map(([label, key]) => ({
       tag: 'column', width: 'weighted', weight: 1, elements: [{
         tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
-        value: { topic_id: topicId, nonce, key },
+        behaviors: [{ type: 'callback', value: { topic_id: topicId, nonce, key } }],
       }],
     })),
   });

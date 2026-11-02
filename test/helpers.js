@@ -107,7 +107,14 @@ export function mockFeishu(now) {
     async start(onEvent) { this.deliver = onEvent; }, close() {},
     async send(chatId, text, uuid) { const id = `bot-${++sequence}`; calls.push({ type: 'send', id, chatId, text, uuid, time: now() }); return id; },
     async reply(topicId, content, msgType = 'text', uuid) { const id = `bot-${++sequence}`; calls.push({ type: 'reply', id, topicId, content, msgType, uuid, time: now() }); return id; },
-    async patch(id, card) { calls.push({ type: 'patch', id, card, time: now() }); },
+    async patch(id, card) {
+      const sent = calls.find(c => c.id === id && ['send', 'reply'].includes(c.type));
+      if (sent) {
+        const original = sent.type === 'send' ? sent.text : sent.content;
+        assert.equal(card.schema ?? '1.0', original.schema ?? '1.0', `patch must retain schema for ${id}`);
+      }
+      calls.push({ type: 'patch', id, card, time: now() });
+    },
   };
 }
 
