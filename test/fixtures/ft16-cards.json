@@ -308,7 +308,7 @@
       "template": "orange",
       "title": {
         "tag": "plain_text",
-        "content": "🤖 Claude · 等待菜单选择"
+        "content": "Claude · 等待菜单选择"
       }
     },
     "body": {
@@ -318,210 +318,114 @@
           "content": "**Claude 正在等你从菜单里选择** · 允许执行这条命令吗？\n点选项按钮即可选择，无需输入文字。"
         },
         {
-          "tag": "markdown",
-          "content": "正在检查项目，稍后给你结果。"
-        },
-        {
-          "tag": "collapsible_panel",
-          "expanded": false,
-          "header": {
-            "title": {
-              "tag": "plain_text",
-              "content": "🔧 工具调用 (1)"
+          "tag": "interactive_container",
+          "width": "fill",
+          "height": "auto",
+          "has_border": true,
+          "border_color": "grey",
+          "corner_radius": "8px",
+          "behaviors": [
+            {
+              "type": "callback",
+              "value": {
+                "topic_id": "topic",
+                "nonce": "nonce",
+                "key": "1"
+              }
             }
-          },
+          ],
           "elements": [
             {
               "tag": "markdown",
-              "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
+              "content": "▶ 是，执行"
             }
           ]
         },
         {
-          "tag": "markdown",
-          "content": "**等待你确认：** 允许执行这条命令吗？\n<font color='grey'>点按钮等于在终端里按对应的键</font>"
-        },
-        {
-          "tag": "column_set",
-          "flex_mode": "none",
-          "columns": [
+          "tag": "interactive_container",
+          "width": "fill",
+          "height": "auto",
+          "has_border": true,
+          "border_color": "grey",
+          "corner_radius": "8px",
+          "behaviors": [
             {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "Esc 取消"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "esc"
-                  }
-                }
-              ]
-            },
+              "type": "callback",
+              "value": {
+                "topic_id": "topic",
+                "nonce": "nonce",
+                "key": "2"
+              }
+            }
+          ],
+          "elements": [
             {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "1 是，执行"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "1"
-                  }
-                }
-              ]
-            },
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "2 始终允许"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "2"
-                  }
-                }
-              ]
+              "tag": "markdown",
+              "content": "始终允许"
             }
           ]
         },
         {
-          "tag": "column_set",
-          "flex_mode": "none",
-          "columns": [
+          "tag": "interactive_container",
+          "width": "fill",
+          "height": "auto",
+          "has_border": true,
+          "border_color": "grey",
+          "corner_radius": "8px",
+          "behaviors": [
             {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "3 否，取消"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "3"
-                  }
-                }
-              ]
-            },
+              "type": "callback",
+              "value": {
+                "topic_id": "topic",
+                "nonce": "nonce",
+                "key": "3"
+              }
+            }
+          ],
+          "elements": [
             {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "y 同意"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "y"
-                  }
-                }
-              ]
-            },
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "n 拒绝"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "n"
-                  }
-                }
-              ]
+              "tag": "markdown",
+              "content": "否，取消"
             }
           ]
         },
         {
-          "tag": "column_set",
-          "flex_mode": "none",
-          "columns": [
+          "tag": "button",
+          "width": "fill",
+          "text": {
+            "tag": "plain_text",
+            "content": "Esc 取消"
+          },
+          "type": "default",
+          "behaviors": [
             {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "Ctrl-C 中断"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "ctrl+c"
-                  }
-                }
-              ]
-            },
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "刷新"
-                  },
-                  "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "refresh"
-                  }
-                }
-              ]
+              "type": "callback",
+              "value": {
+                "topic_id": "topic",
+                "nonce": "nonce",
+                "key": "esc"
+              }
             }
           ]
         },
         {
-          "tag": "markdown",
-          "content": "<font color='grey'>等待菜单选择</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+          "tag": "button",
+          "width": "fill",
+          "text": {
+            "tag": "plain_text",
+            "content": "刷新"
+          },
+          "type": "default",
+          "behaviors": [
+            {
+              "type": "callback",
+              "value": {
+                "topic_id": "topic",
+                "nonce": "nonce",
+                "key": "refresh"
+              }
+            }
+          ]
         }
       ]
     }

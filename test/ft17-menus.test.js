@@ -2,24 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { detectMenu, resumeWarnings } from '../src/menus.js';
-import { screenCard, turnCard } from '../src/render.js';
+import { menuCard } from '../src/render.js';
 import { harness, message } from './helpers.js';
 import { resume, numbered, model, config } from './fixtures/ft17-menus.js';
 
 const buttons = card => !card || typeof card !== 'object' ? [] :
-  (card.tag === 'button' ? [card] : []).concat(Object.values(card).flatMap(value =>
+  (card.behaviors?.[0]?.type === 'callback' ? [{ ...card, value: card.behaviors[0].value, text: card.text ?? { content: card.elements?.[0]?.content ?? '' } }] : card.tag === 'button' ? [card] : []).concat(Object.values(card).flatMap(value =>
     Array.isArray(value) ? value.flatMap(buttons) : value && typeof value === 'object' ? buttons(value) : []));
 const keys = h => h.fake.calls.filter(call => call.method === 'pane.send_keys');
 const binding = h => h.bridge.store.forPane('w1:p1');
 const currentCard = h => {
   const b = binding(h);
-  const call = h.feishu.calls.findLast(call => call.id === b.cardId && (call.type === 'patch' || call.msgType === 'interactive'));
+  const call = h.feishu.calls.findLast(call => call.id === b.menuCardId && (call.type === 'patch' || call.msgType === 'interactive'));
   return call.card ?? call.content;
 };
 const click = (h, key, override = {}) => {
   const b = binding(h);
   return h.bridge.handle({ kind: 'button', eventId: randomUUID(), chatId: b.chatId, topicId: b.topicId,
-    openId: 'ou_test', messageId: b.cardId, nonce: b.nonce, key, ...override });
+    openId: 'ou_test', messageId: b.menuCardId, nonce: b.menuNonce, key, ...override });
 };
 async function openMenu(t, screen = resume, options = {}) {
   const h = await harness(t, options);
@@ -30,9 +30,8 @@ async function openMenu(t, screen = resume, options = {}) {
   return { h, pane };
 }
 
-test('ft17 idle and settled turn/status cards expose one-tap items; uncertain parsing has arrow/Enter fallback', () => {
-  for (const card of [screenCard({ text: resume, status: 'idle', agent: 'claude', nonce: 'n' }),
-    turnCard({ screen: resume, turn: { agent: 'Claude', text: 'Done', status: 'idle', settled: true }, nonce: 'n' })]) {
+test('ft18 separate menu cards expose one-tap items; uncertain parsing has arrow/Enter fallback', () => {
+  for (const card of [menuCard({ menu: detectMenu(resume), nonce: 'n' })]) {
     assert.equal(card.header.template, 'orange');
     assert.match(JSON.stringify(card), /Claude 正在等你从菜单里选择.*Resume session/u);
     assert.deepEqual(buttons(card).map(button => button.value.key), ['menu:select:0', 'menu:select:1', 'menu:select:2', 'esc', 'refresh']);
@@ -40,7 +39,7 @@ test('ft17 idle and settled turn/status cards expose one-tap items; uncertain pa
   }
   const fallback = 'Select model\nLoading options…\n↑/↓ to navigate · Enter to select · Esc to cancel';
   assert.deepEqual(detectMenu(fallback), { kind: 'list', title: 'Select model', items: [], cursorIndex: -1 });
-  assert.deepEqual(buttons(screenCard({ text: fallback, status: 'idle' })).map(button => button.value.key), ['up', 'down', 'enter', 'esc', 'refresh']);
+  assert.deepEqual(buttons(menuCard({ menu: detectMenu(fallback) })).map(button => button.value.key), ['up', 'down', 'enter', 'esc', 'refresh']);
 });
 
 test('ft17 idle list taps send exactly the arrows needed and Enter, including up and current selection', async t => {
@@ -91,7 +90,7 @@ test('ft17 nonce is single-use across new event IDs and restart; ACL, topic/card
   assert.equal(keys(h).length, 0);
   await click(h, 'menu:select:1');
   assert.equal(keys(h).length, 1);
-  const replay = { nonce: old.nonce, messageId: old.cardId };
+  const replay = { nonce: old.menuNonce, messageId: old.menuCardId };
   await click(h, 'menu:select:1', replay);
   await h.restart();
   await click(h, 'menu:select:1', replay);
@@ -110,13 +109,14 @@ test('ft17 resume duplicate title warning requires a fresh second tap, persists 
   await click(h, 'menu:select:1'); assert.equal(keys(h).length, 0);
   h.advance(1000); await h.bridge.tick();
   assert.match(JSON.stringify(currentCard(h)), /同时恢复可能损坏会话记录/u);
+  assert.equal(binding(h).menuCardId, old.menuCardId);
   assert.ok(buttons(currentCard(h)).some(button => button.value.key === 'menu:confirm:1'));
-  await click(h, 'menu:confirm:1', { nonce: old.nonce }); assert.equal(keys(h).length, 0);
+  await click(h, 'menu:confirm:1', { nonce: old.menuNonce }); assert.equal(keys(h).length, 0);
   await h.restart();
   const confirm = binding(h);
   await click(h, 'menu:confirm:1');
   assert.deepEqual(keys(h).map(call => call.params.keys), [['down', 'enter']]);
-  await click(h, 'menu:confirm:1', { nonce: confirm.nonce }); assert.equal(keys(h).length, 1);
+  await click(h, 'menu:confirm:1', { nonce: confirm.menuNonce }); assert.equal(keys(h).length, 1);
 });
 
 test('ft17 newly live duplicate is checked at tap time; confirmation can return to the menu with no terminal input', async t => {
@@ -192,7 +192,7 @@ test('ft17 fallback Enter also warns about a live resume duplicate and requires 
   assert.deepEqual(keys(h).map(call => call.params.keys), [['enter']]);
 });
 
-test('ft17 transcript mode publishes idle menus before any turn and updates settled turns on menu screen changes', async t => {
+test('ft18 transcript mode publishes idle menus before any turn and keeps menu identity on screen changes', async t => {
   const records = [];
   const adapter = { locate: async () => 'menus.jsonl', read: async (_path, cursor) => ({
     cursor: { offset: records.length }, items: cursor.atEnd ? [] : records.slice(cursor.offset),
@@ -203,12 +203,12 @@ test('ft17 transcript mode publishes idle menus before any turn and updates sett
   h.advance(2000); await h.bridge.tick(); h.advance(2000); await h.bridge.tick();
   assert.equal(binding(h).turn.settled, true);
   assert.equal(currentCard(h).schema, '2.0');
-  const oldId = binding(h).cardId;
+  const oldId = binding(h).menuCardId;
   pane.visible = model; h.advance(2000); await h.bridge.tick();
-  assert.equal(binding(h).cardId, oldId);
-  assert.equal(buttons(currentCard(h))[0].text.content, 'Default (recommended)');
+  assert.equal(binding(h).menuCardId, oldId);
+  assert.match(buttons(currentCard(h))[0].text.content, /Default \(recommended\)/);
   pane.visible = '❯ '; h.advance(2000); await h.bridge.tick();
-  assert.equal(buttons(currentCard(h)).length, 0);
+  assert.equal(binding(h).menuCardId, null);
 });
 
 test('ft17 card snapshots and tap validation use the same full viewport in a terminal taller than forty rows', async t => {
@@ -230,13 +230,15 @@ test('ft17 card snapshots and tap validation use the same full viewport in a ter
   assert.ok(h.fake.calls.filter(call => call.method === 'pane.read' && call.params.source === 'visible').every(call => call.params.lines === 66));
 });
 
-test('ft17 menu labels are bounded and markup stays literal in status and turn cards', () => {
-  const label = '<at id=all>中文🙂&`'.repeat(200);
-  const screen = 'Select model\n❯ ' + label + '\n' + Array.from({ length: 11 }, () => '  ' + label).join('\n') + '\nEsc to cancel';
-  for (const card of [screenCard({ text: screen, status: 'idle', nonce: 'n' }),
-    turnCard({ screen, turn: { agent: 'Claude', text: '🙂'.repeat(2000), settled: true }, nonce: 'n' })]) {
-    assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000);
-    assert.ok(buttons(card).every(button => button.text.tag === 'plain_text' && Array.from(button.text.content).length <= 60));
-    assert.ok(buttons(card).every(button => button.value.nonce === 'n'));
-  }
+test('ft18 full labels survive byte-budget pagination and markup stays literal', () => {
+  const label = '<at id=all>\u4e2d\u6587\ud83d\ude42&`'.repeat(200);
+  const menu = { kind: 'list', title: 'Select model', cursorIndex: 0,
+    items: Array.from({ length: 12 }, () => ({ label, sublabel: '4 seconds ago / HEAD / 7.1MB' })) };
+  const card = menuCard({ menu, nonce: 'n' });
+  assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000);
+  const rows = card.body.elements.filter(e => e.tag === 'interactive_container');
+  assert.ok(rows.length < 10);
+  assert.ok(rows[0].elements[0].content.includes('id=all&gt;'));
+  assert.ok(rows[0].elements[0].content.includes('\u4e2d\u6587'));
+  assert.ok(rows.every(row => row.width === 'fill' && row.behaviors[0].value.nonce === 'n'));
 });

@@ -10,7 +10,7 @@ import { harness, message } from './helpers.js';
 
 const buttons = card => {
   if (!card || typeof card !== 'object') return [];
-  return (card.tag === 'button' ? [card] : []).concat(Object.values(card).flatMap(value =>
+  return (card.behaviors?.[0]?.type === 'callback' ? [{ ...card, value: card.behaviors[0].value, text: card.text ?? { content: card.elements?.[0]?.content ?? '' } }] : card.tag === 'button' ? [card] : []).concat(Object.values(card).flatMap(value =>
     Array.isArray(value) ? value.flatMap(buttons) : value && typeof value === 'object' ? buttons(value) : []));
 };
 
@@ -34,7 +34,6 @@ test('Enter only appears on an explicit unnumbered prompt; number buttons carry 
   assert.deepEqual(options.filter(b => /^\d$/.test(b[1])), [['1 是，执行', '1'], ['2 始终允许', '2'], ['3 否，取消', '3']]);
   const card = turnCard({ turn: { agent: 'Claude', text: '等待工具授权', status: 'blocked' }, screen: menu, topicId: 'topic', nonce: 'nonce' });
   assert.match(JSON.stringify(card), /是否执行？/);
-  assert.match(JSON.stringify(card), /点按钮等于在终端里按对应的键/);
   assert.ok(!buttons(card).some(b => b.value.key === 'enter'));
 });
 
@@ -62,7 +61,7 @@ test('numbered menu clicks send a single key without Enter, and the terminal men
     };
     const before = h.fake.calls.length;
     await h.bridge.handle({ kind: 'button', eventId: randomUUID(), chatId: binding.chatId, topicId: binding.topicId,
-      messageId: binding.cardId, openId: 'ou_test', ...button.value, topicId: button.value.topic_id });
+      messageId: binding.menuCardId, openId: 'ou_test', ...button.value, topicId: button.value.topic_id });
     assert.equal(selected, key);
     const writes = h.fake.calls.slice(before).filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
     assert.deepEqual(writes.map(c => c.params.keys), [[key]]);
@@ -70,20 +69,20 @@ test('numbered menu clicks send a single key without Enter, and the terminal men
   }
 });
 
-test('a blocked transcript card updates its prompt and option labels when only the screen changes', async t => {
+test('a separate permission menu card updates its prompt and option labels when only the screen changes', async t => {
   const records = [];
   const adapter = { locate: async () => 'copy.jsonl', read: async (_path, cursor) => ({ cursor: { offset: records.length }, items: cursor.atEnd ? [] : records.slice(cursor.offset) }) };
   const h = await harness(t, { adapters: { claude: adapter } });
   const pane = h.fake.create(); Object.assign(pane, { agent: 'claude', agent_status: 'blocked', visible: '第一次确认？\n1. 执行' });
   await h.bridge.handle(message('/t open w1:p1', 'open'));
   records.push({ role: 'assistant', text: '请授权操作' }); await h.bridge.tick();
-  const id = h.store.forPane(pane.pane_id).cardId;
+  const id = h.store.forPane(pane.pane_id).menuCardId;
   pane.visible = '第二次确认？\n1. 继续检查\n2. 停止'; h.advance(2000);
   h.bridge.state(h.store.forPane(pane.pane_id)).dirty = true; await h.bridge.tick();
   const card = h.feishu.calls.findLast(c => c.type === 'patch' && c.id === id).card;
   assert.match(JSON.stringify(card), /第二次确认？/);
-  assert.equal(buttons(card).find(b => b.value.key === '1').text.content, '1 继续检查');
-  assert.equal(buttons(card).find(b => b.value.key === '2').text.content, '2 停止');
+  assert.match(buttons(card).find(b => b.value.key === '1').text.content, /继续检查/);
+  assert.match(buttons(card).find(b => b.value.key === '2').text.content, /停止/);
 });
 
 test('both phone guides explain starting, replying, listing, closing, moving and button meanings in Chinese', () => {

@@ -1,0 +1,131 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true
+  },
+  "header": {
+    "template": "orange",
+    "title": {
+      "tag": "plain_text",
+      "content": "Claude · 等待菜单选择"
+    }
+  },
+  "body": {
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "**Claude 正在等你从菜单里选择** · Resume session\n点选项按钮即可选择，无需输入文字。"
+      },
+      {
+        "tag": "interactive_container",
+        "width": "fill",
+        "height": "auto",
+        "has_border": true,
+        "border_color": "grey",
+        "corner_radius": "8px",
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "menu:select:0"
+            }
+          }
+        ],
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "▶ Metame 飞书双端同步\n<font color='grey'>4 seconds ago · HEAD · 7.1MB</font>"
+          }
+        ]
+      },
+      {
+        "tag": "interactive_container",
+        "width": "fill",
+        "height": "auto",
+        "has_border": true,
+        "border_color": "grey",
+        "corner_radius": "8px",
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "menu:select:1"
+            }
+          }
+        ],
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "paper30-reloading 研究交接文档\n<font color='grey'>2 hours ago · HEAD · 8.2MB</font>"
+          }
+        ]
+      },
+      {
+        "tag": "interactive_container",
+        "width": "fill",
+        "height": "auto",
+        "has_border": true,
+        "border_color": "grey",
+        "corner_radius": "8px",
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "menu:select:2"
+            }
+          }
+        ],
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "钻进robot大脑方案\n<font color='grey'>16 hours ago · HEAD · 8MB</font>"
+          }
+        ]
+      },
+      {
+        "tag": "button",
+        "width": "fill",
+        "text": {
+          "tag": "plain_text",
+          "content": "Esc 取消"
+        },
+        "type": "default",
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "esc"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "button",
+        "width": "fill",
+        "text": {
+          "tag": "plain_text",
+          "content": "刷新"
+        },
+        "type": "default",
+        "behaviors": [
+          {
+            "type": "callback",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "refresh"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
