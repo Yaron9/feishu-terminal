@@ -484,11 +484,16 @@
                     "content": "Enter 继续"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "enter"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "enter"
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -504,11 +509,16 @@
                     "content": "Esc 取消"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "esc"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "esc"
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -524,11 +534,16 @@
                     "content": "y 同意"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "y"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "y"
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -550,11 +565,16 @@
                     "content": "n 拒绝"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "n"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "n"
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -570,11 +590,16 @@
                     "content": "Ctrl-C 中断"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "ctrl+c"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "ctrl+c"
+                      }
+                    }
+                  ]
                 }
               ]
             },
@@ -590,11 +615,16 @@
                     "content": "刷新"
                   },
                   "type": "default",
-                  "value": {
-                    "topic_id": "topic",
-                    "nonce": "nonce",
-                    "key": "refresh"
-                  }
+                  "behaviors": [
+                    {
+                      "type": "callback",
+                      "value": {
+                        "topic_id": "topic",
+                        "nonce": "nonce",
+                        "key": "refresh"
+                      }
+                    }
+                  ]
                 }
               ]
             }
