@@ -36,6 +36,28 @@ test('bindings, nonce, card and transcript survive atomic restart; uniqueness is
   assert.deepEqual((await readdir(dir)).filter(f => f.endsWith('.tmp')), []);
   await store.unbind('oc_a', 'm1'); assert.deepEqual(store.list(), []);
 });
+
+test('pre-ft7 and ft7 version-1 snapshots load unchanged with optional recovery fields absent', async t => {
+  const { store } = await fixture(t);
+  const binding = { chatId: 'oc_a', topicId: 'topic', paneId: 'w1:p1',
+    identity: { terminalId: 'terminal', workspaceId: 'w1', tabId: 'w1:t1' },
+    nonce: 'screen-nonce', cardId: 'screen', lastTranscript: 'checkpoint',
+    pendingCard: { nonce: 'pending', targetId: 'screen', uuid: 'retry-id', createdAt: 1, card: { elements: [] } } };
+  const legacy = { version: 1, bindings: [binding], seen: ['event:old'] };
+  const ft7 = { ...legacy, bindings: [{ ...binding, generation: 'ft7-generation', allowDesktop: true }],
+    createdTerminals: ['terminal'], actionCards: [{ messageId: 'picker', chatId: 'oc_a', topicId: 'list',
+      kind: 'list', createdAt: 1, nonce: 'picker-nonce', entries: [{ paneId: 'w1:p1', bindingTopic: 'topic', generation: 'ft7-generation' }] }] };
+  for (const snapshot of [legacy, ft7]) {
+    await writeFile(store.file, JSON.stringify(snapshot));
+    const restored = await new Store(store.file).load();
+    assert.deepEqual(restored.data, snapshot);
+    assert.equal(restored.binding('oc_a', 'topic').retiredCardId, undefined);
+    assert.equal(restored.binding('oc_a', 'topic').pendingCard.previousCardId, undefined);
+    await restored.claim(['event:new']);
+    assert.deepEqual((await new Store(store.file).load()).list(), snapshot.bindings);
+    if (snapshot.actionCards) assert.deepEqual(restored.actionCard('picker'), snapshot.actionCards[0]);
+  }
+});
 test('concurrent claims are durable, bounded, and dedupe both event and message IDs', async t => {
   const { store } = await fixture(t, { dedupeLimit: 4 });
   const claims = await Promise.all(Array.from({ length: 8 }, () => store.claim(['m1', 'e1'])));
