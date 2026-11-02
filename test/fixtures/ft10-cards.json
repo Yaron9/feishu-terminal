@@ -32,10 +32,6 @@
               "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
             }
           ]
-        },
-        {
-          "tag": "markdown",
-          "content": "<font color='green'>已完成</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
         }
       ]
     }
@@ -80,11 +76,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n正在检查消息同步\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
-      },
-      {
-        "tag": "markdown",
-        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+        "content": "```text\n正在检查消息同步\n```"
       },
       {
         "tag": "note",
@@ -112,7 +104,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n允许执行这条命令吗？ [y/n]\n```\n<font color='grey'>这是终端最近的画面；/t screen 可查看完整屏幕</font>"
+        "content": "```text\n允许执行这条命令吗？ [y/n]\n```"
       },
       {
         "tag": "markdown",
@@ -194,10 +186,6 @@
         ]
       },
       {
-        "tag": "markdown",
-        "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
-      },
-      {
         "tag": "note",
         "elements": [
           {
@@ -225,10 +213,6 @@
         {
           "tag": "markdown",
           "content": "```text\n$ pwd\n/home/project\n```"
-        },
-        {
-          "tag": "markdown",
-          "content": "<font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
         }
       ]
     }
@@ -250,10 +234,6 @@
         {
           "tag": "markdown",
           "content": "```text\n❯ prompt\n╰────╯\n```"
-        },
-        {
-          "tag": "markdown",
-          "content": "<font color='grey'>这是终端当前屏幕，保留原始界面。在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
         }
       ]
     }

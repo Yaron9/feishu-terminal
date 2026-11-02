@@ -40,7 +40,7 @@ test('screen clamps rows and width, strips controls, escapes markup, and exposes
   const buttons = card.elements.flatMap(e => e.actions ?? []);
   assert.deepEqual(buttons.map(b => b.text.content), ['Esc 取消', 'y 同意', 'n 拒绝', 'Ctrl-C 中断', '刷新']);
   assert.ok(buttons.every(b => b.value.topic_id === 'm1' && b.value.nonce === 'nonce'));
-  assert.equal(screenCard({ paneId: 'x', topicId: 'y', nonce: 'z', text: '', status: 'idle' }).elements.length, 3);
+  assert.equal(screenCard({ paneId: 'x', topicId: 'y', nonce: 'z', text: '', status: 'idle' }).elements.length, 2);
 });
 test('emoji replacement and rolling overlap preserve whole Unicode code points', () => {
   assert.equal(newOutput('😀', '😁'), '😁');

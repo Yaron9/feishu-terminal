@@ -14,7 +14,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "**Claude 正在等你从菜单里选择** · Resume session\n点选项按钮即可选择，无需输入文字。"
+        "content": "**Claude 正在等你从菜单里选择** · Resume session\n<font color='grey'>点选项按钮即可选择，无需输入文字。</font>"
       },
       {
         "tag": "interactive_container",
