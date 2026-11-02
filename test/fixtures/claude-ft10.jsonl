@@ -1,0 +1,11 @@
+{"type":"user","uuid":"u1","timestamp":"2026-11-02T00:00:00Z","message":{"role":"user","content":"Explain the fix"}}
+{"type":"user","uuid":"result","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool1","content":"PRIVATE TOOL OUTPUT"}]}}
+{"type":"user","uuid":"reminder","message":{"content":"<system-reminder>PRIVATE REMINDER</system-reminder>"}}
+{"type":"user","uuid":"mixed","message":{"content":[{"type":"text","text":"Desktop question\n<system-reminder>PRIVATE REMINDER</system-reminder>"},{"type":"tool_result","content":"PRIVATE TOOL OUTPUT"}]}}
+{"type":"user","isMeta":true,"uuid":"meta","message":{"content":"PRIVATE META"}}
+{"type":"user","uuid":"cmd","message":{"content":"<command-name>/clear</command-name>"}}
+{"type":"user","uuid":"local","message":{"content":"<local-command-stdout>PRIVATE COMMAND</local-command-stdout>"}}
+{"type":"system","message":{"content":"PRIVATE SYSTEM"}}
+{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"PRIVATE SUBAGENT"}]}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-11-02T00:00:01Z","message":{"content":[{"type":"thinking","thinking":"PRIVATE THOUGHT"},{"type":"text","text":"The **fix** is ready."},{"type":"tool_use","id":"tool1","name":"Bash","input":{"description":"Run the tests","command":"npm test"}}]}}
+{"type":"assistant","uuid":"a2","message":{"content":[{"type":"tool_use","id":"tool2","name":"Read","input":{"file_path":"src/bridge.js"}},{"type":"text","text":"All done."}]}}
