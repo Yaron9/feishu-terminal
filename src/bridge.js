@@ -621,8 +621,9 @@ export class Bridge {
       // turn never acquire a separate live-screen reply.
       if (!binding.turn && !binding.pendingCard) return;
       if (binding.turn) {
-        if (!binding.turn.settled && ['blocked', 'working'].includes(state.status) && binding.turn.status !== state.status) {
-          binding.turn.status = state.status;
+        if (!binding.turn.settled && ['blocked', 'working'].includes(state.status) &&
+          (binding.turn.status !== state.status || !binding.turn.activeObserved)) {
+          binding.turn.status = state.status; binding.turn.activeObserved = true;
           if (!await this.updateGeneration(binding, { turn: binding.turn })) return;
         }
         state.nextSignature = turnSignature(binding.turn);
@@ -781,7 +782,8 @@ export class Bridge {
   async settleTurn(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId), state = this.state(binding);
     if (!this.sameGeneration(binding, current) || !current.turn || current.turn.settled) return;
-    if (['idle', 'done'].includes(state.status) || current.turn.path !== state.transcriptSource?.path) {
+    if ((['idle', 'done'].includes(state.status) && (current.turn.hasOutput || current.turn.activeObserved)) ||
+      current.turn.path !== state.transcriptSource?.path) {
       await this.updateGeneration(binding, { turn: { ...current.turn, settled: true, status: 'idle' } });
     }
   }

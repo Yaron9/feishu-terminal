@@ -7,6 +7,7 @@ export const freshTurn = (source, agent, status = 'working') => ({
   id: randomUUID(), adapter: source.key, path: source.path, agent,
   text: '', tools: '', toolCount: 0, truncated: false, toolsTruncated: false,
   status: status === 'blocked' ? 'blocked' : 'working', settled: false,
+  activeObserved: ['working', 'blocked'].includes(status),
 });
 
 // Fixed, bounded snapshots become durable output operations before any send.
