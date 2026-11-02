@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { pickerCard, splitText } from './render.js';
+import { paneDetails } from './panes.js';
 
 const CHANGED = '终端已变化，请重新 /t ls';
 const EXPIRED = '卡片已过期，请重新 /t ls';
@@ -12,6 +13,7 @@ export class PanePicker {
     const b = this.bridge.store.forPane(pane.pane_id);
     const topic = b?.chatId === chatId ? await this.bridge.topicDescription(b) : null;
     return { paneId: pane.pane_id, label: this.bridge.label(pane),
+      ...paneDetails(pane, { bound: Boolean(b), frozen: Boolean(b?.frozen), owned: this.bridge.store.data.createdTerminals?.includes(pane.terminal_id) }),
       topicDescription: topic, canMove: Boolean(topic),
       identity: (!b?.frozen && b?.identity) || { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id },
       bindingTopic: b?.topicId ?? null, generation: b?.generation ?? null };
@@ -89,7 +91,7 @@ export class PanePicker {
         const topicId = await b.open(event, entry.paneId, entry.identity.terminalId);
         const opened = b.store.binding(event.chatId, topicId);
         if (opened) await b.refresh(opened, true);
-        await finish(`已打开话题 ${topicId}`); return;
+        await finish('已打开话题，在列表最上面；在话题内回复即可继续'); return;
       }
       if (action === 'close') { await this.replace(card, 'close', entry); return; }
       if (action === 'kill') {
@@ -98,7 +100,7 @@ export class PanePicker {
         pane = await this.verify(entry);
         const owned = b.store.data.createdTerminals?.includes(pane.terminal_id);
         if (card.kind !== 'confirm' && (!owned || (pane.agent && ['working', 'blocked'].includes(pane.agent_status)))) {
-          await this.replace(card, 'confirm', { ...entry, label: b.label(pane) }); return;
+          await this.replace(card, 'confirm', { ...entry, label: b.label(pane), ...paneDetails(pane) }); return;
         }
         const latest = b.store.forPane(entry.paneId);
         if ((latest?.generation ?? null) !== entry.generation || (latest?.topicId ?? null) !== entry.bindingTopic) {

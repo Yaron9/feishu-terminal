@@ -5,9 +5,18 @@ export function clean(text) {
 }
 
 export function stripChrome(text) {
-  return clean(text).split('\n').filter(line => {
+  const lines = clean(text).split('\n');
+  const decorated = lines.map(line => {
+    const chars = Array.from(line.replace(/\s/g, ''));
+    return chars.length > 0 && chars.filter(char => /[\u2500-\u259f\u2800-\u28ff]/u.test(char)).length / chars.length > 0.5;
+  });
+  const banner = lines.map((line, i) => /[\u2580-\u259f]/u.test(line) &&
+    (decorated[i] || /(?:Claude Code\s+v?\d|(?:Opus|Sonnet|Haiku)\s+[\d.])/i.test(line)));
+  return lines.filter((line, i) => {
     const value = line.trim();
-    return !(/^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]{3,}$/.test(value) ||
+    const nearBanner = banner.slice(Math.max(0, i - 3), i + 4).some(Boolean);
+    const bannerInfo = /(?:Claude Code\s+v?\d|(?:Opus|Sonnet|Haiku)\s+[\d.]|Claude (?:Max|Pro)|API Usage Billing)/i.test(value);
+    return !(decorated[i] || (nearBanner && (bannerInfo || /^[\u2580-\u259f]+(?:\s|$)/u.test(value))) || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]{3,}$/.test(value) ||
       /^[❯›](?:\s|$)/.test(value) || /^[>\$]\s*$/.test(value) ||
       /^[✻✽✶✳✢·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s/.test(value) ||
       /^(?:Worked for|Thinking|Brewing|Cogitating|Churning|Wandering|Esc to interrupt|ctrl\+c to interrupt)\b/i.test(value));
@@ -18,39 +27,48 @@ const tail = (text, count) => Array.from(text).slice(-count).join('');
 const markup = text => clean(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const codeBlock = text => '```text\n' + markup(text).replace(/`/g, '`\u200b') + '\n```';
 const markdown = content => ({ tag: 'markdown', content });
+const accent = (text, color = 'grey') => `<font color='${color}'>${markup(text)}</font>`;
+const literal = text => markup(text).replace(/[\\`*_\[\]~!]/g, '\\$&');
+const short = (text, count = 180) => Array.from(clean(text ?? '')).slice(0, count).join('');
+const prose = text => text.split('\n').map(line => /^(?:错误|出错|失败|Error\b|Failed\b)/i.test(line.trim()) ? accent(line, 'red') : markup(line)).join('\n');
+export const CARD_FOOTER = '在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表';
+const CLIPPED = '内容较长，仅显示末尾约 1500 字；完整内容在电脑端';
 const roleCard = (title, template, elements) => ({ schema: '2.0', config: { update_multi: true },
   header: { template, title: { tag: 'plain_text', content: title } }, body: { elements } });
 
 export function assistantCard(text, tools = [], agent = 'Claude') {
-  text = clean(text);
+  text = stripChrome(text);
   const clipped = Array.from(text).length > 1500;
-  const elements = [markdown((clipped ? '（仅显示末尾）\n\n' : '') + markup(tail(text, 1500) || '（工具调用）'))];
+  const elements = [markdown((clipped ? accent(CLIPPED) + '\n\n' : '') + prose(tail(text, 1500) || '（工具调用）'))];
   if (tools.length) elements.push({ tag: 'collapsible_panel', expanded: false,
     header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${tools.length})` } },
-    elements: [markdown(markup(tail(tools.map(t => String(t).replace(/\s+/g, ' ').slice(0, 140)).join('\n'), 1500)))] });
-  return roleCard(`🤖 ${String(agent).slice(0, 40)}`, 'blue', elements);
+    elements: [markdown(accent(tail(tools.map(t => String(t).replace(/\s+/g, ' ').slice(0, 140)).join('\n'), 1500)))] });
+  elements.push(markdown(accent('已完成', 'green') + ' · ' + accent(CARD_FOOTER)));
+  return roleCard(`🤖 ${String(agent).slice(0, 40)} · 已完成`, 'green', elements);
 }
 
 export function userCard(text) {
   const clipped = Array.from(text).length > 1500;
-  return roleCard('🧑 电脑端输入', 'grey', [markdown((clipped ? '（仅显示末尾）\n\n' : '') + markup(tail(text, 1500)))]);
+  return roleCard('🧑 电脑端输入', 'grey', [markdown((clipped ? accent(CLIPPED) + '\n\n' : '') + markup(tail(text, 1500))),
+    markdown(accent('这是你在电脑端发送的内容；回复显示在下方，可在本话题继续。'))]);
 }
 
 export function outputCard(text, { full = false } = {}) {
   const content = full ? clean(text) : stripChrome(text);
   const lines = content.split('\n'), limit = full ? Infinity : 60;
   const body = tail(lines.slice(-limit).join('\n'), full ? 4000 : 3000);
-  return roleCard(full ? '💻 当前屏幕' : '💻 输出', 'grey',
-    [markdown((lines.length > limit || body.length < content.length ? '（仅显示末尾）\n' : '') + codeBlock(body))]);
+  return roleCard(full ? '💻 当前屏幕' : '💻 命令输出', 'grey',
+    [markdown((lines.length > limit || body.length < content.length ? accent(full ? '仅显示末尾；可在电脑端查看完整屏幕' : '显示最近 60 行；超长行仅显示末尾，完整内容在电脑端') + '\n' : '') + codeBlock(body)),
+      markdown(accent(full ? '这是终端当前屏幕，保留原始界面。' + CARD_FOOTER : CARD_FOOTER))]);
 }
 
 export function screenText(text, rows = 40, width = 120) {
   const all = clean(text).split('\n');
   const visible = all.slice(-rows).map(line => {
     const chars = Array.from(line);
-    return chars.length > width ? chars.slice(0, width).join('') + ' … [width truncated]' : line;
+    return chars.length > width ? chars.slice(0, width).join('') + ' … [本行过长，已截短]' : line;
   });
-  if (all.length > rows) visible.unshift('[earlier rows omitted]');
+  if (all.length > rows) visible.unshift('[前面的行已省略]');
   return visible.join('\n');
 }
 
@@ -90,67 +108,102 @@ export function splitText(text, maxBytes = 12000) {
   return parts;
 }
 
-const BUTTONS = [['Enter', 'enter'], ['Esc', 'esc'], ['1', '1'], ['2', '2'], ['3', '3'], ['y', 'y'], ['n', 'n'], ['Ctrl-C', 'ctrl+c'], ['Refresh', 'refresh']];
+export function screenControls(text = '') {
+  const lines = clean(text).split('\n');
+  const options = lines.flatMap(line => {
+    const match = /^\s*(?:[❯›>│┃║]\s*)?([1-9])[.)、．）]\s*(\S.*)$/u.exec(line);
+    return match ? [[`${match[1]} ${short(match[2], 60)}`, match[1]]] : [];
+  }).filter((item, i, all) => all.findIndex(other => other[1] === item[1]) === i);
+  const enter = !options.length && /(?:press\s+(?:the\s+)?enter|enter\s+to\s+(?:confirm|continue|proceed|submit)|按\s*(?:下\s*)?(?:Enter|回车)|↵)/i.test(text);
+  return [...(enter ? [['Enter 继续', 'enter']] : []), ['Esc 取消', 'esc'], ...options,
+    ['y 同意', 'y'], ['n 拒绝', 'n'], ['Ctrl-C 中断', 'ctrl+c'], ['刷新', 'refresh']];
+}
 
-export function turnCard({ turn, topicId, nonce, note }) {
-  const elements = [markdown((turn.truncated ? '（仅显示末尾）\n\n' : '') + markup(tail(turn.text, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
+function blockedPrompt(text) {
+  const lines = stripChrome(text).split('\n').map(line => line.trim()).filter(Boolean);
+  const candidates = lines.filter(line => !/^(?:[❯›>]\s*)?\d[.)、．）]/.test(line));
+  const prompt = candidates.findLast(line => /[?？]/.test(line)) ?? candidates.findLast(line => /(?:permission|allow|confirm|proceed|是否|确认|允许)/i.test(line));
+  return markdown('**等待你确认：** ' + literal(short(prompt || lines.at(-1) || '请查看终端中的确认提示', 300)) + '\n' + accent('点按钮等于在终端里按对应的键'));
+}
+
+export function turnCard({ turn, topicId, nonce, note, screen = '' }) {
+  const preview = stripChrome(turn.text);
+  const elements = [markdown((turn.truncated || Array.from(preview).length > 1500 ? accent(CLIPPED) + '\n\n' : '') + prose(tail(preview, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
   if (turn.toolCount) elements.push({ tag: 'collapsible_panel', expanded: false,
     header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${turn.toolCount})` } },
-    elements: [markdown((turn.toolsTruncated ? '（仅显示末尾）\n\n' : '') + markup(tail(turn.tools, 1500)))] });
+    elements: [markdown((turn.toolsTruncated ? accent('工具较多，仅显示末尾') + '\n\n' : '') + accent(tail(turn.tools, 1500)))] });
   if (note) elements.unshift(markdown(note));
   const blocked = !turn.settled && turn.status === 'blocked';
-  if (blocked) for (let i = 0; i < BUTTONS.length; i += 3) elements.push({
-    tag: 'column_set', flex_mode: 'none', columns: BUTTONS.slice(i, i + 3).map(([label, key]) => ({
+  if (blocked) elements.push(blockedPrompt(screen || turn.text));
+  const buttons = screenControls(screen || turn.text);
+  if (blocked) for (let i = 0; i < buttons.length; i += 3) elements.push({
+    tag: 'column_set', flex_mode: 'none', columns: buttons.slice(i, i + 3).map(([label, key]) => ({
       tag: 'column', width: 'weighted', weight: 1, elements: [{
         tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
         value: { topic_id: topicId, nonce, key },
       }],
     })),
   });
-  return roleCard(`🤖 ${String(turn.agent).slice(0, 40)}${turn.settled ? '' : blocked ? ' · 等待确认' : ' · 工作中…'}`,
-    blocked ? 'orange' : 'blue', elements);
+  const failed = ['error', 'failed'].includes(turn.status);
+  const activity = failed ? '出错' : turn.settled ? '已完成' : blocked ? '等待你确认' : '工作中';
+  elements.push(markdown(accent(activity, failed ? 'red' : turn.settled ? 'green' : 'grey') + ' · ' + accent(CARD_FOOTER)));
+  return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
+    failed ? 'red' : blocked ? 'orange' : turn.settled ? 'green' : 'blue', elements);
 }
 
 export function pickerCard(card, result) {
   result ??= card.result;
   const elements = [];
   const text = content => ({ tag: 'div', text: { tag: 'plain_text', content } });
+  const row = entry => ({ tag: 'div', text: { tag: 'lark_md', content: `**${literal(short(entry.title || entry.label))}**` +
+    (entry.summary ? '\n' + literal(short(entry.summary, 500)) : '') +
+    (entry.topicDescription ? literal(entry.summary?.includes('已暂停同步') ? ` · 话题${entry.topicDescription}` : entry.summary?.endsWith('已绑定话题') ? entry.topicDescription : ` · 已绑定话题${entry.topicDescription}`) : '') } });
+  const id = entry => ({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(entry.paneId)) }] });
   const buttons = (items, index) => ({ tag: 'action', actions: items.map(([label, action]) => ({
     tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
     value: { topic_id: card.topicId, nonce: card.nonce, key: `picker:${action}:${index}` },
   })) });
   if (result && typeof result === 'object') card.entries.forEach((entry, index) => {
-    elements.push(text(index === result.index ? result.text : entry.label));
+    elements.push(index === result.index ? text(result.text) : row(entry));
     if (card.kind === 'recovered' && index === result.index) elements.push(buttons([['移到新话题', 'move']], index));
+    if (index !== result.index && entry.paneId) elements.push(id(entry));
   });
   else if (result) elements.push(text(result));
   else card.entries.forEach((entry, index) => {
-    const label = entry.label + (entry.topicDescription ? `\n${entry.label.includes('已冻结') ? '话题' : '已绑定话题'}${entry.topicDescription}` : '');
-    elements.push(text(card.kind === 'confirm' ? `确定关闭「${entry.label}」？里面的会话会结束` : label));
+    elements.push(card.kind === 'confirm' ? text(`确定关闭「${short(entry.title || entry.label)}」？里面的会话会结束，正在运行的程序和未保存的内容将丢失，不可恢复。`) : row(entry));
     elements.push(buttons(card.kind === 'list' ? [['打开', 'open'], ['关闭', 'close'], ...(entry.canMove ? [['移到新话题', 'move']] : [])] :
       card.kind === 'confirm' ? [['确定关闭', 'kill'], ['取消', 'cancel']] :
         [['仅解绑', 'unbind'], ['关闭终端', 'kill'], ['取消', 'cancel']], index));
+    if (entry.paneId) elements.push(id(entry));
   });
   if (!elements.length) elements.push(text('暂无终端'));
+  if (!result && card.kind === 'list') elements.unshift(text('[打开] 把终端接到一个话题里同步 · [关闭] 解绑或关闭终端 · [移到新话题] 原话题找不到时用'));
+  if (!result && card.kind === 'close') elements.unshift(text('仅解绑：话题停止同步，终端继续在 VPS 上运行\n关闭终端：结束终端里的程序（如 Claude 会话），不可恢复'));
   return { config: { wide_screen_mode: true, update_multi: true },
-    header: { template: 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? '选择终端' : '关闭终端' } }, elements };
+    header: { template: result ? 'grey' : card.kind === 'confirm' ? 'red' : card.kind === 'close' ? 'orange' : 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? `终端列表（共 ${card.entries.length} 个）` : '关闭终端' } }, elements };
 }
 
-export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text, note }) {
+export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note }) {
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
   const preview = stripChrome(text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
-  const elements = [markdown(codeBlock(screenText(preview, 10)))];
+  const elements = [markdown(codeBlock(screenText(preview, 10)) + '\n' + accent('这是终端最近的画面；/t screen 可查看完整屏幕'))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
-    for (let i = 0; i < BUTTONS.length; i += 3) elements.push({
-      tag: 'action', actions: BUTTONS.slice(i, i + 3).map(([label, key]) => ({
+    elements.push(blockedPrompt(text));
+    const buttons = screenControls(text);
+    for (let i = 0; i < buttons.length; i += 3) elements.push({
+      tag: 'action', actions: buttons.slice(i, i + 3).map(([label, key]) => ({
         tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
         value: { topic_id: topicId, nonce, key },
       })),
     });
   }
-  const activity = { working: '工作中', idle: '空闲', done: '空闲', blocked: '等待确认' }[status] ?? '状态未知';
-  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: status === 'blocked' ? 'orange' : 'blue',
-    title: { tag: 'plain_text', content: `● ${activity} · ${Array.from(label).slice(0, 180).join('')}` } }, elements };
+  const shell = agent === null || (agent === undefined && status === 'unknown');
+  const activity = shell ? (status === 'working' ? '运行中' : '空闲') :
+    ({ working: '工作中', idle: '空闲', done: '已完成', blocked: '等待你确认', error: '出错', failed: '出错' }[status] ?? '状态待更新');
+  elements.push(markdown(accent(CARD_FOOTER)));
+  if (paneId) elements.push({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(paneId)) }] });
+  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
+    title: { tag: 'plain_text', content: `${shell ? '命令行' : '●'} · ${activity} · ${short(label)}` } }, elements };
 }

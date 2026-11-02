@@ -96,8 +96,8 @@ export class Bridge {
   }
   async refuse(event) {
     if (event.chatId && event.openId && await this.store.claim([`refusal:${event.chatId}:${event.openId}`])) {
-      if (event.topicId && event.kind === 'message') await this.feishu.reply(event.topicId, 'Access denied.');
-      else await this.feishu.send(event.chatId, 'Access denied.');
+      if (event.topicId && event.kind === 'message') await this.feishu.reply(event.topicId, '你还没有控制权限，请联系配置此机器人的人。');
+      else await this.feishu.send(event.chatId, '你还没有控制权限，请联系配置此机器人的人。');
     }
   }
   async receive(event) {
@@ -117,7 +117,7 @@ export class Bridge {
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
       if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
       if (action.type === 'create') {
-        if (event.isReply) { await this.feishu.reply(event.topicId, 'This topic is not bound. Use /t open <pane_id> in the group.'); return; }
+        if (event.isReply) { await this.feishu.reply(event.topicId, '这个话题还没有连接终端。请发送 /t ls，点 [打开] 进入终端话题。'); return; }
         const pane = await this.createPane();
         const identity = await this.identity(pane.pane_id);
         await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity,
@@ -138,7 +138,7 @@ export class Bridge {
           await this.herdr.request('pane.close', { pane_id: binding.paneId });
         }
         await this.store.unbind(binding.chatId, binding.topicId); this.runtime.delete(binding.topicId); this.resubscribe();
-        await this.feishu.reply(binding.topicId, action.kill ? 'Pane closed; topic unbound.' : 'Topic unbound; pane is still running.');
+        await this.feishu.reply(binding.topicId, action.kill ? '终端已关闭，话题已停止同步。' : '话题已停止同步，终端仍在 VPS 上运行。');
         return;
       }
       if (action.type === 'screen') {
@@ -153,7 +153,7 @@ export class Bridge {
       if (action.type === 'ok') {
         await this.verify(binding);
         await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
-        await this.feishu.reply(binding.topicId, 'Screen acknowledged; input enabled.'); return;
+        await this.feishu.reply(binding.topicId, '已确认检查过屏幕，可以继续输入。'); return;
       }
       if (action.type === 'keys') await this.writeInput(binding, 'pane.send_keys', { keys: action.keys }, action.keys.length === 1 && action.keys[0] === 'ctrl+u');
       if (action.type === 'raw') await this.writeInput(binding, 'pane.send_text', { text: action.text });
@@ -161,16 +161,16 @@ export class Bridge {
       this.state(binding).dirty = true;
     } catch (error) {
       if (error.code === 'binding_unverified') {
-        await this.feishu.reply(event.topicId, 'Binding frozen: pane identity could not be confirmed. Use /t open <pane> to rebind or /t close.'); return;
+        await this.feishu.reply(event.topicId, '终端已变化（可能重启或迁移过），已暂停同步。发送 /t ls，点 [打开] 重新绑定'); return;
       }
       if (this.store.binding(event.chatId, event.topicId)?.needs_check) {
-        let screen = '[screen unavailable; use /t screen]';
+        let screen = '[暂时无法读取屏幕，请发送 /t screen 查看]';
         try { screen = screenText((await this.readVerified(binding, () => readPane(this.herdr, binding.paneId, { source: 'visible', lines: 40 }))).read.text); } catch {}
-        await this.feishu.reply(event.topicId, `Input needs checking; input was not retried. Inspect the screen, optionally /t k ctrl+u, then /t ok before more input.\n${screen}`); return;
+        await this.feishu.reply(event.topicId, `请先检查输入是否成功，系统没有重复发送。查看下方屏幕；如需清空当前输入行，发送 /t k ctrl+u；确认后发送 /t ok，再继续输入。\n${screen}`); return;
       }
       // Never echo upstream error messages: they may contain terminal content.
       const code = /^[a-z_0-9]+$/i.test(String(error.code)) ? String(error.code) : 'operation_failed';
-      await this.feishu.reply(event.topicId, `Request failed (${code}); input was not retried. Use /t screen or /t ls to inspect.`);
+      await this.feishu.reply(event.topicId, `操作未完成（${code}），系统没有重复发送输入。请发送 /t screen 查看屏幕，或 /t ls 查看终端。`);
     }
   }
   log(event, binding, action, text = '') {
@@ -326,7 +326,7 @@ export class Bridge {
       this.runtime.delete(existing.topicId);
       await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
       if (existing.outputBatch || existing.discardedOutput) await this.feishu.reply(existing.topicId, '旧终端未发送完的输出已丢弃');
-      await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.');
+      await this.feishu.reply(existing.topicId, '已重新绑定到当前终端');
       return this.recoverOpen(event, this.store.binding(existing.chatId, existing.topicId), expectedTerminalId);
     }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
@@ -488,7 +488,7 @@ export class Bridge {
     if (event.key?.startsWith('picker:')) { await this.picker.button(event); return; }
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
       (event.key !== 'refresh' && !validKeys([event.key]))) {
-      await this.feishu.reply(event.topicId || event.messageId, 'Stale or foreign card. Use /t screen for the current card.'); return;
+      await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
     const state = this.state(binding);
     if (!Number.isFinite(binding.cardCreatedAt) || this.now() - binding.cardCreatedAt >= 600000 || this.now() < binding.cardCreatedAt) {
@@ -499,13 +499,13 @@ export class Bridge {
     if (event.key !== 'refresh') {
       const { agents } = await this.herdr.request('agent.list');
       if (!agents.some(a => a.pane_id === binding.paneId && a.agent && a.agent_status === 'blocked')) {
-        await this.feishu.reply(binding.topicId, 'The pane is no longer blocked. Use /t screen.'); return;
+        await this.feishu.reply(binding.topicId, '终端已经不在等待确认，请发送 /t screen 查看当前状态。'); return;
       }
     }
     // Consume the nonce durably before sending any key. A replay under a new
     // event_id cannot execute the same card action again, including on restart.
     if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce)) {
-      await this.feishu.reply(binding.topicId, 'Stale card. Use /t screen.'); return;
+      await this.feishu.reply(binding.topicId, '这张卡片已操作过，请发送 /t screen 获取当前卡片。'); return;
     }
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
     if (event.key !== 'refresh') await this.writeInput(binding, 'pane.send_keys', { keys: [event.key] });
@@ -548,6 +548,7 @@ export class Bridge {
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
     const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane)).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
+    if (state.transcriptSource && state.status === 'blocked' && state.visible !== visible.text) state.forceTurnCard = true;
     state.visible = visible.text; state.nextSignature = signature;
     if (state.transcriptSource && force) state.forceTurnCard = true;
     if (!deferCard) await this.refreshCard(binding);
@@ -573,13 +574,13 @@ export class Bridge {
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
         uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn),
-        card: turnCard({ turn, topicId: binding.topicId, nonce, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+        card: turnCard({ turn, topicId: binding.topicId, nonce, screen: state.visible, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
     }
     return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId } : {}),
       uuid: randomUUID(), signature: state.nextSignature,
       card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        status: state.status, text: state.visible, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+        agent: state.agent, status: state.status, text: state.visible, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);

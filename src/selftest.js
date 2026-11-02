@@ -85,7 +85,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
         message: { message_id: messageId, chat_id: config.chatIds[0], chat_type: 'group',
           message_type: 'text', content: JSON.stringify({ text }), ...(reply ? { root_id: root, parent_id: root } : {}) } } }));
     const input = async text => {
-      const id = await feishu.reply(root, `[selftest] synthetic inbound: ${text}`);
+      const id = await feishu.reply(root, `[selftest] 模拟输入：${text}`);
       await deliver(text, id);
     };
     const readSent = async () => {
@@ -127,13 +127,13 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
         if (!replies.has(m.message_id)) return false;
         const card = sentCards.get(m.message_id);
         if (card?.schema === '2.0') {
-          return card.header.title.content === '[selftest] 💻 输出' &&
+          return card.header.title.content === '[selftest] 💻 命令输出' &&
             card.body?.elements?.[0]?.content?.split(/\r?\n/).some(line => line.trim() === text) &&
             deliveredCard(byId.get(m.message_id), card);
         }
         const body = JSON.parse(m.body?.content || '{}');
         const output = m.msg_type === 'text' ? body.text :
-          m.msg_type === 'interactive' && body.header?.title?.content === '[selftest] 💻 输出'
+          m.msg_type === 'interactive' && body.header?.title?.content === '[selftest] 💻 命令输出'
             ? body.body?.elements?.[0]?.content : '';
         return output?.split(/\r?\n/).some(line => line.replace(/^\[selftest\] /, '').trim() === text);
       });

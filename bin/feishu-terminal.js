@@ -13,7 +13,7 @@ let bridge, releaseLock, commandAbort, stopHerdrProbe;
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
-    console.log('feishu-terminal [setup [--new-app] [--new-group] [--operator ou_xxx] | selftest --herdr-socket <path>]'); return;
+    console.log('用法：feishu-terminal [setup [--new-app] [--new-group] [--operator ou_xxx] | selftest --herdr-socket <路径>]\n不带参数启动；setup 配置机器人（--new-app 新建应用，--new-group 新建群，--operator 指定操作者）；selftest 检查连接。'); return;
   }
   if (command === 'setup') {
     const options = {};
