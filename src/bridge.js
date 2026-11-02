@@ -1002,7 +1002,7 @@ export class Bridge {
     }
     if (current.turn && current.turn.id !== turn.id) {
       turn.backgroundFinishedBefore ??= [...(current.turn.backgroundFinishedBefore ?? []), ...(current.turn.background?.finished ?? []).map(task => task.id)];
-      if (current.turn.background || current.turn.backgroundRetired) {
+      if (current.turn.background?.running?.length || current.turn.background?.finished?.length || current.turn.backgroundRetired) {
         const old = { ...current.turn, background: undefined, liveActivity: '', backgroundRetired: true, backgroundFinishedBefore: turn.backgroundFinishedBefore };
         if (!await this.updateGeneration(binding, { turn: old })) return false;
         await this.publishCard(this.store.binding(binding.chatId, binding.topicId));
