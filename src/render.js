@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from 'node:util';
 import { detectMenu, menuControls } from './menus.js';
+import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
 
 export function clean(text) {
   return stripVTControlCharacters(String(text)).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
@@ -32,8 +33,8 @@ const accent = (text, color = 'grey') => `<font color='${color}'>${markup(text)}
 const literal = text => markup(text).replace(/[\\`*_\[\]~!]/g, '\\$&');
 const short = (text, count = 180) => Array.from(clean(text ?? '')).slice(0, count).join('');
 const prose = text => text.split('\n').map(line => /^(?:错误|出错|失败|Error\b|Failed\b)/i.test(line.trim()) ? accent(line, 'red') : markup(line)).join('\n');
-export const CARD_FOOTER = '在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表';
-const CLIPPED = '内容较长，仅显示末尾约 1500 字；完整内容在电脑端';
+const CLIPPED = '内容较长，仅显示末尾约 1500 字';
+const tipLine = text => ({ ...markdown(accent(text)), text_size: 'notation' });
 const roleCard = (title, template, elements) => ({ schema: '2.0', config: { update_multi: true },
   header: { template, title: { tag: 'plain_text', content: title } }, body: { elements } });
 
@@ -44,7 +45,7 @@ export function assistantCard(text, tools = [], agent = 'Claude') {
   if (tools.length) elements.push({ tag: 'collapsible_panel', expanded: false,
     header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${tools.length})` } },
     elements: [markdown(accent(tail(tools.map(t => String(t).replace(/\s+/g, ' ').slice(0, 140)).join('\n'), 1500)))] });
-  elements.push(markdown(accent('已完成', 'green') + ' · ' + accent(CARD_FOOTER)));
+  if (clipped) elements.push(tipLine(CLIPPED_TIP));
   return roleCard(`🤖 ${String(agent).slice(0, 40)} · 已完成`, 'green', elements);
 }
 
@@ -58,9 +59,9 @@ export function outputCard(text, { full = false } = {}) {
   const content = full ? clean(text) : stripChrome(text);
   const lines = content.split('\n'), limit = full ? Infinity : 60;
   const body = tail(lines.slice(-limit).join('\n'), full ? 4000 : 3000);
+  const clipped = lines.length > limit || body.length < content.length;
   return roleCard(full ? '💻 当前屏幕' : '💻 命令输出', 'grey',
-    [markdown((lines.length > limit || body.length < content.length ? accent(full ? '仅显示末尾；可在电脑端查看完整屏幕' : '显示最近 60 行；超长行仅显示末尾，完整内容在电脑端') + '\n' : '') + codeBlock(body)),
-      markdown(accent(full ? '这是终端当前屏幕，保留原始界面。' + CARD_FOOTER : CARD_FOOTER))]);
+    [markdown(codeBlock(body)), ...(clipped ? [tipLine(CLIPPED_TIP)] : [])]);
 }
 
 export function screenText(text, rows = 40, width = 120) {
@@ -130,10 +131,10 @@ function blockedPrompt(text) {
 function menuPrompt(menu, menuUI) {
   const warning = menuUI?.confirm ? '\n⚠️ 此会话已在其他终端运行，同时恢复可能损坏会话记录。确定仍要恢复？' : '';
   return markdown('**Claude 正在等你从菜单里选择**' + (menu.title ? ' · ' + literal(short(menu.title, 100)) : '') +
-    '\n点选项按钮即可选择，无需输入文字。' + warning);
+    '\n' + accent('点选项按钮即可选择，无需输入文字。') + warning);
 }
 
-export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, suppressMenu = false }) {
+export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, suppressMenu = false, tip = '' }) {
   const menu = detectMenu(suppressMenu ? '' : screen || turn.text);
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   const preview = stripChrome(turn.text);
@@ -149,7 +150,8 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
   const finished = (turn.background?.finished ?? []).slice(-5);
   if (running.length || finished.length) {
     elements.push(markdown(`**⏳ 后台运行中（${running.length}）**` + '\n' + running.map(task =>
-      prose(`• ${short(task.description)} · ${task.status === 'unknown' ? '状态未知' : `已运行 ${task.minutes} 分钟`}`)).join('\n') +
+      prose(`• ${short(task.description)} · ${task.status === 'unknown' ? '状态未知' : `已运行 ${task.minutes} 分钟`}`) +
+      (task.tail ? '\n' + accent('   └ ' + task.tail) : '')).join('\n') +
       (finished.length ? '\n' + finished.map(task => accent(`${task.status === 'completed' ? '✅' : task.status === 'failed' ? '❌' : '⏹'} ${short(task.description)} ${task.status === 'completed' ? '完成' : task.status === 'failed' ? `失败（exit ${task.exitCode ?? '?'}）` : ['killed', 'stopped'].includes(task.status) ? '已停止' : short(task.status)}`)).join('\n') : '')));
 
   }
@@ -164,9 +166,11 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
       }],
     })),
   });
-  const failed = ['error', 'failed'].includes(turn.status);
+  const failed = ['error', 'failed', 'frozen'].includes(turn.status);
   const activity = failed ? '出错' : turn.settled ? (running.length ? `本轮完成 · 后台 ${running.length} 个任务运行中` : '已完成') : blocked ? '等待你确认' : '工作中';
-  elements.push(markdown(accent(activity, failed ? 'red' : turn.settled ? 'green' : 'grey') + ' · ' + accent(CARD_FOOTER)));
+  const contextual = failed ? RECOVERY_TIP : blocked ? '' :
+    turn.truncated || turn.toolsTruncated || Array.from(preview).length > 1500 ? CLIPPED_TIP : tip;
+  if (contextual) elements.push(tipLine(contextual));
   return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
     failed ? 'red' : blocked ? 'orange' : turn.settled ? (running.length ? 'wathet' : 'green') : 'blue', elements);
 }
@@ -208,8 +212,10 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
-  const preview = stripChrome(text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
-  const elements = [markdown(codeBlock(screenText(preview, 10)) + '\n' + accent('这是终端最近的画面；/t screen 可查看完整屏幕'))];
+  const lines = stripChrome(text).split('\n').filter(line => line.trim());
+  const preview = lines.slice(-10).join('\n');
+  const clipped = lines.length > 10 || lines.some(line => Array.from(line).length > 120);
+  const elements = [markdown(codeBlock(screenText(preview, 10)))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     elements.push(blockedPrompt(text));
@@ -224,7 +230,8 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
   const shell = agent === null || (agent === undefined && status === 'unknown');
   const activity = shell ? (status === 'working' ? '运行中' : '空闲') :
     ({ working: '工作中', idle: '空闲', done: '已完成', blocked: '等待你确认', error: '出错', failed: '出错' }[status] ?? '状态待更新');
-  elements.push(markdown(accent(CARD_FOOTER)));
+  if (['error', 'failed', 'frozen'].includes(status)) elements.push(tipLine(RECOVERY_TIP));
+  else if (status !== 'blocked' && clipped) elements.push(tipLine(CLIPPED_TIP));
   if (paneId) elements.push({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(paneId)) }] });
   return { config: { wide_screen_mode: true, update_multi: true }, header: { template: shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
     title: { tag: 'plain_text', content: `${shell ? '命令行' : '●'} · ${activity} · ${short(label)}` } }, elements };

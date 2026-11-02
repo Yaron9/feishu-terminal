@@ -1,5 +1,6 @@
 import { cardVersion, renderSchema, patchStoredCard, retirementCard } from './card-schema.js';
-import { backgroundView, screenActivity } from './transcripts/background.js';
+import { backgroundView, screenActivity, refreshBackgroundTails } from './transcripts/background.js';
+import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
 import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard } from './render.js';
@@ -213,7 +214,7 @@ export class Bridge {
     const root = this.newRoot(pane, action.text);
     const topicId = await this.feishu.send(event.chatId, root.card);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata });
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
     await this.store.transaction(data => {
       (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
@@ -445,7 +446,7 @@ export class Bridge {
     const root = this.newRoot(pane);
     const topicId = await this.feishu.send(event.chatId, root.card);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata,
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata, welcomePending: true,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
@@ -503,6 +504,8 @@ export class Bridge {
             if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
             Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
               cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
+              welcomePending: true, firstTipTurnId: null, tipTurnId: null, tipText: null,
+              lastTipAt: null, tipIndex: 0, backgroundTailCache: null,
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
               retiredCardId: undefined, retiredCardKind: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
@@ -558,7 +561,7 @@ export class Bridge {
         current = this.store.binding(binding.chatId, binding.topicId);
       }
       const pending = await this.prepareCard(current, true);
-      if (!await this.updateGeneration(current, { pendingCard: pending })) throw new Error('Binding changed');
+      if (!await this.updateGeneration(current, { pendingCard: pending, ...pending.tipPatch })) throw new Error('Binding changed');
       await this.publishCard(current, true);
       if (this.store.binding(current.chatId, current.topicId)?.nonce !== pending.nonce) throw new Error('Card publication incomplete');
       return pending.card.header.title.content;
@@ -870,13 +873,16 @@ export class Bridge {
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     if (this.turnMode(binding) && binding.turn) {
       const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id;
+      const eligible = !['blocked', 'error', 'failed', 'frozen'].includes(turn.status) &&
+        !turn.truncated && !turn.toolsTruncated && Array.from(stripChrome(turn.text)).length <= 1500;
+      const tip = planTurnTip(binding, turn, this.now(), eligible);
       return { nonce, createdAt: this.now(), targetId: resume || newTurn ? null : binding.cardId ?? null,
         ...((resume || (newTurn && !binding.cardTurnId)) && binding.cardId ? {
           previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status',
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
-        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn),
-        card: turnCard({ turn, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), tipPatch: tip.patch,
+        card: turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
     }
     return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
@@ -1007,6 +1013,13 @@ export class Bridge {
         if (background && !binding.turn.backgroundRetired) {
           binding.turn.background = backgroundView(background, state.visible, now);
           binding.turn.background.finished = binding.turn.background.finished.filter(task => !(binding.turn.backgroundFinishedBefore ?? []).includes(task.id));
+          if (binding.turn.background.running.length) {
+            const cache = await refreshBackgroundTails(binding.turn.background, binding.backgroundTailCache, binding.turn.id, now);
+            if (cache !== binding.backgroundTailCache) {
+              if (!await this.updateGeneration(binding, { backgroundTailCache: cache })) return;
+              binding.backgroundTailCache = cache;
+            }
+          }
         }
         if (binding.turn.adapter === 'claude') binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
         if (turnSignature(binding.turn) !== previousTurnSignature && !await this.updateGeneration(binding, { turn: binding.turn })) return;
@@ -1029,7 +1042,7 @@ export class Bridge {
       let pending = binding.pendingCard;
       if (!pending) {
         pending = await this.prepareCard(binding);
-        if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
+        if (!await this.updateGeneration(binding, { pendingCard: pending, ...pending.tipPatch })) return;
       }
       try {
         let cardId = pending.targetId;
