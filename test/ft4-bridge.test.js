@@ -68,7 +68,7 @@ test('frozen reused panes publish nothing, discard pending work and never subscr
   assert.ok(h.feishu.calls.some(c => c.msgType === 'interactive'));
 });
 
-test('identity changes or verification fails across a read drops the entire snapshot and freezes', async t => {
+test('identity changes freeze, transport failures discard the read without freezing', async t => {
   for (const mode of ['reused', 'unavailable']) {
     const h = await harness(t); await h.bridge.handle(message('pwd')); await h.subscribed();
     const request = h.bridge.herdr.request.bind(h.bridge.herdr); let changed = false;
@@ -82,12 +82,14 @@ test('identity changes or verification fails across a read drops the entire snap
       }
       return response;
     };
-    await h.bridge.tick(); h.advance(2000); await h.bridge.tick();
+    await h.bridge.tick();
     const binding = h.store.binding('oc_test', 'm1');
-    assert.equal(binding.frozen, true, mode);
+    assert.equal(Boolean(binding.frozen), mode === 'reused', mode);
     assert.equal(h.feishu.calls.length, 0, mode);
-    assert.equal(binding.outputBatch, null);
-    assert.equal(binding.pendingCard, null);
+    if (mode === 'reused') {
+      assert.equal(binding.outputBatch, null);
+      assert.equal(binding.pendingCard, null);
+    }
     assert.ok(!JSON.stringify(h.store.list()).includes('RACING SECRET'));
   }
 });

@@ -178,6 +178,9 @@ export class Bridge {
       if (action.type === 'input') await this.input(binding, action.text);
       this.state(binding).dirty = true;
     } catch (error) {
+      if (error.code === 'backend_unavailable' && binding && !this.store.binding(binding.chatId, binding.topicId)?.frozen) {
+        await this.outageNotice(binding); return;
+      }
       if (error.code === 'binding_unverified') {
         await this.feishu.reply(event.topicId, '终端已变化（可能重启或迁移过），已暂停同步。发送 /t ls，点 [打开] 重新绑定'); return;
       }
@@ -282,17 +285,32 @@ export class Bridge {
     const expected = binding;
     binding = this.store.binding(binding.chatId, binding.topicId);
     if (!this.sameGeneration(expected, binding)) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+    if (binding.frozen || !binding.identity) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    const state = this.state(binding);
+    await this.outageNotice(binding);
+    if (this.now() < (state.verifyRetryAt ?? 0)) throw Object.assign(new Error('Verification backing off'), { code: 'backend_unavailable' });
     try {
-      if (!binding || binding.frozen || !binding.identity) throw new Error('Unverified binding');
       const current = await this.identity(binding.paneId, binding.allowDesktop);
       const latest = this.store.binding(binding.chatId, binding.topicId);
-      if (!this.sameGeneration(binding, latest) || latest.frozen || Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
-        throw new Error('Identity mismatch');
-      this.state(binding).verified = true;
+      if (!this.sameGeneration(binding, latest) || latest.frozen) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+      if (Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
+        throw Object.assign(new Error('Identity mismatch'), { code: 'identity_mismatch', identityProof: true });
+      Object.assign(state, { verified: true, verifyRetryAt: 0 });
+      if (!state.ioOutage) Object.assign(state, { outageSince: null, outageNotified: false, verifyAttempts: 0 });
     } catch (error) {
-      if (['connection_error', 'connection_closed', 'timeout', 'backend_unavailable'].includes(error.code)) {
-        this.state(binding).verified = false;
-        throw error;
+      if (error.code === 'binding_changed') throw error;
+      let proven = error.identityProof === true;
+      if (['pane_not_found', 'terminal_finished', 'not_found'].includes(error.code)) {
+        // A failed aggregate list hides backend outages. Only a successful
+        // list from this binding's own backend can prove absence.
+        try {
+          const panes = await this.backend.backend(binding.paneId).list();
+          const pane = panes.find(p => p.pane_id === binding.paneId);
+          proven = !pane || !this.identitiesMatch(binding, pane);
+        } catch (listError) { error = listError; }
+      }
+      if (!proven) {
+        return this.backendUnavailable(binding, error);
       }
       if (binding && this.sameGeneration(binding, this.store.binding(binding.chatId, binding.topicId))) {
         await this.updateGeneration(binding, { frozen: true, discardedOutput: Boolean(binding.outputBatch) || binding.discardedOutput,
@@ -302,6 +320,64 @@ export class Bridge {
       }
       throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     }
+  }
+  async backendUnavailable(binding, error, ioOutage = false) {
+    const state = this.state(binding);
+    state.verified = false;
+    state.ioOutage ||= ioOutage;
+    state.outageSince ??= this.now();
+    state.verifyRetryAt = this.now() + Math.min(1000 * 2 ** (state.verifyAttempts ?? 0), 30000);
+    state.verifyAttempts = Math.min((state.verifyAttempts ?? 0) + 1, 5);
+    this.backend.reportError(this.backend.backend(binding.paneId), error);
+    await this.outageNotice(binding);
+    throw Object.assign(new Error('Terminal backend temporarily unavailable'), { code: 'backend_unavailable' });
+  }
+  async outageNotice(binding) {
+    const state = this.state(binding);
+    if (state.outageSince != null && this.now() - state.outageSince > 120000 && !state.outageNotified) {
+      await this.feishu.reply(binding.topicId, '暂时连不上终端服务，正在重试');
+      state.outageNotified = true;
+    }
+  }
+  identitiesMatch(binding, pane) {
+    const current = this.backend.identity(pane), stored = binding.identity;
+    return Boolean(stored?.terminalId && current.terminalId && pane.pane_id === binding.paneId &&
+      [...new Set([...Object.keys(current), ...Object.keys(stored)])].every(k => current[k] === stored[k]));
+  }
+  async healBinding(binding) {
+    if (binding.frozen) {
+      const state = this.state(binding);
+      if (this.now() < (state.healRetryAt ?? 0)) return;
+      let pane;
+      try { pane = await this.backend.get(binding.paneId, { allowDesktop: binding.allowDesktop }); }
+      catch (error) {
+        state.healRetryAt = this.now() + 30000;
+        this.backend.reportError(this.backend.backend(binding.paneId), error);
+        return;
+      }
+      if (!this.identitiesMatch(binding, pane)) return;
+      const generation = randomUUID();
+      if (!await this.updateGeneration(binding, { frozen: false, generation, nonce: randomUUID(), menuNonce: randomUUID(),
+        pendingMenuCard: null, menuConfirm: null, cardSignature: null,
+        pendingCard: binding.pendingCard ? { ...binding.pendingCard, staleNonce: true } : null,
+        outputBatch: binding.outputBatch ? { ...binding.outputBatch, generation } : null,
+        recoveryPending: { uuid: randomUUID(), createdAt: this.now() } })) return;
+      this.runtime.delete(binding.topicId);
+      binding = this.store.binding(binding.chatId, binding.topicId);
+    }
+    if (!binding.recoveryPending) return;
+    if (!binding.recoveryPending.cardDone) {
+      await this.resumeTopic(binding);
+      const recoveryPending = { ...binding.recoveryPending, cardDone: true };
+      if (!await this.updateGeneration(binding, { recoveryPending })) return;
+      binding = this.store.binding(binding.chatId, binding.topicId);
+    }
+    await this.verify(binding);
+    await this.feishu.reply(binding.topicId, { schema: '2.0', body: { elements: [
+      { tag: 'markdown', content: '<font color="grey">已恢复同步</font>' },
+    ] } }, 'interactive', binding.recoveryPending.uuid);
+    await this.updateGeneration(binding, { recoveryPending: null });
+    this.resubscribe();
   }
   sameGeneration(binding, current) {
     return Boolean(current && (binding.generation ?? 0) === (current.generation ?? 0));
@@ -315,7 +391,14 @@ export class Bridge {
   }
   async readVerified(binding, read) {
     await this.verify(binding);
-    const result = await read();
+    let result;
+    try { result = await read(); }
+    catch (error) {
+      if (['unavailable', 'connection_error', 'connection_closed', 'timeout', 'backend_unavailable',
+        'backend_unreachable', 'startup_not_ready', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'].includes(error.code))
+        return this.backendUnavailable(binding, error, true);
+      throw error;
+    }
     // Neither read API carries terminal identity. Discard both snapshots if
     // the server changed between verification and the completed reads.
     await this.verify(binding);
@@ -719,6 +802,10 @@ export class Bridge {
   async scanSessions() {
     if (this.now() - (this.lastSessionScan ?? -Infinity) < 1000) return;
     this.lastSessionScan = this.now();
+    for (const b of this.store.list().filter(b => b.chatId === this.chatId && (b.frozen || b.recoveryPending))) {
+      await this.enqueue(() => this.enqueue(() => this.healBinding(b), `output:${b.topicId}`), b.topicId)
+        .catch(() => this.onError('binding_recovery_failed'));
+    }
     for (const snapshot of this.store.list().filter(b => b.chatId === this.chatId)) {
       // Input, output and card work all drain before the atomic retarget.
       await this.enqueue(() => this.enqueue(() => this.enqueue(async () => {
@@ -828,7 +915,7 @@ export class Bridge {
   async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
     const [{ read: visible }, panes] = await this.readVerified(binding, () => Promise.all([
-      this.backend.read(binding.paneId, { source: 'visible' }), this.backend.list(),
+      this.backend.read(binding.paneId, { source: 'visible' }), this.backend.backend(binding.paneId).list(),
     ]));
     const agent = panes.find(p => p.pane_id === binding.paneId);
     this.status(state, forceBlocked ? 'blocked' : agent ? this.backend.status(agent, visible.text) : 'unknown', agent?.agent ?? null);
@@ -838,6 +925,7 @@ export class Bridge {
     await this.syncTopicTitle(binding, pane);
     await this.initializeTranscript(binding, { ...pane, agent: agent?.agent ?? pane.agent });
     const recent = state.transcriptSource ? visible : (await this.readVerified(binding, () => this.backend.read(binding.paneId))).read;
+    Object.assign(state, { ioOutage: false, outageSince: null, outageNotified: false, verifyAttempts: 0, verifyRetryAt: 0 });
     if (!state.initialized) {
       if (binding.lastTranscript === undefined) state.previous = clean(recent.text);
       state.initialized = true;
@@ -868,7 +956,7 @@ export class Bridge {
   async prepareCard(binding, resume = false) {
     const state = this.state(binding), nonce = randomUUID();
     await this.verify(binding);
-    const panes = await this.backend.list();
+    const panes = await this.readVerified(binding, () => this.backend.backend(binding.paneId).list());
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     if (this.turnMode(binding) && binding.turn) {

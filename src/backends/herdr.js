@@ -25,9 +25,9 @@ export class HerdrBackend {
     if (options) {
       const { workspaces } = await this.client.request('workspace.list');
       if (!pane?.terminal_id || !pane.tab_id || !workspaces.some(w => w.workspace_id === pane.workspace_id &&
-          (options.allowDesktop || w.label === 'feishu'))) throw new Error('Unconfirmed terminal identity');
+          (options.allowDesktop || w.label === 'feishu'))) throw Object.assign(new Error('Unconfirmed terminal identity'), { code: 'identity_mismatch', identityProof: true });
     }
-    if (pane?.pane_id !== id) throw new Error('Unconfirmed terminal identity');
+    if (pane?.pane_id !== id) throw Object.assign(new Error('Unconfirmed terminal identity'), { code: 'identity_mismatch', identityProof: true });
     return options ? pane : this.withProcess(pane);
   }
   read(id, options) { return readPane(this.client, id, options); }
