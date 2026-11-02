@@ -143,6 +143,16 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
     elements: [markdown((turn.toolsTruncated ? accent('工具较多，仅显示末尾') + '\n\n' : '') + accent(tail(turn.tools, 1500)))] });
   if (note) elements.unshift(markdown(note));
 
+  if (!turn.settled && turn.liveActivity) elements.unshift(markdown(accent(turn.liveActivity)));
+  const running = turn.background?.running ?? [];
+  const finished = (turn.background?.finished ?? []).slice(-5);
+  if (running.length || finished.length) {
+    elements.push(markdown(`**⏳ 后台运行中（${running.length}）**` + '\n' + running.map(task =>
+      prose(`• ${short(task.description)} · ${task.status === 'unknown' ? '状态未知' : `已运行 ${task.minutes} 分钟`}`)).join('\n') +
+      (finished.length ? '\n' + finished.map(task => accent(`${task.status === 'completed' ? '✅' : task.status === 'failed' ? '❌' : '⏹'} ${short(task.description)} ${task.status === 'completed' ? '完成' : task.status === 'failed' ? `失败（exit ${task.exitCode ?? '?'}）` : '已停止'}`)).join('\n') : '')));
+    if (running.length) elements.push({ tag: 'button', text: { tag: 'plain_text', content: '查看后台输出' }, type: 'default',
+      value: { topic_id: topicId, nonce, key: 'background-output' } });
+  }
   const blocked = !turn.settled && turn.status === 'blocked';
   if (blocked) elements.push(blockedPrompt(screen || turn.text));
   const buttons = screenControls(screen || turn.text);
@@ -155,10 +165,10 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
     })),
   });
   const failed = ['error', 'failed'].includes(turn.status);
-  const activity = failed ? '出错' : turn.settled ? '已完成' : blocked ? '等待你确认' : '工作中';
+  const activity = failed ? '出错' : turn.settled ? (running.length ? `本轮完成 · 后台 ${running.length} 个任务运行中` : '已完成') : blocked ? '等待你确认' : '工作中';
   elements.push(markdown(accent(activity, failed ? 'red' : turn.settled ? 'green' : 'grey') + ' · ' + accent(CARD_FOOTER)));
   return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
-    failed ? 'red' : blocked ? 'orange' : turn.settled ? 'green' : 'blue', elements);
+    failed ? 'red' : blocked ? 'orange' : turn.settled ? (running.length ? 'wathet' : 'green') : 'blue', elements);
 }
 
 export function pickerCard(card, result) {
@@ -251,4 +261,24 @@ export function menuCard({ menu, topicId, nonce, menuUI = {}, result }) {
   const card = roleCard('Claude · 等待菜单选择', 'orange', elements);
   if (Buffer.byteLength(JSON.stringify(card)) >= 28000) throw new Error('Menu item exceeds card size limit');
   return card;
+}
+
+// Keep every task represented while bounding the entire card after escaping.
+export function backgroundOutputCard(sections) {
+  const elements = [];
+  let budget = 22000;
+  for (const section of sections) {
+    const heading = markdown(accent(short(section.description)));
+    let text = section.text;
+    let element = markdown(codeBlock(text));
+    while (Buffer.byteLength(JSON.stringify(element)) > Math.max(150, budget / Math.max(1, sections.length - elements.length / 2))) {
+      text = Array.from(text).slice(Math.max(1, Math.floor(Array.from(text).length / 4))).join('');
+      element = markdown(codeBlock(text));
+      if (!text) break;
+    }
+    budget -= Buffer.byteLength(JSON.stringify([heading, element]));
+    if (budget < 0) break;
+    elements.push(heading, element);
+  }
+  return roleCard('后台任务输出', 'grey', elements.length ? elements : [markdown(accent('没有运行中的后台任务'))]);
 }

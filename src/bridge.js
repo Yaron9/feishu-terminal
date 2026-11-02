@@ -1,6 +1,7 @@
+import { backgroundView, screenActivity, readBackgroundOutput } from './transcripts/background.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, backgroundOutputCard, turnCard, menuCard } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { transcriptAdapters } from './transcripts/index.js';
 import { paneSubscriptions } from './herdr-client.js';
@@ -322,7 +323,12 @@ export class Bridge {
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
         const { cursor } = await this.readVerified(binding, () => adapter.read(path, { atEnd: true }));
-        if (!await this.updateGeneration(binding, { transcript: { adapter: key, path, cursor } })) return;
+        const patch = { transcript: { adapter: key, path, cursor } };
+        if (!current.turn && cursor.background?.running?.length) {
+          patch.turn = freshTurn({ key, path }, this.agentName(key), state.status);
+          if (['idle', 'done'].includes(state.status)) { patch.turn.settled = true; patch.turn.status = 'idle'; }
+        }
+        if (!await this.updateGeneration(binding, patch)) return;
       }
       state.transcriptSource = { key, path, adapter };
     } catch (error) {
@@ -340,6 +346,11 @@ export class Bridge {
     const inputs = (current.sentInputs ?? []).filter(item => item.expires > this.now());
     const { chunks, consumedInputs } = turnChunks(items, current.turn, source,
       this.agentName(source.key), state.status, inputs, text => this.inputHash(text));
+    if (!current.turn && !chunks.some(chunk => chunk.turn) && cursor.background?.running?.length) {
+      const turn = freshTurn(source, this.agentName(source.key), state.status);
+      if (['idle', 'done'].includes(state.status)) { turn.settled = true; turn.status = 'idle'; }
+      chunks.push({ turn });
+    }
     return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs,
       transcript: { adapter: source.key, path: source.path, cursor } };
   }
@@ -558,14 +569,14 @@ export class Bridge {
   async button(event, binding) {
     if (event.key?.startsWith('picker:')) { await this.picker.button(event); return; }
     const isMenu = Boolean(binding?.menuCardId && event.messageId === binding.menuCardId);
-    if (binding?.menuCardId && !isMenu && event.key !== 'refresh') {
+    if (binding?.menuCardId && !isMenu && !['refresh', 'background-output'].includes(event.key)) {
       await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
     }
     if (isMenu) binding = { ...binding, cardId: binding.menuCardId, nonce: binding.menuNonce, cardCreatedAt: binding.menuCreatedAt };
     else if (binding) binding = { ...binding, cardMenu: null };
     const menuAction = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '');
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
-      (event.key !== 'refresh' && !validKeys([event.key]) && !menuAction)) {
+      (!['refresh', 'background-output'].includes(event.key) && !validKeys([event.key]) && !menuAction)) {
       await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
     const state = this.state(binding);
@@ -586,7 +597,7 @@ export class Bridge {
     }).some(([, key]) => key === event.key)) {
       await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
     }
-    if (event.key !== 'refresh' && !binding.cardMenu?.kind) {
+    if (!['refresh', 'background-output'].includes(event.key) && !binding.cardMenu?.kind) {
       const { agents } = await this.herdr.request('agent.list');
       if (!agents.some(a => a.pane_id === binding.paneId && a.agent && a.agent_status === 'blocked')) {
         await this.feishu.reply(binding.topicId, '终端已经不在等待确认，请发送 /t screen 查看当前状态。'); return;
@@ -597,8 +608,21 @@ export class Bridge {
     if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce, isMenu)) {
       await this.feishu.reply(binding.topicId, '这张卡片已操作过，请发送 /t screen 获取当前卡片。'); return;
     }
+    if (event.key === 'background-output') {
+      const tasks = binding.transcript?.cursor?.background?.running ?? [];
+      const sections = [];
+      for (const task of tasks) {
+        let text;
+        try { text = await readBackgroundOutput(task); } catch { text = '（输出不可用或路径未通过校验）'; }
+        sections.push({ description: task.description, text });
+      }
+      await this.feishu.reply(binding.topicId, backgroundOutputCard(sections), 'interactive');
+      state.forceTurnCard = true; state.dirty = true;
+      await this.refreshCard(this.store.binding(binding.chatId, binding.topicId));
+      return;
+    }
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
-    if (event.key !== 'refresh') {
+    if (!['refresh', 'background-output'].includes(event.key)) {
       if (binding.cardMenu?.kind) {
         await this.menuButton(event, binding);
       } else await this.writeInput(binding, 'pane.send_keys', { keys: [event.key] });
@@ -819,11 +843,19 @@ export class Bridge {
       // Transcript cards require an observed turn; menus publish independently.
       if (!binding.turn && !binding.pendingCard) return;
       if (binding.turn) {
+        const previousTurnSignature = turnSignature(binding.turn);
         if (!binding.turn.settled && ['blocked', 'working'].includes(state.status) &&
           (binding.turn.status !== state.status || !binding.turn.activeObserved)) {
           binding.turn.status = state.status; binding.turn.activeObserved = true;
           if (!await this.updateGeneration(binding, { turn: binding.turn })) return;
         }
+        const background = binding.transcript?.cursor?.background;
+        if (background && !binding.turn.backgroundRetired) {
+          binding.turn.background = backgroundView(background, state.visible, now);
+          binding.turn.background.finished = binding.turn.background.finished.filter(task => !(binding.turn.backgroundFinishedBefore ?? []).includes(task.id));
+        }
+        if (binding.turn.adapter === 'claude') binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
+        if (turnSignature(binding.turn) !== previousTurnSignature && !await this.updateGeneration(binding, { turn: binding.turn })) return;
         state.nextSignature = turnSignature(binding.turn);
         state.cardPending = state.forceTurnCard || binding.cardTurnId !== binding.turn.id ||
           binding.cardSignature !== state.nextSignature || binding.cardNonce !== binding.nonce;
@@ -967,6 +999,16 @@ export class Bridge {
       await this.publishCard(current);
       current = this.store.binding(binding.chatId, binding.topicId);
       if (!this.sameGeneration(binding, current) || current.pendingCard) return false;
+    }
+    if (current.turn && current.turn.id !== turn.id) {
+      turn.backgroundFinishedBefore ??= [...(current.turn.backgroundFinishedBefore ?? []), ...(current.turn.background?.finished ?? []).map(task => task.id)];
+      if (current.turn.background || current.turn.backgroundRetired) {
+        const old = { ...current.turn, background: undefined, liveActivity: '', backgroundRetired: true, backgroundFinishedBefore: turn.backgroundFinishedBefore };
+        if (!await this.updateGeneration(binding, { turn: old })) return false;
+        await this.publishCard(this.store.binding(binding.chatId, binding.topicId));
+        current = this.store.binding(binding.chatId, binding.topicId);
+        if (current.pendingCard || current.cardSignature !== turnSignature(old)) return false;
+      }
     }
     const signature = turnSignature(turn);
     if (current.turn?.id !== turn.id || turnSignature(current.turn) !== signature) {
