@@ -96,21 +96,32 @@ export function resumeWarnings(menu, panes, paneId, screen = '') {
 
 const warningLabel = warnings => warnings?.length ? `⚠️ 已在 ${Array.from(warnings[0].label).slice(0, 30).join('')}${warnings.length > 1 ? ` 等 ${warnings.length} 个终端` : ''} 运行` : null;
 
-export function menuControls(menu, { page = 0, warnings = {}, confirm } = {}) {
+// Conservative serialized row budget includes escaped Markdown, callback metadata
+// and layout. Reduce the whole page, never a session title.
+export function menuPageSize(menu, warnings = {}) {
+  const costs = menu.items.map((item, index) => 900 + Buffer.byteLength(JSON.stringify(
+    [item.label, item.sublabel, warnings[index] ?? []]).replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
+  for (let size = 10; size > 1; size--) {
+    if (costs.every((_, i) => i % size || costs.slice(i, i + size).reduce((a, b) => a + b, 0) < 20000)) return size;
+  }
+  return 1;
+}
+
+export function menuControls(menu, { page = 0, warnings = {}, confirm, pageSize = menuPageSize(menu, warnings) } = {}) {
   if (confirm && sameMenu(confirm.menu, menu)) return [
     [`确定恢复 ${menu.items[confirm.index]?.label ?? '当前会话'}`, `menu:confirm:${confirm.index}`],
     ['返回菜单', 'menu:back'], ['Esc 取消', 'esc'], ['刷新', 'refresh'],
   ];
   const buttons = [];
   if (menu.items.length) {
-    const offset = (page % Math.ceil(menu.items.length / 10)) * 10;
-    menu.items.slice(offset, offset + 10).forEach((item, i) => {
+    const offset = (page % Math.ceil(menu.items.length / pageSize)) * pageSize;
+    menu.items.slice(offset, offset + pageSize).forEach((item, i) => {
       const index = offset + i;
       buttons.push([warningLabel(warnings[index]) ?? item.label, `menu:select:${index}`]);
     });
-    if (menu.items.length > 10) buttons.push(['更多…', 'menu:more']);
+    if (menu.items.length > pageSize) buttons.push(['更多…', 'menu:more']);
   }
-  if (!menu.items.length || menu.items.length > 10) buttons.push(['↑ 上一个', 'up'], ['↓ 下一个', 'down']);
+  if (!menu.items.length || menu.items.length > pageSize) buttons.push(['↑ 上一个', 'up'], ['↓ 下一个', 'down']);
   if (!menu.items.length) buttons.push([warningLabel(warnings[0]) ?? 'Enter 选中', 'enter']);
   return [...buttons, ['Esc 取消', 'esc'], ['刷新', 'refresh']];
 }

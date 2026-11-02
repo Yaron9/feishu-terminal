@@ -70,11 +70,12 @@ export class Store {
       Object.assign(binding, patch);
     });
   }
-  consumeCard(chatId, topicId, cardId, nonce) {
+  consumeCard(chatId, topicId, cardId, nonce, menu = false) {
     return this.transaction(data => {
       const b = data.bindings.find(b => b.chatId === chatId && b.topicId === topicId);
-      if (!b || b.cardId !== cardId || b.nonce !== nonce) return false;
-      b.nonce = randomUUID(); return true;
+      const idKey = menu ? 'menuCardId' : 'cardId', nonceKey = menu ? 'menuNonce' : 'nonce';
+      if (!b || b[idKey] !== cardId || b[nonceKey] !== nonce) return false;
+      b[nonceKey] = randomUUID(); return true;
     });
   }
   actionCard(messageId) { return structuredClone(this.data.actionCards?.find(c => c.messageId === messageId)); }
