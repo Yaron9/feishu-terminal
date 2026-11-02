@@ -63,7 +63,11 @@ export function actionEvent(raw) {
 }
 
 export class FeishuError extends Error {
-  constructor(code, retryAfterMs = 1000) { super('Feishu request failed'); this.code = String(code); this.retryAfterMs = retryAfterMs; }
+  constructor(code, retryAfterMs = 1000, detail) {
+    super('Feishu request failed'); this.code = String(code); this.retryAfterMs = retryAfterMs;
+    // Keep generic errors sanitized; retirement explicitly logs this diagnostic.
+    this.detail = detail;
+  }
 }
 
 export class Feishu {
@@ -121,13 +125,13 @@ export class Feishu {
             this.nextSend = Date.now() + Math.max(1000 * 2 ** attempt, Math.min(30000, Number(error.response?.headers?.['retry-after'] || 0) * 1000));
             continue;
           }
-          throw new FeishuError(code ?? status ?? 'network_error');
+          throw new FeishuError(code ?? status ?? error.code ?? 'network_error', 1000, error.response?.data?.msg ?? error.message);
         }
         if (response.code && response.code !== 0) {
           if ([99991400, 230020].includes(response.code) && attempt < 4) {
             this.nextSend = Date.now() + 1000 * 2 ** attempt; continue;
           }
-          throw new FeishuError(response.code);
+          throw new FeishuError(response.code, 1000, response.msg);
         }
         return response.data;
       }

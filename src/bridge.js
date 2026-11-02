@@ -466,7 +466,7 @@ export class Bridge {
               cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
-              retiredCardId: undefined, retiredCardAt: undefined, outputBatch: null,
+              retiredCardId: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
               topicRoot: root.metadata });
             for (const pointer of data.topicPointers ?? []) {
               if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
@@ -744,25 +744,34 @@ export class Bridge {
     const state = this.state(binding);
     if (this.now() < (state.retireRetryAt ?? 0)) return;
     if (Number.isFinite(current.retiredCardAt) && this.now() - current.retiredCardAt < 2000) return;
-    try {
-      await this.verify(current);
-      if (Number.isFinite(current.retiredCardAt) && !await this.updateGeneration(current, { retiredCardAt: this.now() })) return;
-      await this.feishu.patch(current.retiredCardId, {
-        config: { wide_screen_mode: true, update_multi: true },
-        elements: [{ tag: 'div', text: { tag: 'plain_text', content: '已移至下方新卡片' } }],
-      });
-    } catch (error) {
-      if (!['230011', '230031', '230110'].includes(String(error.code))) {
-        state.retireFailures = (state.retireFailures ?? 0) + 1;
-        state.retireRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.retireFailures - 1));
-        this.onError('card_retirement_failed'); return;
+    // Persist the attempt before I/O so rebooting cannot reset the retry budget.
+    const attempts = current.retiredCardAttempts ?? 0;
+    if (attempts < 3) {
+      if (!await this.updateGeneration(current, { retiredCardAttempts: attempts + 1 })) return;
+      try {
+        await this.feishu.patch(current.retiredCardId, {
+          config: { wide_screen_mode: true, update_multi: true },
+          elements: [{ tag: 'div', text: { tag: 'plain_text', content: '已移至下方新卡片' } }],
+        });
+      } catch (error) {
+        const code = String(error.code ?? error.cause?.code ?? '');
+        const transient = ['network_error', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN',
+          'ENETUNREACH', 'EHOSTUNREACH', 'ECONNABORTED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code);
+        const retry = transient && attempts + 1 < 3;
+        this.onError('card_retirement_failed ' + JSON.stringify({ topic: current.topicId,
+          cardId: current.retiredCardId, code, message: error.detail ?? error.message,
+          attempt: attempts + 1, disposition: retry ? 'retry' : 'abandoned' }));
+        if (retry) {
+          state.retireRetryAt = this.now() + 1000 * 2 ** attempts;
+          return;
+        }
       }
     }
-    state.retireFailures = 0; state.retireRetryAt = 0;
+    state.retireRetryAt = 0;
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
       if (this.sameGeneration(binding, b) && b.retiredCardId === current.retiredCardId) {
-        delete b.retiredCardId; delete b.retiredCardAt;
+        delete b.retiredCardId; delete b.retiredCardAt; delete b.retiredCardAttempts;
       }
     });
   }
@@ -898,7 +907,7 @@ export class Bridge {
               cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce });
             if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
             if (pending.previousCardId && pending.previousCardId !== cardId) {
-              b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt;
+              b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt; delete b.retiredCardAttempts;
             }
           }
         });

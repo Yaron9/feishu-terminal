@@ -100,7 +100,7 @@ test('failed old-card retirement survives restart without republishing the recov
   const h = await blocked(t), old = h.store.binding('oc_test', 'm1');
   const patch = h.feishu.patch.bind(h.feishu);
   h.feishu.patch = async (id, card) => {
-    if (id === old.cardId) throw new Error('retirement unavailable');
+    if (id === old.cardId) throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
     return patch(id, card);
   };
   await h.bridge.handle(message('/t open w1:p1', 'recover'));
