@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { Store } from '../src/store.js';
 import { HerdrClient } from '../src/herdr-client.js';
 import { Bridge } from '../src/bridge.js';
+import assert from 'node:assert/strict';
 
 export async function fakeHerdr() {
-  const calls = [], panes = new Map(), subscribers = new Map(), sockets = new Set();
+  const calls = [], panes = new Map(), subscribers = new Map(), sockets = new Set(), unsafeReads = [];
   let workspace = null, sequence = 0, failNext, dropNext, holdNext;
   const emit = event => {
     for (const [socket, subscriptions] of subscribers) {
@@ -18,7 +19,8 @@ export async function fakeHerdr() {
     workspace ??= { workspace_id: 'w1', label: 'feishu' };
     const pane = { pane_id: `w1:p${++sequence}`, workspace_id: 'w1', tab_id: `w1:t${sequence}`,
       terminal_id: `term_${randomUUID()}`,
-      agent: null, agent_status: 'unknown', revision: 1, text: '$ ', visible: '$ ' };
+      agent: null, agent_status: 'unknown', revision: 1, text: '$ ', visible: '$ ',
+      scroll: { viewport_rows: 40, max_offset_from_bottom: 1960, offset_from_bottom: 0 } };
     panes.set(pane.pane_id, pane); return pane;
   };
   const server = net.createServer(socket => {
@@ -50,8 +52,13 @@ export async function fakeHerdr() {
             else result = { type: 'ok' };
             break;
           case 'pane.read':
-            if (!['visible', 'recent_unwrapped'].includes(p.source)) { error = 'invalid_source'; break; }
+            if (!['visible', 'recent', 'recent_unwrapped'].includes(p.source)) { error = 'invalid_source'; break; }
             if (!pane) { error = 'pane_not_found'; break; }
+            if (!Number.isSafeInteger(p.lines) || p.lines < 1 ||
+                p.lines > pane.scroll.viewport_rows + (p.source === 'visible' ? 0 : pane.scroll.max_offset_from_bottom) ||
+                (pane.scroll.max_offset_from_bottom === 0 && p.source !== 'visible')) {
+              unsafeReads.push(request); error = 'unsafe_pane_read'; break;
+            }
             result = { type: 'pane_read', read: { pane_id: pane.pane_id, text: p.source === 'visible' ? pane.visible : pane.text, revision: pane.revision, source: p.source, truncated: false } };
             break;
           case 'pane.send_text': case 'pane.send_keys': if (!pane) error = 'pane_not_found'; else result = { type: 'ok' }; break;
@@ -81,7 +88,10 @@ export async function fakeHerdr() {
       Object.assign(panes.get(paneId), { agent, agent_status });
       emit({ event: 'pane.agent_status_changed', data: { pane_id: paneId, agent_status, agent } });
     },
-    async close() { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); },
+    async close() {
+      for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve));
+      assert.deepEqual(unsafeReads, [], 'every pane read must stay within the buffer and use visible for zero scrollback');
+    },
     disconnectSubscribers() { for (const socket of subscribers.keys()) socket.destroy(); },
   };
 }

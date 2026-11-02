@@ -8,7 +8,7 @@ import { FeishuError } from '../src/feishu.js';
 import { fakeHerdr } from './helpers.js';
 
 async function run(t, { badReadback = false, missedInterrupt = false, wsFailed = false,
-  historyDenied, perIdDenied = false } = {}) {
+  historyDenied, perIdDenied = false, scroll } = {}) {
   const dir = await mkdtemp(new URL('../.test-selftest-', import.meta.url));
   const fake = await fakeHerdr();
   t.after(async () => { await fake.close(); await rm(dir, { recursive: true, force: true }); });
@@ -18,6 +18,7 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
   const herdr = { subscribe: (...args) => client.subscribe(...args), close: () => client.close(),
     async request(method, params = {}) {
       const result = await client.request(method, params);
+      if (scroll && result.root_pane) fake.panes.get(result.root_pane.pane_id).scroll = { ...scroll };
       if (method === 'pane.send_text') pending.set(params.pane_id, params.text);
       if (method === 'pane.send_keys') {
         if (params.keys.includes('ctrl+c') && !missedInterrupt) sleeping.delete(params.pane_id);
@@ -82,6 +83,18 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
     if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
   }
 });
+
+for (const offset of [0, 3]) {
+  test(`selftest reads stay within a tiny viewport and history buffer (scrollback=${offset})`, async t => {
+    const r = await run(t, { scroll: { viewport_rows: 6, max_offset_from_bottom: offset } });
+    assert.equal(r.code, 0, r.logs.join('\n'));
+    const reads = r.calls.filter(c => c.method === 'pane.read');
+    assert.ok(reads.length > 0);
+    assert.ok(reads.every(c => c.params.lines <= 6 + offset));
+    if (!offset) assert.ok(reads.every(c => c.params.source === 'visible'));
+    else assert.ok(reads.some(c => c.params.source === 'recent_unwrapped' && c.params.lines === 9));
+  });
+}
 
 for (const historyDenied of [230027, 99991672, 99991676]) {
   test(`selftest verifies replies and patched cards by id when history permission is denied (${historyDenied})`, async t => {

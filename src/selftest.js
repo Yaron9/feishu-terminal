@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Bridge } from './bridge.js';
 import { Store } from './store.js';
 import { HerdrClient, endpointFromEnv, endpointLabel } from './herdr-client.js';
+import { readPane } from './pane-read.js';
 import { Feishu, messageEvent, actionEvent } from './feishu.js';
 import { runtimePaths } from './runtime.js';
 
@@ -120,7 +121,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     await runStep('echo -> topic output read back', async () => {
       await input(`: '[selftest]'; echo ${marker}`);
       await waitFor(async () => {
-        const { read } = await herdr.request('pane.read', { pane_id: paneId, source: 'recent_unwrapped', lines: 80 });
+        const { read } = await readPane(herdr, paneId, { lines: 80 });
         return read.text.split(/\r?\n/).some(line => line.trim() === marker);
       });
       await waitFor(() => readback(marker));

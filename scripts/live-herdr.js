@@ -1,6 +1,7 @@
 // Explicit opt-in only. Never part of node --test. Operates only on the
 // task-authorized isolated ftest tunnel, never the default/local socket.
 import { HerdrClient, paneSubscriptions } from '../src/herdr-client.js';
+import { readPane } from '../src/pane-read.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import net from 'node:net';
@@ -52,12 +53,12 @@ try {
     await client.request('pane.send_keys', { pane_id: pane.pane_id, keys: ['enter'] });
     let recent;
     for (let i = 0; i < 30; i++) {
-      recent = (await client.request('pane.read', { pane_id: pane.pane_id, source: 'recent_unwrapped', lines: 80 })).read;
+      recent = (await readPane(client, pane.pane_id, { lines: 80 })).read;
       if (recent.text.split('\n').some(line => line.trim() === 'hello-ft1')) break;
       await delay(100);
     }
     assert.ok(recent.text.split('\n').some(line => line.trim() === 'hello-ft1'), 'echo output (not just echoed input)');
-    const visible = (await client.request('pane.read', { pane_id: pane.pane_id, source: 'visible', lines: 40 })).read;
+    const visible = (await readPane(client, pane.pane_id, { source: 'visible', lines: 40 })).read;
     assert.ok(visible.text.includes('hello-ft1'));
     console.log('READ', JSON.stringify({ visible: visible.text, recent_unwrapped: recent.text, revision: recent.revision }));
     await client.request('pane.send_keys', { pane_id: pane.pane_id, keys: ['ctrl+u'] });

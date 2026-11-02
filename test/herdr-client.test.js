@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { HerdrClient, endpointFromEnv, paneSubscriptions } from '../src/herdr-client.js';
 import { fakeHerdr, eventually } from './helpers.js';
+import { readPane } from '../src/pane-read.js';
 
 test('transport uses one request per connection, exact schema parameters, safe errors and reconnects subscription', async t => {
   const fake = await fakeHerdr(); const client = new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 200, reconnectMs: 10 });
   t.after(async () => { client.close(); await fake.close(); });
   await client.request('workspace.create', { label: 'feishu', cwd: '/tmp', focus: false });
-  assert.equal((await client.request('pane.read', { pane_id: 'w1:p1', source: 'recent_unwrapped', lines: 40 })).read.text, '$ ');
-  await assert.rejects(client.request('pane.read', { pane_id: 'w1:p1', source: 'recent-unwrapped' }), { code: 'invalid_source' });
+  assert.equal((await readPane(client, 'w1:p1', { lines: 40 })).read.text, '$ ');
+  await assert.rejects(readPane(client, 'w1:p1', { source: 'recent-unwrapped' }), TypeError);
   const events = [], states = [];
   const stop = client.subscribe(paneSubscriptions(['w1:p1']), event => events.push(event), state => states.push(state));
   await eventually(() => states.includes('connected'));

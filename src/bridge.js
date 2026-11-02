@@ -2,6 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
 import { clean, screenCard, screenText, newOutput, splitText } from './render.js';
 import { paneSubscriptions } from './herdr-client.js';
+import { readPane } from './pane-read.js';
 import { auditRecord, appendAudit } from './store.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
@@ -149,7 +150,7 @@ export class Bridge {
       }
       if (this.store.binding(event.chatId, event.topicId)?.needs_check) {
         let screen = '[screen unavailable; use /t screen]';
-        try { screen = screenText((await this.readVerified(binding, () => this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }))).read.text); } catch {}
+        try { screen = screenText((await this.readVerified(binding, () => readPane(this.herdr, binding.paneId, { source: 'visible', lines: 40 }))).read.text); } catch {}
         await this.feishu.reply(event.topicId, `Input needs checking; input was not retried. Inspect the screen, optionally /t k ctrl+u, then /t ok before more input.\n${screen}`); return;
       }
       // Never echo upstream error messages: they may contain terminal content.
@@ -298,7 +299,7 @@ export class Bridge {
     const state = this.state(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
     if (!state.initialized) {
-      const { read } = await this.readVerified(binding, () => this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 }));
+      const { read } = await this.readVerified(binding, () => readPane(this.herdr, binding.paneId));
       if (binding.lastTranscript === undefined) {
         state.previous = clean(read.text); state.current = state.previous;
         await this.store.update(binding.chatId, binding.topicId, { lastTranscript: state.previous });
@@ -370,8 +371,8 @@ export class Bridge {
   async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
     const [{ read: visible }, { read: recent }, { agents }, { panes }] = await this.readVerified(binding, () => Promise.all([
-      this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'visible', lines: 40 }),
-      this.herdr.request('pane.read', { pane_id: binding.paneId, source: 'recent_unwrapped', lines: 2000 }),
+      readPane(this.herdr, binding.paneId, { source: 'visible', lines: 40 }),
+      readPane(this.herdr, binding.paneId),
       this.herdr.request('agent.list'),
       this.herdr.request('pane.list'),
     ]));
