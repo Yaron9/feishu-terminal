@@ -104,9 +104,16 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
           print('NOTE history list needs im:message.group_msg (pending) — verified by message id instead');
         }
       }
-      // Only Bridge-generated text replies count, never the echo command or synthetic input label.
-      return messages.some(m => replies.has(m.message_id) && m.msg_type === 'text' &&
-        JSON.parse(m.body?.content || '{}').text?.split(/\r?\n/).some(line => line.replace(/^\[selftest\] /, '').trim() === text));
+      // Only settled Bridge output replies count, never the live preview,
+      // the echo command, synthetic input label or an on-demand screen card.
+      return messages.some(m => {
+        if (!replies.has(m.message_id)) return false;
+        const body = JSON.parse(m.body?.content || '{}');
+        const output = m.msg_type === 'text' ? body.text :
+          m.msg_type === 'interactive' && body.header?.title?.content === '[selftest] 💻 输出'
+            ? body.body?.elements?.[0]?.content : '';
+        return output?.split(/\r?\n/).some(line => line.replace(/^\[selftest\] /, '').trim() === text);
+      });
     };
     await runStep('top-level post -> topic and pane', async () => {
       const command = ": '[selftest]'; echo selftest-ready";
