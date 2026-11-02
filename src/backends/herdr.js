@@ -9,7 +9,16 @@ export class HerdrBackend {
     const [{ panes }, { agents }] = await Promise.all([
       this.client.request('pane.list'), this.client.request('agent.list'),
     ]);
-    return panes.map(p => ({ ...p, ...agents.find(a => a.pane_id === p.pane_id), backendLabel: '旧 herdr' }));
+    return Promise.all(panes.map(p => this.withProcess({ ...p, ...agents.find(a => a.pane_id === p.pane_id), backendLabel: '旧 herdr' })));
+  }
+  async withProcess(term) {
+    try {
+      const { process_info: info } = await this.client.request('pane.process_info', { pane_id: term.pane_id });
+      if (info?.pane_id !== term.pane_id) return term;
+      const foreground = info.foreground_processes?.find(p => p.pid === info.foreground_process_group_id) ??
+        info.foreground_processes?.find(p => p.name === term.agent) ?? info.foreground_processes?.[0];
+      return { ...term, foreground, foreground_pid: foreground?.pid ?? info.foreground_process_group_id ?? info.shell_pid ?? null };
+    } catch { return term; } // Older servers may lack process_info; /proc env remains authoritative.
   }
   async get(id, options) {
     const { pane } = await this.client.request('pane.get', { pane_id: id });
@@ -19,7 +28,7 @@ export class HerdrBackend {
           (options.allowDesktop || w.label === 'feishu'))) throw new Error('Unconfirmed terminal identity');
     }
     if (pane?.pane_id !== id) throw new Error('Unconfirmed terminal identity');
-    return pane;
+    return options ? pane : this.withProcess(pane);
   }
   read(id, options) { return readPane(this.client, id, options); }
   async sendText(id, text, { submit = false, beforeSubmit = async () => {} } = {}) {
@@ -36,10 +45,11 @@ export class HerdrBackend {
     const { workspaces } = await this.client.request('workspace.list');
     const matching = workspaces.filter(w => w.label === 'feishu');
     if (matching.length > 1) throw new Error('Ambiguous feishu workspace');
-    const params = { cwd, focus: false, ...(cmd ? { command: cmd } : {}) };
+    const params = { cwd, focus: false };
     const result = matching.length
       ? await this.client.request('tab.create', { ...params, workspace_id: matching[0].workspace_id })
       : await this.client.request('workspace.create', { ...params, label: 'feishu' });
+    if (cmd) await this.sendText(result.root_pane.pane_id, cmd, { submit: true });
     return result.root_pane;
   }
   subscribe(ids, onEvent, onState) { return this.client.subscribe(paneSubscriptions(ids), onEvent, onState); }

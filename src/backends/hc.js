@@ -5,7 +5,7 @@ import { HerdrClient, HerdrError } from '../herdr-client.js';
 import { detectMenu } from '../menus.js';
 import { screenActivity } from '../transcripts/background.js';
 
-const required = ['terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'events.subscribe'];
+const required = ['terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'events.subscribe', 'server.status'];
 const rpcError = e => new HerdrError(e.data?.kind ?? 'hc_error');
 const checkHello = h => {
   if (h?.generation !== 1 || !h.core?.id || !required.every(m => h.methods?.includes(m)) || !h.features?.includes('events'))

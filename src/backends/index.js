@@ -53,3 +53,8 @@ export function createBackends(config, options = {}) {
   return new Backends(config.backends.map(name => name === 'hc' ? new HcBackend() : new HerdrBackend(new HerdrClient())),
     { newTerminalBackend: config.newTerminalBackend, ...options });
 }
+
+// Compatibility for callers injecting the pre-ft25 client (including selftest).
+export function bridgeBackend(backend, legacyClient, onError) {
+  return backend ?? new Backends([new HerdrBackend(legacyClient)], { newTerminalBackend: 'herdr', onError });
+}
