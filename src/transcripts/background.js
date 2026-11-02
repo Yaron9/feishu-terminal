@@ -1,5 +1,3 @@
-import { open, realpath, lstat } from 'node:fs/promises';
-import { posix, sep } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
 const textOf = r => {
@@ -54,22 +52,4 @@ export function backgroundView(background, screen, now) {
     status: footerCount === 0 && now - Date.parse(t.startedAt) > 60000 ? 'unknown' : 'running',
     minutes: Math.max(0, Math.floor((now - (Number.isFinite(Date.parse(t.startedAt)) ? Date.parse(t.startedAt) : now)) / 60000)),
   })), finished: background.finished };
-}
-// Only transcript-proven paths in Claude's private temp root. Resolve both the
-// root and target; refuse all symlink/junction escapes before opening output.
-export async function readBackgroundOutput(task, { root } = {}) {
-  const path = task.outputFile;
-  if (typeof path !== 'string' || !/^\/tmp\/claude-\d+\//.test(path) || path.includes('\\') || path.split('/').includes('..') || posix.normalize(path) !== path) throw new Error('unsafe_background_path');
-  const allowed = root ?? /^\/tmp\/claude-\d+/.exec(path)[0];
-  if (!path.startsWith(allowed + '/')) throw new Error('unsafe_background_path');
-  const base = await realpath(allowed), target = await realpath(path);
-  if (!target.startsWith(base + sep) || (await lstat(allowed)).isSymbolicLink()) throw new Error('unsafe_background_path');
-  const file = await open(target, 'r');
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw new Error('unsafe_background_path');
-    const buffer = Buffer.alloc(Math.min(16384, stat.size));
-    await file.read(buffer, 0, buffer.length, Math.max(0, stat.size - buffer.length));
-    return stripVTControlCharacters(buffer.toString('utf8')).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').split('\n').slice(-30).join('\n').slice(-2500);
-  } finally { await file.close(); }
 }

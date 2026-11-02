@@ -1,7 +1,7 @@
-import { backgroundView, screenActivity, readBackgroundOutput } from './transcripts/background.js';
+import { backgroundView, screenActivity } from './transcripts/background.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, backgroundOutputCard, turnCard, menuCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { transcriptAdapters } from './transcripts/index.js';
 import { paneSubscriptions } from './herdr-client.js';
@@ -567,16 +567,19 @@ export class Bridge {
     state.dirty = true;
   }
   async button(event, binding) {
-    if (event.key?.startsWith('picker:')) { await this.picker.button(event); return; }
+    if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
+    if (event.key !== 'refresh' && !validKeys([event.key]) && !/^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '')) {
+      await this.feishu.reply(event.topicId || event.messageId, '该按钮已停用'); return;
+    }
     const isMenu = Boolean(binding?.menuCardId && event.messageId === binding.menuCardId);
-    if (binding?.menuCardId && !isMenu && !['refresh', 'background-output'].includes(event.key)) {
+    if (binding?.menuCardId && !isMenu && event.key !== 'refresh') {
       await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
     }
     if (isMenu) binding = { ...binding, cardId: binding.menuCardId, nonce: binding.menuNonce, cardCreatedAt: binding.menuCreatedAt };
     else if (binding) binding = { ...binding, cardMenu: null };
     const menuAction = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '');
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
-      (!['refresh', 'background-output'].includes(event.key) && !validKeys([event.key]) && !menuAction)) {
+      (event.key !== 'refresh' && !validKeys([event.key]) && !menuAction)) {
       await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
     const state = this.state(binding);
@@ -597,7 +600,7 @@ export class Bridge {
     }).some(([, key]) => key === event.key)) {
       await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
     }
-    if (!['refresh', 'background-output'].includes(event.key) && !binding.cardMenu?.kind) {
+    if (event.key !== 'refresh' && !binding.cardMenu?.kind) {
       const { agents } = await this.herdr.request('agent.list');
       if (!agents.some(a => a.pane_id === binding.paneId && a.agent && a.agent_status === 'blocked')) {
         await this.feishu.reply(binding.topicId, '终端已经不在等待确认，请发送 /t screen 查看当前状态。'); return;
@@ -608,21 +611,8 @@ export class Bridge {
     if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce, isMenu)) {
       await this.feishu.reply(binding.topicId, '这张卡片已操作过，请发送 /t screen 获取当前卡片。'); return;
     }
-    if (event.key === 'background-output') {
-      const tasks = binding.transcript?.cursor?.background?.running ?? [];
-      const sections = [];
-      for (const task of tasks) {
-        let text;
-        try { text = await readBackgroundOutput(task); } catch { text = '（输出不可用或路径未通过校验）'; }
-        sections.push({ description: task.description, text });
-      }
-      await this.feishu.reply(binding.topicId, backgroundOutputCard(sections), 'interactive');
-      state.forceTurnCard = true; state.dirty = true;
-      await this.refreshCard(this.store.binding(binding.chatId, binding.topicId));
-      return;
-    }
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
-    if (!['refresh', 'background-output'].includes(event.key)) {
+    if (event.key !== 'refresh') {
       if (binding.cardMenu?.kind) {
         await this.menuButton(event, binding);
       } else await this.writeInput(binding, 'pane.send_keys', { keys: [event.key] });
