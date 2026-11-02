@@ -43,10 +43,10 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
         { tag: 'img', image_key: 'img_fixture' },
         { tag: 'text', text: '请升级至最新版本客户端，以查看内容' },
       ]] });
-      if (validateDelivery && invalidDelivery === 'title') message.body.content = JSON.stringify({ title: '[selftest] 💻 当前屏幕' });
-      if (validateDelivery && invalidDelivery === 'thread') message.thread_id = 'omt_other';
-      if (validateDelivery && invalidDelivery === 'type') message.msg_type = 'text';
-      if (validateDelivery && invalidDelivery === 'id') message.message_id = 'om_other';
+      if (validateDelivery && message.root_id && invalidDelivery === 'title') message.body.content = JSON.stringify({ title: '[selftest] 💻 当前屏幕' });
+      if (validateDelivery && message.root_id && invalidDelivery === 'thread') message.thread_id = 'omt_other';
+      if (validateDelivery && message.root_id && invalidDelivery === 'type') message.msg_type = 'text';
+      if (validateDelivery && message.root_id && invalidDelivery === 'id') message.message_id = 'om_other';
     }
     if (badReadback) message.body.content = '{}';
     return message;
@@ -55,7 +55,7 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
     ws: { getConnectionStatus: () => ({ state: wsFailed ? 'failed' : 'connected' }) },
     async start() {}, close() { closeCount++; },
     async send(_chatId, text) {
-      const id = `om_${++sequence}`; messages.set(id, { message_id: id, thread_id: 'omt_fixture', msg_type: 'text', body: { content: JSON.stringify({ text }) } }); return id;
+      const id = `om_${++sequence}`; messages.set(id, { message_id: id, thread_id: 'omt_fixture', msg_type: typeof text === 'string' ? 'text' : 'interactive', body: { content: JSON.stringify(typeof text === 'string' ? { text } : text) } }); return id;
     },
     async reply(topic, content, type = 'text') {
       const id = `om_${++sequence}`;
@@ -65,8 +65,8 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
     async patch(id, card) { patchCount++; messages.get(id).body.content = JSON.stringify(card); },
     async getMessage(id) {
       readCalls.push(['get', id]);
-      // Keep the root lookup available so denial exercises Bridge output readback.
-      if (perIdDenied && id !== 'om_1') throw new FeishuError(230027);
+      // Keep both starting-message and bot-root lookups available so denial exercises output readback.
+      if (perIdDenied && messages.get(id)?.root_id) throw new FeishuError(230027);
       return readback(messages.get(id));
     },
     async threadMessages() {
@@ -94,6 +94,10 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);
   for (const message of r.messages.values()) assert.ok(message.body.content.includes('[selftest]'));
   assert.ok(r.historyCalls > 0);
+  const roots = [...r.messages.values()].filter(m => m.msg_type === 'interactive' && !m.root_id);
+  assert.equal(roots.length, 1);
+  assert.equal(JSON.parse(roots[0].body.content).schema, '2.0');
+  assert.ok([...r.messages.values()].some(m => m.root_id === roots[0].message_id));
   const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
   for (const message of r.messages.values()) {
     if (!message.body.content.includes('模拟输入：')) assert.ok(readIds.has(message.message_id));

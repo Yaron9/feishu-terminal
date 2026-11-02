@@ -34,7 +34,9 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     title: { ...card.header.title, content: '[selftest] ' + card.header.title.content } } });
   const edge = {
     async send(chat, text, uuid) {
-      const id = await feishu.send(chat, '[selftest] ' + text, uuid);
+      const payload = typeof text === 'string' ? '[selftest] ' + text : labelCard(text);
+      const id = await feishu.send(chat, payload, uuid);
+      if (typeof payload !== 'string') sentCards.set(id, structuredClone(payload));
       sent.add(id); return id;
     },
     async reply(topic, content, type = 'text', uuid) {
@@ -142,6 +144,9 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       const command = ": '[selftest]'; echo selftest-ready";
       root = await feishu.send(config.chatIds[0], command);
       await deliver(command, root, false);
+      check((await feishu.getMessage(root))?.message_id === root);
+      const pointer = store.data.topicPointers?.find(p => p.oldTopicId === root);
+      check(pointer && pointer.topicId !== root); root = pointer.topicId;
       const binding = store.binding(config.chatIds[0], root);
       check(binding && owned.has(binding.paneId)); paneId = binding.paneId;
       const message = await feishu.getMessage(root); threadId = message.thread_id;
