@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, pickerEvent } from './helpers.js';
+import { harness, message, pickerEvent, outputReplies } from './helpers.js';
 
 const writes = fake => fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
-const records = edge => edge.calls.filter(c => c.type === 'reply' && c.msgType === 'text');
-const cards = edge => edge.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive');
+const records = outputReplies;
+const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive') && !(c.card ?? c.content)?.schema);
 
 test('new post creates workspace/pane, binds original root, and sends first shell input in order', async t => {
   const h = await harness(t);
@@ -68,13 +68,16 @@ test('live card edits are throttled to 1 Hz and quiet shell posts only new outpu
   assert.ok(cards(h.feishu).filter(c => c.type === 'patch').every(c => c.id === cards(h.feishu)[0].id));
 });
 
-test('agent output waits through working/unknown/blocked and flushes working -> done; splits without loss', async t => {
+test('fallback agent output waits through working and flushes working -> done as a bounded reply card', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); await h.subscribed();
   h.fake.status('w1:p1', 'working'); h.fake.output('w1:p1', '$ ' + '中文🙂'.repeat(6000));
   await h.drain(); await h.bridge.tick(); h.advance(5000); await h.bridge.tick(); assert.equal(records(h.feishu).length, 0);
   h.fake.status('w1:p1', 'done'); await h.drain(); await h.bridge.tick();
-  assert.equal(records(h.feishu).map(c => c.content).join(''), '中文🙂'.repeat(6000));
-  assert.ok(records(h.feishu).every(c => Buffer.byteLength(c.content) <= 12000));
+  assert.equal(records(h.feishu).length, 1);
+  assert.equal(records(h.feishu)[0].content, '中文🙂'.repeat(500));
+  assert.equal(records(h.feishu)[0].card.header.title.content, '🤖 Codex');
+  assert.match(records(h.feishu)[0].card.body.elements[0].content, /仅显示末尾/);
+  assert.ok(Buffer.byteLength(JSON.stringify(records(h.feishu)[0].card)) < 28000);
   const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
 });
 

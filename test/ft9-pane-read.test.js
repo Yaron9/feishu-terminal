@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HerdrClient } from '../src/herdr-client.js';
 import { readPane } from '../src/pane-read.js';
-import { fakeHerdr, harness, message, pickerEvent } from './helpers.js';
+import { fakeHerdr, harness, message, pickerEvent, outputReplies } from './helpers.js';
 
 const reads = fake => fake.calls.filter(c => c.method === 'pane.read');
 
@@ -98,11 +98,11 @@ for (const offset of [0, 4]) {
     await step('changed screen', () => h.bridge.tick());
     h.advance(1500);
     await step('settle flush', () => h.bridge.tick());
-    assert.ok(h.feishu.calls.some(c => c.msgType === 'text' && c.content === '\nfirst answer'));
+    assert.ok(outputReplies(h.feishu).some(c => c.content === '\nfirst answer'));
     h.fake.output(pane.pane_id, 'first answer\nsecond answer');
     await h.drain(); h.advance(1000); await h.bridge.tick();
     h.advance(1500); await h.bridge.tick();
-    assert.ok(h.feishu.calls.some(c => c.msgType === 'text' && c.content === '\nsecond answer'));
+    assert.ok(outputReplies(h.feishu).some(c => c.content === '\nsecond answer'));
     await step('/t screen', () => h.bridge.handle(message('/t screen', 'screen', topic)));
     const binding = h.bridge.store.forPane(pane.pane_id);
     await step('Refresh callback', () => h.bridge.handle({ kind: 'button', eventId: 'refresh',

@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, userCard, outputCard } from './render.js';
+import { transcriptAdapters } from './transcripts/index.js';
 import { paneSubscriptions } from './herdr-client.js';
 import { readPane } from './pane-read.js';
 import { auditRecord, appendAudit } from './store.js';
@@ -8,12 +9,13 @@ import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 
 export class Bridge {
-  constructor({ herdr, feishu, store, config, now = Date.now, audit, onError = () => {} }) {
+  constructor({ herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters() }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
     this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
     this.chatId = config.chatIds[0];
     this.picker = new PanePicker(this);
+    this.adapters = adapters;
   }
   get queue() { return Promise.all([...this.queues.values()]); }
   enqueue(fn, key = 'control') {
@@ -35,6 +37,8 @@ export class Bridge {
     for (const b of this.store.list()) {
       this.state(b);
       if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
+      if (b.chatId === this.chatId && this.state(b).verified)
+        await this.initializeTranscript(b).catch(() => this.onError('transcript_unavailable'));
       if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
         await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
     }
@@ -134,7 +138,15 @@ export class Bridge {
         await this.feishu.reply(binding.topicId, action.kill ? 'Pane closed; topic unbound.' : 'Topic unbound; pane is still running.');
         return;
       }
-      if (action.type === 'screen') { this.state(binding).dirty = true; await this.refresh(binding, true); return; }
+      if (action.type === 'screen') {
+        this.state(binding).dirty = true; await this.refresh(binding, true);
+        const { read } = await this.readVerified(binding, () => readPane(this.herdr, binding.paneId, { source: 'visible' }));
+        for (const part of splitText(clean(read.text), 4000)) {
+          await this.verify(binding);
+          await this.feishu.reply(binding.topicId, outputCard(part, { full: true }), 'interactive');
+        }
+        return;
+      }
       if (action.type === 'ok') {
         await this.verify(binding);
         await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
@@ -214,8 +226,74 @@ export class Bridge {
     if (wasChecking && !allowClear) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     // Persist intent before the mutation, so a crash also requires inspection.
     await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
+    if (method === 'pane.send_text') {
+      await this.initializeTranscript(binding);
+      await this.rememberInput(binding, params.text);
+    }
     await this.herdr.request(method, { pane_id: binding.paneId, ...params });
     if (!wasChecking) await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
+  }
+  agentName(agent) { return String(agent).toLowerCase() === 'claude' ? 'Claude' : String(agent).toLowerCase() === 'codex' ? 'Codex' : String(agent); }
+  inputHash(text) { return createHash('sha256').update(clean(text).trim()).digest('hex'); }
+  async rememberInput(binding, text) {
+    const id = randomUUID(), now = this.now();
+    await this.store.transaction(data => {
+      const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+      if (!this.sameGeneration(binding, b)) throw new Error('Binding changed');
+      b.sentInputs = [...(b.sentInputs ?? []).filter(item => item.expires > now),
+        { id, hash: this.inputHash(text), expires: now + 600000 }].slice(-100);
+    });
+    return id;
+  }
+  async initializeTranscript(binding, pane) {
+    const state = this.state(binding);
+    try {
+      if (!pane) ({ pane } = await this.readVerified(binding, () => this.herdr.request('pane.get', { pane_id: binding.paneId })));
+      const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adapters[key];
+      if (!adapter) { state.transcriptSource = null; return; }
+      const path = await this.readVerified(binding, () => adapter.locate(pane));
+      if (!path) { state.transcriptSource = null; return; }
+      if (state.failedTranscript === path && this.now() < state.transcriptRetryAt) { state.transcriptSource = null; return; }
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      if (!this.sameGeneration(binding, current)) return;
+      // Legacy bindings and resumed sessions start at EOF: never replay history.
+      // A pending batch owns its old checkpoint until delivery is reconciled.
+      if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
+        const { cursor } = await this.readVerified(binding, () => adapter.read(path, { atEnd: true }));
+        if (!await this.updateGeneration(binding, { transcript: { adapter: key, path, cursor } })) return;
+      }
+      state.transcriptSource = { key, path, adapter };
+    } catch (error) {
+      state.transcriptSource = null;
+      if (error.code === 'binding_unverified' || error.code === 'binding_changed') throw error;
+      this.onError('transcript_unavailable');
+    }
+  }
+  async transcriptBatch(binding) {
+    const state = this.state(binding), source = state.transcriptSource;
+    const current = this.store.binding(binding.chatId, binding.topicId), checkpoint = current.transcript;
+    if (!checkpoint || checkpoint.path !== source.path || checkpoint.adapter !== source.key) return null;
+    const { items, cursor } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
+    if (JSON.stringify(cursor) === JSON.stringify(checkpoint.cursor)) return null;
+    const inputs = (current.sentInputs ?? []).filter(item => item.expires > this.now());
+    const consumedInputs = [], chunks = [];
+    let text = [], tools = [];
+    const reply = () => {
+      if (text.length || tools.length) chunks.push({ card: assistantCard(text.join('\n\n'), tools, this.agentName(source.key)), uuid: randomUUID() });
+      text = []; tools = [];
+    };
+    for (const item of items) {
+      if (item.role === 'user') {
+        reply();
+        const index = inputs.findIndex(input => input.hash === this.inputHash(item.text));
+        if (index !== -1) consumedInputs.push(inputs.splice(index, 1)[0].id);
+        else chunks.push({ card: userCard(item.text), uuid: randomUUID() });
+      } else if (item.role === 'assistant') text.push(item.text);
+      else if (item.role === 'tool') tools.push(item.text);
+    }
+    reply();
+    return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs,
+      transcript: { adapter: source.key, path: source.path, cursor } };
   }
   async createPane() {
     return this.enqueue(() => this.createPaneSerial(), 'pane-create');
@@ -253,7 +331,7 @@ export class Bridge {
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
       await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
-        lastTranscript: undefined, nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
+        lastTranscript: undefined, transcript: null, sentInputs: [], nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
       this.runtime.delete(existing.topicId);
       await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
       if (existing.outputBatch || existing.discardedOutput) await this.feishu.reply(existing.topicId, '旧终端未发送完的输出已丢弃');
@@ -267,6 +345,7 @@ export class Bridge {
     const topicId = await this.feishu.send(event.chatId, `终端：${this.label(pane)}`);
     await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
+    await this.initializeTranscript(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
     return topicId;
   }
@@ -297,9 +376,11 @@ export class Bridge {
     await this.verify(binding);
     if (this.store.binding(binding.chatId, binding.topicId).needs_check) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     const state = this.state(binding);
+    await this.initializeTranscript(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
     if (!state.initialized) {
-      const { read } = await this.readVerified(binding, () => readPane(this.herdr, binding.paneId));
+      const { read } = await this.readVerified(binding, () => readPane(this.herdr, binding.paneId,
+        state.transcriptSource ? { source: 'visible' } : {}));
       if (binding.lastTranscript === undefined) {
         state.previous = clean(read.text); state.current = state.previous;
         await this.store.update(binding.chatId, binding.topicId, { lastTranscript: state.previous });
@@ -310,15 +391,21 @@ export class Bridge {
     const agent = agents.find(a => a.pane_id === binding.paneId && a.agent);
     if (agent) {
       this.status(state, agent.agent_status, agent.agent);
+      const inputId = await this.rememberInput(binding, text);
       try { await this.herdr.request('agent.prompt', { target: binding.paneId, text }); }
       catch (error) {
         if (error.code !== 'agent_blocked') throw error;
+        await this.store.transaction(data => {
+          const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+          if (this.sameGeneration(binding, b)) b.sentInputs = (b.sentInputs ?? []).filter(item => item.id !== inputId);
+        });
         this.status(state, 'blocked', agent.agent); state.dirty = true;
         await this.refresh(binding, true, true); return;
       }
     } else {
       this.status(state, 'unknown', null);
       await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
+      await this.rememberInput(binding, text);
       await this.herdr.request('pane.send_text', { pane_id: binding.paneId, text });
       await this.verify(binding);
       await this.herdr.request('pane.send_keys', { pane_id: binding.paneId, keys: ['enter'] });
@@ -370,23 +457,24 @@ export class Bridge {
   }
   async refresh(binding, force = false, forceBlocked = false, deferCard = false) {
     const state = this.state(binding), now = this.now();
-    const [{ read: visible }, { read: recent }, { agents }, { panes }] = await this.readVerified(binding, () => Promise.all([
+    const [{ read: visible }, { agents }, { panes }] = await this.readVerified(binding, () => Promise.all([
       readPane(this.herdr, binding.paneId, { source: 'visible', lines: 40 }),
-      readPane(this.herdr, binding.paneId),
       this.herdr.request('agent.list'),
       this.herdr.request('pane.list'),
     ]));
     const agent = agents.find(a => a.pane_id === binding.paneId && a.agent);
     this.status(state, forceBlocked ? 'blocked' : agent?.agent_status ?? 'unknown', agent?.agent ?? null);
     state.lastRead = now; state.dirty = false;
+    const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
+    if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    await this.initializeTranscript(binding, { ...pane, agent: agent?.agent ?? pane.agent });
+    const recent = state.transcriptSource ? visible : (await this.readVerified(binding, () => readPane(this.herdr, binding.paneId))).read;
     if (!state.initialized) {
       if (binding.lastTranscript === undefined) state.previous = clean(recent.text);
       state.initialized = true;
     }
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
-    const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
-    if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane)).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     state.visible = visible.text; state.nextSignature = signature;
@@ -500,12 +588,32 @@ export class Bridge {
       await this.updateGeneration(binding, { outputBatch: null }); return;
     }
     if (!batch) {
-      if (!state.pending && !state.settle) return;
-      if (state.agent && !['idle', 'done'].includes(state.status)) return;
-      if (!state.settle && this.now() - state.lastChange < 1500) return;
-      batch = { generation: binding.generation ?? 0, checkpoint: state.current, next: 0,
-        chunks: splitText(newOutput(state.previous, state.current)).map(text => ({ text, uuid: randomUUID() })) };
-      if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
+      if (state.transcriptSource) {
+        try { batch = await this.transcriptBatch(binding); }
+        catch (error) {
+          if (['binding_unverified', 'binding_changed'].includes(error.code)) throw error;
+          state.failedTranscript = state.transcriptSource.path;
+          state.transcriptRetryAt = this.now() + 5000; state.transcriptSource = null;
+          this.onError('transcript_unavailable');
+          return this.flush(binding);
+        }
+        if (!batch) return;
+      } else {
+        if (!state.pending && !state.settle) return;
+        if (state.agent && !['idle', 'done'].includes(state.status)) return;
+        if (!state.settle && this.now() - state.lastChange < 1500) return;
+        batch = { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks: [] };
+        const output = stripChrome(newOutput(state.previous, state.current));
+        if (output.trim()) batch.chunks.push({ card: state.agent ? assistantCard(output, [], this.agentName(state.agent)) : outputCard(output), uuid: randomUUID() });
+      }
+      const prepared = batch;
+      if (!await this.store.transaction(data => {
+        const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+        if (!this.sameGeneration(binding, b)) return false;
+        b.outputBatch = prepared;
+        b.sentInputs = (b.sentInputs ?? []).filter(item => !(prepared.consumedInputs ?? []).includes(item.id));
+        return true;
+      })) return;
     }
     while (batch.next < batch.chunks.length) {
       if (!this.sameGeneration(binding, this.store.binding(binding.chatId, binding.topicId))) return;
@@ -519,11 +627,12 @@ export class Bridge {
         if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
       }
       await this.verify(binding);
-      await this.feishu.reply(binding.topicId, chunk.text, 'text', chunk.uuid);
+      await this.feishu.reply(binding.topicId, chunk.card ?? chunk.text, chunk.card ? 'interactive' : 'text', chunk.uuid);
       batch.next++;
       if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
     }
-    if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null })) return;
+    if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null,
+      ...(batch.transcript ? { transcript: batch.transcript } : {}) })) return;
     state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
   }
 }

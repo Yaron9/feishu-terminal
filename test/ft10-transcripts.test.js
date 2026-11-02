@@ -59,7 +59,7 @@ test('fake /proc mapping requires exact comm and pane env, picks newest start ti
 test('byte cursor survives partial UTF-8, malformed lines, restart, truncation and replacement', async t => {
   const { file, adapter } = await fixture(t);
   await writeFile(file, line('old'));
-  let { cursor } = await adapter.end(file);
+  let { cursor } = await adapter.read(file, { atEnd: true });
   const bytes = Buffer.from(line('你好🙂'));
   const cut = bytes.indexOf(Buffer.from('🙂')) + 2;
   await appendFile(file, bytes.subarray(0, cut));
@@ -78,7 +78,7 @@ test('byte cursor survives partial UTF-8, malformed lines, restart, truncation a
 test('migration starts at byte EOF, skips a preexisting partial record, and bounds oversized records', async t => {
   const { file, adapter } = await fixture(t);
   await writeFile(file, line('history') + '{"partial":');
-  let { cursor } = await adapter.end(file);
+  let { cursor } = await adapter.read(file, { atEnd: true });
   await appendFile(file, 'true}\n' + line('fresh'));
   let result = await adapter.read(file, cursor); assert.deepEqual(result.items.map(x => x.text), ['fresh']);
   cursor = result.cursor;

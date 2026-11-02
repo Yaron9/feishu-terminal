@@ -5,6 +5,8 @@ import { harness, message } from './helpers.js';
 test('rebind discards partly sent output with a note and tags new batches with its generation', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   h.fake.output('w1:p1', '$ ' + 'a'.repeat(12000) + 'OLD TAIL');
+  await h.store.update('oc_test', 'm1', { outputBatch: { generation: h.store.binding('oc_test', 'm1').generation,
+    checkpoint: 'legacy', next: 0, chunks: [{ text: 'a'.repeat(12000), uuid: 'legacy-first' }, { text: 'OLD TAIL', uuid: 'legacy-tail' }] } });
   const reply = h.feishu.reply.bind(h.feishu);
   h.feishu.reply = async (topic, content, type, uuid) => {
     if (content === 'OLD TAIL') throw new Error('offline');
@@ -29,6 +31,8 @@ test('a rebind during an output send stops later chunks and cannot restore the o
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   h.fake.output('w1:p1', '$ ' + 'a'.repeat(12000) + 'STALE TAIL');
   await h.bridge.tick(); h.advance(1500);
+  await h.store.update('oc_test', 'm1', { outputBatch: { generation: h.store.binding('oc_test', 'm1').generation,
+    checkpoint: 'legacy', next: 0, chunks: [{ text: 'first', uuid: 'legacy-first' }, { text: 'STALE TAIL', uuid: 'legacy-tail' }] } });
   const reply = h.feishu.reply.bind(h.feishu); let rebound = false;
   h.feishu.reply = async (topic, content, type, uuid) => {
     if (type === 'text' && !rebound) {

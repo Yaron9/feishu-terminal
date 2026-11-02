@@ -111,6 +111,19 @@ export function mockFeishu(now) {
   };
 }
 
+// Read role-card payloads as well as migrated legacy text batches. Live status
+// and explicit screen cards are deliberately excluded from output assertions.
+export function outputReplies(feishu) {
+  return feishu.calls.filter(c => c.type === 'reply' && (c.msgType === 'text' ||
+    (c.content.schema === '2.0' && /^(🤖 |💻 输出$)/u.test(c.content.header.title.content))))
+    .map(c => {
+      if (c.msgType === 'text') return c;
+      let text = c.content.body.elements[0].content.replace(/^（仅显示末尾）\n\n?/, '');
+      if (text.startsWith('```text\n')) text = text.slice(8, -4).replace(/`\u200b/g, '`');
+      return { ...c, card: c.content, content: text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&') };
+    });
+}
+
 export function message(text, id = 'm1', topicId = id, override = {}) {
   return { kind: 'message', messageId: id, eventId: `e-${id}`, chatId: 'oc_test', chatType: 'topic_group',
     senderType: 'user', openId: 'ou_test', topicId, isReply: topicId !== id, text, ...override };
@@ -122,7 +135,7 @@ export function pickerEvent(h, action, index = 0, override = {}) {
     topicId: card.topicId, messageId: card.messageId, nonce: card.nonce, key: `picker:${action}:${index}`, ...override };
 }
 
-export async function harness(t) {
+export async function harness(t, bridgeOptions = {}) {
   const temp = await mkdtemp(new URL('../.test-', import.meta.url));
   const fake = await fakeHerdr();
   let time = 0;
@@ -131,7 +144,7 @@ export async function harness(t) {
   const feishu = mockFeishu(now), audits = [], errors = [];
   const config = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: '/tmp', stateFile: store.file, auditFile: join(temp, 'audit.jsonl') };
   const makeBridge = state => new Bridge({ herdr: new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 300, reconnectMs: 10 }), feishu,
-    store: state, config, now, audit: async record => audits.push(record), onError: code => errors.push(code) });
+    store: state, config, now, audit: async record => audits.push(record), onError: code => errors.push(code), ...bridgeOptions });
   let bridge = makeBridge(store); await bridge.start({ timers: false });
   t.after(async () => { await bridge.stop(); await fake.close(); await rm(temp, { recursive: true, force: true }); });
   return { fake, store, feishu, audits, errors, now, config,

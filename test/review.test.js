@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, eventually } from './helpers.js';
+import { harness, message, eventually, outputReplies } from './helpers.js';
 
 const writes = h => h.fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt', 'pane.close'].includes(c.method));
-const texts = h => h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'text');
+const texts = h => outputReplies(h.feishu);
 
 test('restored binding freezes reused pane identity and only explicit rebind permits input', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd'));
@@ -85,6 +85,10 @@ test('partly delivered output resumes fixed chunks and UUIDs across transcript g
   const first = 'a'.repeat(12000), second = 'b'.repeat(1000);
   h.fake.output('w1:p1', '$ ' + first + second);
   await h.bridge.tick(); h.advance(1600);
+  // A pre-ft10 batch must finish with its original chunks and UUIDs.
+  await h.store.update('oc_test', 'm1', { outputBatch: { generation: h.store.binding('oc_test', 'm1').generation,
+    checkpoint: '$ ' + first + second, next: 0,
+    chunks: [{ text: first, uuid: 'legacy-first' }, { text: second, uuid: 'legacy-second' }] } });
   const reply = h.feishu.reply.bind(h.feishu); let failedUuid, fail = true;
   h.feishu.reply = async (topic, content, type, uuid) => {
     if (type === 'text' && content === second && fail) { fail = false; failedUuid = uuid; throw new Error('ambiguous delivery'); }
@@ -207,7 +211,7 @@ test('ambiguous output pauses before UUID deduplication expires instead of resen
   const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
   const reply = h.feishu.reply.bind(h.feishu); let attempts = 0;
   h.feishu.reply = async (topic, content, type, uuid) => {
-    if (type === 'text') { attempts++; throw new Error('unknown delivery'); }
+    if (type === 'interactive' && content.header?.title.content === '💻 输出') { attempts++; throw new Error('unknown delivery'); }
     return reply(topic, content, type, uuid);
   };
   h.fake.output('w1:p1', '$ result'); await h.drain(); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();

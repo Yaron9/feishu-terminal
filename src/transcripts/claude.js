@@ -44,6 +44,7 @@ export class ClaudeTranscript {
       return (await stat(path)).isFile() ? path : null;
     } catch { return null; }
   }
-  read(path, cursor) { return readJsonl(path, cursor, claudeItems); }
-  end(path) { return readJsonl(path, null, claudeItems, { end: true }); }
+  // atEnd initializes a binding without reading historical records. Otherwise
+  // the cursor is the opaque object returned by the preceding read.
+  read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd) }); }
 }
