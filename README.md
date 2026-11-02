@@ -66,7 +66,7 @@ Use a dedicated Feishu **topic group** for this machine. Send text as a new top-
 | Input | Behavior |
 | --- | --- |
 | `/t ls` | Show a terminal picker with readable summaries and 打开 / 关闭 buttons; text fallback if card publication fails |
-| `/t open w1:p2` | Bind a pane in workspace `feishu` to a fresh topic; explicitly reverify a frozen binding in its existing topic |
+| `/t open w1:p2` | Bind an unbound pane in workspace `feishu` to a fresh topic; recover an existing topic with a fresh screen reply; explicitly reverify a frozen binding |
 | `/t close` | In a bound topic, offer 仅解绑 / 关闭终端 / 取消; at top level, show the terminal picker |
 | `/t close --kill` | Close the pane and unbind |
 | `/t screen` | Refresh the live screen card (still subject to 1 Hz limit) |
@@ -75,7 +75,7 @@ Use a dedicated Feishu **topic group** for this machine. Send text as a new top-
 | `/t raw some text` | Send text without Enter, preserving everything after the one separator |
 | Any other text, including `/compact`, `/help`, command lines | Forward verbatim to the bound pane |
 
-手机操作：发送 `/t ls`，按摘要选择「打开」即可新建并绑定一个话题，同时显示屏幕卡片；已有绑定会显示话题 ID。摘要依次显示标题（缺省为目录名）、智能体及中文状态（空闲 / 工作中 / 等待确认 / 完成 / 未知，普通终端为 shell）、当前目录（主目录缩为 `~`）、来源（飞书创建 / 桌面）、绑定状态，最后是 pane ID。点击「关闭」或在绑定话题发送 `/t close`，再选「仅解绑」（保留会话）、「关闭终端」或「取消」。桌面终端以及工作中、等待确认的智能体还会出现「确定关闭」确认，会话将结束。显式 `/t close --kill` 仍直接关闭，不弹卡片。
+手机操作：发送 `/t ls`，按摘要选择「打开」，未绑定的终端会新建并绑定一个话题，同时显示屏幕卡片；已有绑定则在原话题新发屏幕卡片，附注「📍 已从终端列表恢复」，让话题回到列表顶部，旧卡片显示「已移至下方新卡片」并移除按钮。选择卡片对应行显示「已在话题「摘要」，已置顶」，请回到话题列表进入；不生成未经官方文档支持的消息链接。顶层 `/t open <pane>` 同样恢复原话题；在其他话题中调用会提示原话题已置顶，不会改变当前话题的绑定。摘要依次显示标题（缺省为目录名）、智能体及中文状态（空闲 / 工作中 / 等待确认 / 完成 / 未知，普通终端为 shell）、当前目录（主目录缩为 `~`）、来源（飞书创建 / 桌面）、绑定状态，最后是 pane ID。点击「关闭」或在绑定话题发送 `/t close`，再选「仅解绑」（保留会话）、「关闭终端」或「取消」。桌面终端以及工作中、等待确认的智能体还会出现「确定关闭」确认，会话将结束。显式 `/t close --kill` 仍直接关闭，不弹卡片。手机把选项开头的 `--` 自动替换为 `—` 或 `–` 时，`/t close —kill`、`/t close –kill` 也能识别；普通终端文本与 `/t raw` 内容保持原样。
 
 每张选择卡片只有一次有效操作，操作后显示结果并移除按钮；进入下一步确认时换发新的随机 nonce。卡片和 nonce 持久保存，重启不会恢复已用按钮。卡片 10 分钟过期，每次点击都检查群、操作者、卡片 ID、话题、nonce 和终端真实身份；终端已变化时显示 `终端已变化，请重新 /t ls`，不会关闭不在当前列表中的终端。此前版本创建的终端缺少来源记录，保守显示「桌面」并要求二次确认。
 
@@ -86,6 +86,8 @@ Bindings persist herdr's `terminal_id`, workspace ID and tab ID. On startup, eve
 Each topic has one screen card, edited at most once per second, showing the last 40 visible rows, capped at 120 Unicode code points per row with explicit truncation markers. Agent `working -> idle/done` transitions and shell output quiet for about 1.5 seconds post only new `recent_unwrapped` output as normal thread messages. An idle/done agent first seen after restart, reconnect or a missed working event also flushes changed output after that stable window; working/blocked/unknown agents keep waiting. Diff and chunk boundaries use Unicode code points. Comparison uses content, so unchanged/zero revisions do not suppress new text. Reads retain up to 2,000 recent rows; history lost from herdr scrollback cannot be recovered. Rewritten TUI screens are a best-effort transcript; the live card is the authoritative view.
 
 Before sending text the bridge persists a fixed batch of chunks and UUIDs, then saves each successful chunk's progress. Batches carry the binding generation, checked before every send. A rebind discards unfinished output from the old generation and posts a short notice; an already in-flight API request may finish. A restart resumes a verified binding's batch before taking newer output. UUIDs are 36 characters and ambiguous retries stop after 55 minutes, inside Feishu's [one-hour deduplication window](https://open.feishu.cn/document/server-docs/im-v1/message/reply). An expired uncertain batch remains paused in state: inspect delivery before deciding to unbind/reopen, which discards the pending batch. Card failures do not suppress transcript flushes. Recalled, deleted or expired cards are replaced with a new message; temporary errors back off up to 30 seconds. Card publication persists a pending version first and commits its card ID and nonce together only after success. Pending versions are retried on restart; consumed nonces never become valid again.
+
+Topic recovery uses the same pending-card/UUID protocol but sends a new thread reply immediately. The old card ID remains active until the new reply commits; afterward, old callbacks fail validation even if the retirement patch is unavailable. Retirement is persisted and retried with backoff, including on restart. State remains version 1; earlier snapshots load with the new optional fields absent.
 
 When an agent is blocked, the screen card includes Enter, Esc, 1, 2, 3, y, n, Ctrl-C and Refresh. Operator/chat ACLs, the actual card message ID, topic binding, fresh random nonce and current blocked agent state are checked before a key. Clicking consumes the nonce durably; use the refreshed card after a click. Buttons only send the key you choose; the bridge never answers an approval automatically.
 
