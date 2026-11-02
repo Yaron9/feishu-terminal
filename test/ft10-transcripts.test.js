@@ -18,7 +18,7 @@ test('Claude fixture projects only real user/assistant text and compact tool sum
   await writeFile(file, await readFile(new URL('./fixtures/claude-ft10.jsonl', import.meta.url)));
   const result = await adapter.read(file);
   assert.deepEqual(result.items.map(item => [item.role, item.text]), [
-    ['user', 'Explain the fix'], ['user', 'Desktop question'], ['assistant', 'The **fix** is ready.'],
+    ['user', 'Explain the fix'], ['assistant', 'The **fix** is ready.'],
     ['tool', '🔧 Bash: Run the tests'], ['tool', '🔧 Read: src/bridge.js'], ['assistant', 'All done.'],
   ]);
   assert.equal(result.items[0].id, 'u1'); assert.equal(result.items[0].ts, '2026-11-02T00:00:00Z');

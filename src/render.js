@@ -142,6 +142,7 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
     header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${turn.toolCount})` } },
     elements: [markdown((turn.toolsTruncated ? accent('工具较多，仅显示末尾') + '\n\n' : '') + accent(tail(turn.tools, 1500)))] });
   if (note) elements.unshift(markdown(note));
+  if (turn.duplicateWarning) elements.unshift(markdown(accent(turn.duplicateWarning, 'orange')));
 
   if (!turn.settled && turn.liveActivity) elements.unshift(markdown(accent(turn.liveActivity)));
   const running = turn.background?.running ?? [];

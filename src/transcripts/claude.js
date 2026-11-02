@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { paneProcess } from './proc.js';
@@ -10,11 +10,14 @@ const realText = text => String(text).replace(/<system-reminder\b[^>]*>[\s\S]*?<
 const command = text => /^\s*(?:<\/?(?:command-name|command-message|command-args|local-command|local-command-stdout|local-command-caveat|task-notification)\b|\[Request interrupted by user)/i.test(text);
 
 export function claudeItems(record, offset = 0) {
+  if (record.type === 'system' && record.subtype === 'turn_duration') return [{ role: 'turn_end' }];
+  if (record.isCompactSummary) return [];
   if (record.isMeta || record.isSidechain || record.subtype || !['user', 'assistant'].includes(record.type)) return [];
   const content = record.message?.content;
   const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
   const base = { ts: record.timestamp ?? null, id: String(record.uuid ?? offset) };
   if (record.type === 'user') {
+    if (blocks.some(b => b.type === 'tool_result') || blocks.some(b => b.type === 'text' && command(realText(b.text ?? '')))) return [];
     const text = blocks.filter(b => b.type === 'text').map(b => realText(b.text ?? '')).filter(t => t && !command(t)).join('\n');
     return text ? [{ ...base, role: 'user', text }] : [];
   }
@@ -32,7 +35,7 @@ export function claudeItems(record, offset = 0) {
 }
 
 export class ClaudeTranscript {
-  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.backgrounds = new Map(); this.sessions = new Map(); }
+  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.transcriptTurns = true; this.backgrounds = new Map(); this.sessions = new Map(); }
   async locate(pane) {
     const pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
     if (!pid) return null;
@@ -45,9 +48,26 @@ export class ClaudeTranscript {
       if (!(await stat(path)).isFile()) return null;
       const previous = this.sessions.get(path);
       const restartedAt = new Date((await stat(join(this.home, '.claude', 'sessions', `${pid}.json`))).mtimeMs).toISOString();
-      this.sessions.set(path, { pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
+      this.sessions.set(path, { sessionId, pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
       return path;
     } catch { return null; }
+  }
+  async duplicates(path) {
+    const session = this.sessions.get(path);
+    if (!session) return [];
+    const directory = join(this.home, '.claude', 'sessions');
+    let names;
+    try { names = await readdir(directory); } catch { return []; }
+    const duplicates = [];
+    for (const name of names.filter(name => /^\d+\.json$/.test(name))) {
+      try {
+        // Project only these two fields; never retain or log session payloads.
+        const { pid, sessionId } = JSON.parse(await readFile(join(directory, name), 'utf8'));
+        if (!Number.isSafeInteger(pid) || pid <= 0 || name !== `${pid}.json` || pid === session.pid || sessionId !== session.sessionId) continue;
+        if ((await readFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() === 'claude') duplicates.push(pid);
+      } catch { /* Exited, inaccessible or invalid session. */ }
+    }
+    return duplicates.sort((a, b) => a - b);
   }
   // atEnd initializes a binding without reading historical records. Otherwise
   // the cursor is the opaque object returned by the preceding read.
@@ -69,6 +89,7 @@ export class ClaudeTranscript {
       ? session.restartedAt : cursor?.restartedAt;
     if (restartedAt) { stopBackground(entry.background, restartedAt); result.cursor.restartedAt = restartedAt; }
     if (session) result.cursor.pid = session.pid;
+    result.cursor.duplicates = await this.duplicates(path);
     result.cursor.background = structuredClone(entry.background);
     return result;
   }

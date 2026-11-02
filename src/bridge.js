@@ -334,13 +334,15 @@ export class Bridge {
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
         const { cursor } = await this.readVerified(binding, () => adapter.read(path, { atEnd: true }));
-        const patch = { transcript: { adapter: key, path, cursor } };
+        const patch = { transcript: { adapter: key, path, cursor, lastRecordAt: this.now() } };
         if (!current.turn && cursor.background?.running?.length) {
           patch.turn = freshTurn({ key, path }, this.agentName(key), state.status);
           if (['idle', 'done'].includes(state.status)) { patch.turn.settled = true; patch.turn.status = 'idle'; }
         }
         if (!await this.updateGeneration(binding, patch)) return;
       }
+      if (current.transcript?.path === path && current.transcript.lastRecordAt == null)
+        await this.updateGeneration(binding, { transcript: { ...current.transcript, lastRecordAt: this.now() } });
       state.transcriptSource = { key, path, adapter };
     } catch (error) {
       state.transcriptSource = null;
@@ -363,7 +365,8 @@ export class Bridge {
       chunks.push({ turn });
     }
     return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs,
-      transcript: { adapter: source.key, path: source.path, cursor } };
+      transcript: { adapter: source.key, path: source.path, cursor,
+        lastRecordAt: cursor.offset !== checkpoint.cursor.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
   }
   async createPane() {
     return this.enqueue(() => this.createPaneSerial(), 'pane-create');
@@ -859,6 +862,17 @@ export class Bridge {
           binding.turn.status = state.status; binding.turn.activeObserved = true;
           if (!await this.updateGeneration(binding, { turn: binding.turn })) return;
         }
+        if (binding.turn.adapter === 'claude') {
+          if (state.transcriptSource?.adapter.transcriptTurns && !binding.turn.settled)
+            binding.turn.status = state.status === 'blocked' ? 'blocked' : 'working';
+          const duplicates = (binding.outputBatch?.transcript ?? binding.transcript)?.cursor?.duplicates ?? [];
+          binding.turn.duplicateWarning = duplicates.length ? `⚠️ 这个会话同时在另一个终端里运行（不在 herdr 中，PID ${duplicates.join('、')}）。两边同时写会把对话记录搞乱，建议只保留一个。` : '';
+          if (duplicates.length && (binding.duplicateWarningAt == null || now - binding.duplicateWarningAt >= 3600000)) {
+            // Persist the rate limit before sending, including across restarts.
+            if (!await this.updateGeneration(binding, { duplicateWarningAt: now })) return;
+            await this.feishu.reply(binding.topicId, binding.turn.duplicateWarning);
+          }
+        }
         const background = binding.transcript?.cursor?.background;
         if (background && !binding.turn.backgroundRetired) {
           binding.turn.background = backgroundView(background, state.visible, now);
@@ -1033,6 +1047,8 @@ export class Bridge {
   async settleTurn(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId), state = this.state(binding);
     if (!this.sameGeneration(binding, current) || !current.turn || current.turn.settled) return;
+    if (state.transcriptSource?.adapter.transcriptTurns &&
+        (state.status === 'working' || this.now() - (current.transcript?.lastRecordAt ?? this.now()) < 30000)) return;
     if ((['idle', 'done'].includes(state.status) && (current.turn.hasOutput || current.turn.activeObserved)) ||
       current.turn.path !== state.transcriptSource?.path) {
       await this.updateGeneration(binding, { turn: { ...current.turn, settled: true, status: 'idle' } });

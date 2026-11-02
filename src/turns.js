@@ -24,6 +24,7 @@ export function turnChunks(items, previous, source, agent, status, inputs, input
     save();
   };
   for (const item of items) {
+    if (item.role === 'turn_end') { finish(); continue; }
     if (item.role === 'user') {
       finish();
       const index = inputs.findIndex(input => input.hash === inputHash(item.text));
@@ -47,9 +48,9 @@ export function turnChunks(items, previous, source, agent, status, inputs, input
     }
   }
   if (dirty) {
-    turn.status = status === 'blocked' ? 'blocked' : 'working';
+    turn.status = turn.settled ? 'idle' : status === 'blocked' ? 'blocked' : 'working';
     // Do not call a just-observed user input complete on a stale idle sample.
-    if (turn.hasOutput && ['idle', 'done'].includes(status)) { turn.status = 'idle'; turn.settled = true; }
+    if (!source.adapter?.transcriptTurns && turn.hasOutput && ['idle', 'done'].includes(status)) { turn.status = 'idle'; turn.settled = true; }
   }
   save();
   return { chunks, consumedInputs };
