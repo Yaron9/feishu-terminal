@@ -36,4 +36,3 @@ test('ft17 same-column dim sublabels attach to items; ambiguous cursors fall bac
   assert.deepEqual(detectMenu(ambiguous), { kind: 'list', title: 'Select model', items: [], cursorIndex: -1 });
   assert.equal(detectMenu('❯ Default\n  Sonnet').kind, null, 'a cursor and siblings without a menu hint are insufficient');
 });
-

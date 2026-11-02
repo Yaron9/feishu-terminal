@@ -45,4 +45,3 @@ export const ordinary = [
   'Use Enter to select files in your app.\n> This is quoted documentation.',
   'Build succeeded\n$ ',
 ];
-
