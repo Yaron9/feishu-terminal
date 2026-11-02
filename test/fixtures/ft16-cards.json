@@ -308,11 +308,15 @@
       "template": "orange",
       "title": {
         "tag": "plain_text",
-        "content": "🤖 Claude · 等待你确认"
+        "content": "🤖 Claude · 等待菜单选择"
       }
     },
     "body": {
       "elements": [
+        {
+          "tag": "markdown",
+          "content": "**Claude 正在等你从菜单里选择** · 允许执行这条命令吗？\n点选项按钮即可选择，无需输入文字。"
+        },
         {
           "tag": "markdown",
           "content": "正在检查项目，稍后给你结果。"
@@ -517,7 +521,7 @@
         },
         {
           "tag": "markdown",
-          "content": "<font color='grey'>等待你确认</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
+          "content": "<font color='grey'>等待菜单选择</font> · <font color='grey'>在本话题直接回复即可继续 · /t screen 看完整屏幕 · /t ls 终端列表</font>"
         }
       ]
     }

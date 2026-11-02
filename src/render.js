@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from 'node:util';
+import { detectMenu, menuControls } from './menus.js';
 
 export function clean(text) {
   return stripVTControlCharacters(String(text)).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
@@ -126,17 +127,26 @@ function blockedPrompt(text) {
   return markdown('**等待你确认：** ' + literal(short(prompt || lines.at(-1) || '请查看终端中的确认提示', 300)) + '\n' + accent('点按钮等于在终端里按对应的键'));
 }
 
-export function turnCard({ turn, topicId, nonce, note, screen = '' }) {
+function menuPrompt(menu, menuUI) {
+  const warning = menuUI?.confirm ? '\n⚠️ 此会话已在其他终端运行，同时恢复可能损坏会话记录。确定仍要恢复？' : '';
+  return markdown('**Claude 正在等你从菜单里选择**' + (menu.title ? ' · ' + literal(short(menu.title, 100)) : '') +
+    '\n点选项按钮即可选择，无需输入文字。' + warning);
+}
+
+export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI }) {
   const preview = stripChrome(turn.text);
   const elements = [markdown((turn.truncated || Array.from(preview).length > 1500 ? accent(CLIPPED) + '\n\n' : '') + prose(tail(preview, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
   if (turn.toolCount) elements.push({ tag: 'collapsible_panel', expanded: false,
     header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${turn.toolCount})` } },
     elements: [markdown((turn.toolsTruncated ? accent('工具较多，仅显示末尾') + '\n\n' : '') + accent(tail(turn.tools, 1500)))] });
   if (note) elements.unshift(markdown(note));
+  const menu = detectMenu(screen || turn.text);
+  const hasMenu = Boolean(menu.kind);
   const blocked = !turn.settled && turn.status === 'blocked';
+  if (hasMenu) elements.unshift(menuPrompt(menu, menuUI));
   if (blocked) elements.push(blockedPrompt(screen || turn.text));
-  const buttons = screenControls(screen || turn.text);
-  if (blocked) for (let i = 0; i < buttons.length; i += 3) elements.push({
+  const buttons = menu.kind === 'list' ? menuControls(menu, menuUI).map(([label, key]) => [short(label, 60), key]) : screenControls(screen || turn.text);
+  if (blocked || hasMenu) for (let i = 0; i < buttons.length; i += 3) elements.push({
     tag: 'column_set', flex_mode: 'none', columns: buttons.slice(i, i + 3).map(([label, key]) => ({
       tag: 'column', width: 'weighted', weight: 1, elements: [{
         tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
@@ -145,10 +155,10 @@ export function turnCard({ turn, topicId, nonce, note, screen = '' }) {
     })),
   });
   const failed = ['error', 'failed'].includes(turn.status);
-  const activity = failed ? '出错' : turn.settled ? '已完成' : blocked ? '等待你确认' : '工作中';
-  elements.push(markdown(accent(activity, failed ? 'red' : turn.settled ? 'green' : 'grey') + ' · ' + accent(CARD_FOOTER)));
+  const activity = hasMenu ? '等待菜单选择' : failed ? '出错' : turn.settled ? '已完成' : blocked ? '等待你确认' : '工作中';
+  elements.push(markdown(accent(activity, hasMenu ? 'grey' : failed ? 'red' : turn.settled ? 'green' : 'grey') + ' · ' + accent(CARD_FOOTER)));
   return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
-    failed ? 'red' : blocked ? 'orange' : turn.settled ? 'green' : 'blue', elements);
+    hasMenu ? 'orange' : failed ? 'red' : blocked ? 'orange' : turn.settled ? 'green' : 'blue', elements);
 }
 
 export function pickerCard(card, result) {
@@ -183,15 +193,18 @@ export function pickerCard(card, result) {
     header: { template: result ? 'grey' : card.kind === 'confirm' ? 'red' : card.kind === 'close' ? 'orange' : 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? `终端列表（共 ${card.entries.length} 个）` : '关闭终端' } }, elements };
 }
 
-export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note }) {
+export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note, menuUI }) {
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
   const preview = stripChrome(text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
   const elements = [markdown(codeBlock(screenText(preview, 10)) + '\n' + accent('这是终端最近的画面；/t screen 可查看完整屏幕'))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
-  if (status === 'blocked') {
-    elements.push(blockedPrompt(text));
-    const buttons = screenControls(text);
+  const menu = detectMenu(text);
+  const hasMenu = Boolean(menu.kind);
+  if (hasMenu) elements.unshift(menuPrompt(menu, menuUI));
+  if (status === 'blocked' || hasMenu) {
+    if (status === 'blocked') elements.push(blockedPrompt(text));
+    const buttons = menu.kind === 'list' ? menuControls(menu, menuUI).map(([label, key]) => [short(label, 60), key]) : screenControls(text);
     for (let i = 0; i < buttons.length; i += 3) elements.push({
       tag: 'action', actions: buttons.slice(i, i + 3).map(([label, key]) => ({
         tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
@@ -200,10 +213,10 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
     });
   }
   const shell = agent === null || (agent === undefined && status === 'unknown');
-  const activity = shell ? (status === 'working' ? '运行中' : '空闲') :
+  const activity = hasMenu ? '等待菜单选择' : shell ? (status === 'working' ? '运行中' : '空闲') :
     ({ working: '工作中', idle: '空闲', done: '已完成', blocked: '等待你确认', error: '出错', failed: '出错' }[status] ?? '状态待更新');
   elements.push(markdown(accent(CARD_FOOTER)));
   if (paneId) elements.push({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(paneId)) }] });
-  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
+  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: hasMenu ? 'orange' : shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
     title: { tag: 'plain_text', content: `${shell ? '命令行' : '●'} · ${activity} · ${short(label)}` } }, elements };
 }

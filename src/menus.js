@@ -77,19 +77,28 @@ export function detectMenu(text = '') {
 
 export const sameMenu = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-export function resumeWarnings(menu, panes, paneId) {
+export function resumeWarnings(menu, panes, paneId, screen = '') {
   if (menu?.kind !== 'list' || !/resume\s+session|恢复会话/i.test(menu.title)) return {};
-  return Object.fromEntries(menu.items.flatMap((item, index) => {
+  // Even if details cannot be parsed into a reliable list, a raw cursor label
+  // can reveal a duplicate. Guard fallback Enter conservatively in that case.
+  const fallbackLabels = stripVTControlCharacters(screen).split('\n').flatMap(line => {
+    const match = /^\s*[❯›>] (\S.*)$/u.exec(line);
+    return match ? [match[1].trim()] : [];
+  });
+  return Object.fromEntries((menu.items.length ? menu.items : [{ label: null }]).flatMap((item, index) => {
     const matches = panes.filter(pane => pane.pane_id !== paneId && /^claude$/i.test(pane.agent ?? '') &&
-      pane.terminal_id && String(pane.terminal_title_stripped ?? '').trim() === item.label);
+      pane.terminal_id && (item.label === null ? fallbackLabels.includes(String(pane.terminal_title_stripped ?? '').trim()) :
+        String(pane.terminal_title_stripped ?? '').trim() === item.label));
     return matches.length ? [[index, matches.map(pane => ({ paneId: pane.pane_id, terminalId: pane.terminal_id,
-      label: `${item.label} (${pane.pane_id})` }))]] : [];
+      label: `${pane.pane_id} · ${String(pane.terminal_title_stripped).trim()}` }))]] : [];
   }));
 }
 
+const warningLabel = warnings => warnings?.length ? `⚠️ 已在 ${Array.from(warnings[0].label).slice(0, 30).join('')}${warnings.length > 1 ? ` 等 ${warnings.length} 个终端` : ''} 运行` : null;
+
 export function menuControls(menu, { page = 0, warnings = {}, confirm } = {}) {
   if (confirm && sameMenu(confirm.menu, menu)) return [
-    [`确定恢复 ${menu.items[confirm.index].label}`, `menu:confirm:${confirm.index}`],
+    [`确定恢复 ${menu.items[confirm.index]?.label ?? '当前会话'}`, `menu:confirm:${confirm.index}`],
     ['返回菜单', 'menu:back'], ['Esc 取消', 'esc'], ['刷新', 'refresh'],
   ];
   const buttons = [];
@@ -97,12 +106,11 @@ export function menuControls(menu, { page = 0, warnings = {}, confirm } = {}) {
     const offset = (page % Math.ceil(menu.items.length / 10)) * 10;
     menu.items.slice(offset, offset + 10).forEach((item, i) => {
       const index = offset + i;
-      const warning = warnings[index]?.map(pane => pane.label).join('、');
-      buttons.push([warning ? `⚠️ 已在 ${warning} 运行` : item.label, `menu:select:${index}`]);
+      buttons.push([warningLabel(warnings[index]) ?? item.label, `menu:select:${index}`]);
     });
     if (menu.items.length > 10) buttons.push(['更多…', 'menu:more']);
   }
   if (!menu.items.length || menu.items.length > 10) buttons.push(['↑ 上一个', 'up'], ['↓ 下一个', 'down']);
-  if (!menu.items.length) buttons.push(['Enter 选中', 'enter']);
+  if (!menu.items.length) buttons.push([warningLabel(warnings[0]) ?? 'Enter 选中', 'enter']);
   return [...buttons, ['Esc 取消', 'esc'], ['刷新', 'refresh']];
 }
