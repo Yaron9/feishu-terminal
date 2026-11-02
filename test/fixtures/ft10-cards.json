@@ -1,0 +1,272 @@
+{
+  "assistant": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "🤖 Claude"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "The **fix** is ready.\n\n- Checked the bridge."
+        },
+        {
+          "tag": "collapsible_panel",
+          "expanded": false,
+          "header": {
+            "title": {
+              "tag": "plain_text",
+              "content": "🔧 工具调用 (1)"
+            }
+          },
+          "elements": [
+            {
+              "tag": "markdown",
+              "content": "🔧 Bash: Run the tests"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "desktop": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "🧑 电脑端输入"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "Please check the rendering."
+        }
+      ]
+    }
+  },
+  "live": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "blue",
+      "title": {
+        "tag": "plain_text",
+        "content": "● 工作中 · project · claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\nChecking the bridge\n```"
+      }
+    ]
+  },
+  "blocked": {
+    "config": {
+      "wide_screen_mode": true,
+      "update_multi": true
+    },
+    "header": {
+      "template": "orange",
+      "title": {
+        "tag": "plain_text",
+        "content": "● 等待确认 · project · claude"
+      }
+    },
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "```text\nAllow command? [y/n]\n```"
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Enter"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "enter"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Esc"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "esc"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "1"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "1"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "2"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "2"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "3"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "3"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "y"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "y"
+            }
+          }
+        ]
+      },
+      {
+        "tag": "action",
+        "actions": [
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "n"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "n"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Ctrl-C"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "ctrl+c"
+            }
+          },
+          {
+            "tag": "button",
+            "text": {
+              "tag": "plain_text",
+              "content": "Refresh"
+            },
+            "type": "default",
+            "value": {
+              "topic_id": "topic",
+              "nonce": "nonce",
+              "key": "refresh"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "shell": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "💻 输出"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "```text\n$ pwd\n/home/project\n```"
+        }
+      ]
+    }
+  },
+  "screen": {
+    "schema": "2.0",
+    "config": {
+      "update_multi": true
+    },
+    "header": {
+      "template": "grey",
+      "title": {
+        "tag": "plain_text",
+        "content": "💻 当前屏幕"
+      }
+    },
+    "body": {
+      "elements": [
+        {
+          "tag": "markdown",
+          "content": "```text\n❯ prompt\n╰────╯\n```"
+        }
+      ]
+    }
+  }
+}

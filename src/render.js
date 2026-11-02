@@ -4,6 +4,46 @@ export function clean(text) {
   return stripVTControlCharacters(String(text)).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
 
+export function stripChrome(text) {
+  return clean(text).split('\n').filter(line => {
+    const value = line.trim();
+    return !(/^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]{3,}$/.test(value) ||
+      /^[❯›](?:\s|$)/.test(value) || /^[>\$]\s*$/.test(value) ||
+      /^[✻✽✶✳✢·⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s/.test(value) ||
+      /^(?:Worked for|Thinking|Brewing|Cogitating|Churning|Wandering|Esc to interrupt|ctrl\+c to interrupt)\b/i.test(value));
+  }).map(line => line.replace(/^\s*[│┃║]\s?/, '').replace(/\s*[│┃║]\s*$/, '')).join('\n').trimEnd();
+}
+
+const tail = (text, count) => Array.from(text).slice(-count).join('');
+const markup = text => clean(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const codeBlock = text => '```text\n' + markup(text).replace(/`/g, '`\u200b') + '\n```';
+const markdown = content => ({ tag: 'markdown', content });
+const roleCard = (title, template, elements) => ({ schema: '2.0', config: { update_multi: true },
+  header: { template, title: { tag: 'plain_text', content: title } }, body: { elements } });
+
+export function assistantCard(text, tools = [], agent = 'Claude') {
+  text = clean(text);
+  const clipped = Array.from(text).length > 1500;
+  const elements = [markdown((clipped ? '（仅显示末尾）\n\n' : '') + markup(tail(text, 1500) || '（工具调用）'))];
+  if (tools.length) elements.push({ tag: 'collapsible_panel', expanded: false,
+    header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${tools.length})` } },
+    elements: [markdown(markup(tail(tools.map(t => String(t).replace(/\s+/g, ' ').slice(0, 140)).join('\n'), 1500)))] });
+  return roleCard(`🤖 ${String(agent).slice(0, 40)}`, 'blue', elements);
+}
+
+export function userCard(text) {
+  const clipped = Array.from(text).length > 1500;
+  return roleCard('🧑 电脑端输入', 'grey', [markdown((clipped ? '（仅显示末尾）\n\n' : '') + markup(tail(text, 1500)))]);
+}
+
+export function outputCard(text, { full = false } = {}) {
+  const content = full ? clean(text) : stripChrome(text);
+  const lines = content.split('\n'), limit = full ? Infinity : 60;
+  const body = tail(lines.slice(-limit).join('\n'), full ? 4000 : 3000);
+  return roleCard(full ? '💻 当前屏幕' : '💻 输出', 'grey',
+    [markdown((lines.length > limit || body.length < content.length ? '（仅显示末尾）\n' : '') + codeBlock(body))]);
+}
+
 export function screenText(text, rows = 40, width = 120) {
   const all = clean(text).split('\n');
   const visible = all.slice(-rows).map(line => {
@@ -77,8 +117,8 @@ export function pickerCard(card, result) {
 export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text, note }) {
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
-  const code = screenText(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/`/g, '`\u200b');
-  const elements = [{ tag: 'markdown', content: '```text\n' + code + '\n```' }];
+  const preview = stripChrome(text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
+  const elements = [markdown(codeBlock(screenText(preview, 10)))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     for (let i = 0; i < BUTTONS.length; i += 3) elements.push({
@@ -88,5 +128,7 @@ export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'u
       })),
     });
   }
-  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: status === 'blocked' ? 'orange' : 'blue', title: { tag: 'plain_text', content: label } }, elements };
+  const activity = { working: '工作中', idle: '空闲', done: '空闲', blocked: '等待确认' }[status] ?? '状态未知';
+  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: status === 'blocked' ? 'orange' : 'blue',
+    title: { tag: 'plain_text', content: `● ${activity} · ${Array.from(label).slice(0, 180).join('')}` } }, elements };
 }
