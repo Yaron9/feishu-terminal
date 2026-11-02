@@ -35,7 +35,14 @@ export function claudeItems(record, offset = 0) {
 }
 
 export class ClaudeTranscript {
-  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.transcriptTurns = true; this.backgrounds = new Map(); this.sessions = new Map(); }
+  constructor({ home = homedir(), procRoot = '/proc', cacheLimit = 512 } = {}) {
+    Object.assign(this, { home, procRoot, cacheLimit }); this.transcriptTurns = true; this.backgrounds = new Map(); this.sessions = new Map();
+  }
+  remember(cache, path, value) {
+    cache.delete(path); cache.set(path, value);
+    while (cache.size > this.cacheLimit) cache.delete(cache.keys().next().value);
+    return value;
+  }
   async locate(pane) {
     // A remote PID belongs to a different /proc namespace.
     if (/^hc:[^/]+\//.test(pane.pane_id)) return null;
@@ -57,7 +64,7 @@ export class ClaudeTranscript {
       if (!(await stat(path)).isFile()) return null;
       const previous = this.sessions.get(path);
       const restartedAt = new Date((await stat(join(this.home, '.claude', 'sessions', `${pid}.json`))).mtimeMs).toISOString();
-      this.sessions.set(path, { sessionId, pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
+      this.remember(this.sessions, path, { sessionId, pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
       return path;
     } catch { return null; }
   }
@@ -82,7 +89,7 @@ export class ClaudeTranscript {
   // the cursor is the opaque object returned by the preceding read.
   async read(path, cursor) {
     let entry = this.backgrounds.get(path);
-    if (!entry) { entry = { background: emptyBackground(), scan: null }; this.backgrounds.set(path, entry); }
+    entry = this.remember(this.backgrounds, path, entry ?? { background: emptyBackground(), scan: null });
     // Drain bounded windows on startup and then only appended bytes. The
     // tracker cursor is independent of the delivery cursor (pending retries).
     for (;;) {

@@ -96,7 +96,8 @@ export class Bridge {
   }
   rememberCard(id, card, kind) {
     return this.store.transaction(data => {
-      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind };
+      if (data.cardSchemas) delete data.cardSchemas[id];
+      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind, updatedAt: this.store.now() };
     });
   }
   patchCard(id, card, kind) { return patchStoredCard(this, id, card, kind); }
@@ -693,7 +694,14 @@ export class Bridge {
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
     this.tickPending = true;
-    return this.scanSessions().then(() => Promise.all(this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(binding =>
+    return (async () => {
+      if (this.now() - (this.lastMaintenance ?? -Infinity) >= 60000) {
+        await this.store.maintain(this.now()); this.lastMaintenance = this.now();
+        const topics = new Set(this.store.list().map(b => b.topicId));
+        for (const id of this.runtime.keys()) if (!topics.has(id)) this.runtime.delete(id);
+      }
+      await this.scanSessions();
+    })().then(() => Promise.all(this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(binding =>
       this.enqueue(async () => {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
@@ -1148,7 +1156,10 @@ export class Bridge {
       if (!this.sameGeneration(binding, current) || current.pendingCard) return false;
     }
     if (current.turn && current.turn.id !== turn.id) {
-      turn.backgroundFinishedBefore ??= [...(current.turn.backgroundFinishedBefore ?? []), ...(current.turn.background?.finished ?? []).map(task => task.id)];
+      // The tracker only retains five completed jobs; don't carry an entire
+      // session's completed task IDs into every future turn and card payload.
+      turn.backgroundFinishedBefore = [...new Set(turn.backgroundFinishedBefore ??
+        [...(current.turn.backgroundFinishedBefore ?? []), ...(current.turn.background?.finished ?? []).map(task => task.id)])].slice(-10);
       if (current.turn.background?.running?.length || current.turn.background?.finished?.length || current.turn.backgroundRetired) {
         const old = { ...current.turn, background: undefined, liveActivity: '', backgroundRetired: true, backgroundFinishedBefore: turn.backgroundFinishedBefore };
         if (!await this.updateGeneration(binding, { turn: old })) return false;

@@ -46,7 +46,8 @@ export async function patchStoredCard({ store, feishu }, id, card, kind) {
   const inferred = kindVersion(kind);
   let version = known?.schemaVersion ?? inferred ?? '1.0';
   const remember = () => store.transaction(data => {
-    (data.cardSchemas ??= {})[id] = { schemaVersion: version, kind: known?.kind ?? kind ?? null };
+    if (data.cardSchemas) delete data.cardSchemas[id];
+    (data.cardSchemas ??= {})[id] = { schemaVersion: version, kind: known?.kind ?? kind ?? null, updatedAt: store.now() };
   });
   // Unknown legacy IDs get one v2 attempt on the specific schema error.
   // Persist before that attempt so a reboot cannot repeat the v1 probe.

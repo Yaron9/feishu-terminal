@@ -33,6 +33,7 @@ export function trackBackground(state, record) {
     const pending = state.pending[b.tool_use_id];
     if (id && pending && !state.running.some(t => t.id === id) && !state.finished.some(t => t.id === id)) {
       state.running.push({ id, ...pending, outputFile: match?.[2] ?? null });
+      state.running = state.running.slice(-500);
       delete state.pending[b.tool_use_id];
     }
   }

@@ -3,8 +3,8 @@ import { dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 
 export class Store {
-  constructor(file, { dedupeLimit = 10000 } = {}) {
-    this.file = file; this.dedupeLimit = dedupeLimit;
+  constructor(file, { dedupeLimit = 10000, cardSchemaLimit = 4096, now = Date.now } = {}) {
+    Object.assign(this, { file, dedupeLimit, cardSchemaLimit, now });
     this.data = { version: 1, bindings: [], seen: [] }; this.queue = Promise.resolve();
   }
   async load() {
@@ -17,6 +17,7 @@ export class Store {
         topics.add(b.topicId); panes.add(b.paneId);
       }
       this.data = data;
+      this.prune(this.data);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     return this;
   }
@@ -27,9 +28,50 @@ export class Store {
     const result = this.queue.then(async () => {
       const next = structuredClone(this.data);
       const value = change(next);
+      this.prune(next);
       await this.write(next); this.data = next; return value;
     });
     this.queue = result.catch(() => {}); return result;
+  }
+  prune(data) {
+    data.seen = data.seen.slice(-this.dedupeLimit);
+    if (data.actionCards) data.actionCards = data.actionCards.slice(-512);
+    if (data.topicPointers) data.topicPointers = data.topicPointers.slice(-10000);
+    if (data.createdTerminals) {
+      // Forgetting old ownership only restores desktop-close confirmation.
+      const active = data.bindings.map(b => b.identity?.terminalId).filter(Boolean);
+      data.createdTerminals = [...new Set([...data.createdTerminals.slice(-10000), ...active])];
+    }
+    if (!data.cardSchemas) return;
+    const live = new Set();
+    const visit = object => {
+      for (const [key, value] of Object.entries(object ?? {})) {
+        if (typeof value === 'string' && /(?:cardId|messageId|topicId|targetId)$/i.test(key)) live.add(value);
+        else if (value && typeof value === 'object') visit(value);
+      }
+    };
+    visit(data.bindings); visit(data.actionCards);
+    const now = this.now(); let inactive = 0;
+    for (const id in data.cardSchemas) {
+      const metadata = data.cardSchemas[id];
+      // Give legacy entries one retention window at migration. Live/pending
+      // cards are pinned: schema choice must survive long-lived bindings.
+      metadata.updatedAt ??= now;
+      if (live.has(id)) continue;
+      if (now - metadata.updatedAt >= 14 * 86400000) delete data.cardSchemas[id];
+      else inactive++;
+    }
+    // Writers move touched IDs to the end. Evict by insertion order without
+    // allocating/sorting thousands of temporary pairs on every transaction.
+    for (const id in data.cardSchemas) {
+      if (inactive <= this.cardSchemaLimit) break;
+      if (!live.has(id)) { delete data.cardSchemas[id]; inactive--; }
+    }
+  }
+  maintain(actionNow) {
+    return this.transaction(data => {
+      if (data.actionCards) data.actionCards = data.actionCards.filter(card => actionNow - card.createdAt < 600000);
+    });
   }
   async write(data) {
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
