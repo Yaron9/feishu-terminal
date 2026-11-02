@@ -33,7 +33,8 @@ test('Claude cards distinguish desktop input, assistant and tools; Feishu input 
   await appendFile(file, user('phone question') + assistant('Answer from Claude') + user('desktop question') + user('phone question'));
   await h.bridge.tick();
   const cards = conversation(h);
-  assert.deepEqual(cards.map(c => c.content.header.title.content), ['🤖 Claude', '🧑 电脑端输入', '🧑 电脑端输入']);
+  assert.deepEqual(cards.map(c => c.content.header.title.content),
+    ['🤖 Claude', '🧑 电脑端输入', '🤖 Claude', '🧑 电脑端输入', '🤖 Claude · 工作中…']);
   assert.equal(cards[0].content.body.elements[1].header.title.content, '🔧 工具调用 (1)');
   assert.equal(cards[0].content.body.elements[1].expanded, false);
   assert.ok(!JSON.stringify(h.feishu.calls).includes('old history'));
@@ -41,8 +42,8 @@ test('Claude cards distinguish desktop input, assistant and tools; Feishu input 
   assert.equal(binding.transcript.cursor.offset, Buffer.byteLength(user('old history') + user('phone question') + assistant('Answer from Claude') + user('desktop question') + user('phone question')));
   await h.bridge.handle(message('phone after restart', 'phone2', topic));
   await h.restart(); await appendFile(file, user('phone after restart') + assistant('After restart'));
-  await h.bridge.tick();
-  assert.equal(conversation(h).length, 4);
+  h.advance(2000); await h.bridge.tick();
+  assert.equal(conversation(h).length, 6);
   assert.ok(!JSON.stringify(h.audits).includes('phone question'));
   assert.ok(!JSON.stringify(h.audits).includes('Answer from Claude'));
   assert.ok(h.fake.calls.filter(c => c.method === 'pane.read').every(c => c.params.source === 'visible'));
@@ -76,19 +77,19 @@ test('ambiguous transcript card send retries the same card and UUID after restar
   await appendFile(file, user('phone') + assistant('durable reply'));
   const reply = h.feishu.reply.bind(h.feishu); let pending;
   h.feishu.reply = async (topic, card, type, uuid) => {
-    if (card?.header?.title.content === '🤖 Claude') { pending = { card, uuid }; throw new Error('secret response lost'); }
+    if (card?.header?.title.content.startsWith('🤖 Claude')) { pending = { card, uuid }; throw new Error('secret response lost'); }
     return reply(topic, card, type, uuid);
   };
   await h.bridge.tick();
   assert.equal(h.bridge.store.forPane('w1:p1').transcript.cursor.offset, baseline);
   assert.ok(h.bridge.store.forPane('w1:p1').outputBatch);
   h.feishu.reply = async (topic, card, type, uuid) => {
-    if (card?.header?.title.content === '🤖 Claude') { assert.equal(uuid, pending.uuid); assert.deepEqual(card, pending.card); }
+    if (card?.header?.title.content.startsWith('🤖 Claude') && uuid === pending.uuid) assert.deepEqual(card, pending.card);
     return reply(topic, card, type, uuid);
   };
   await appendFile(file, user('desktop later'));
-  await h.restart(); await h.bridge.tick(); h.advance(1000); await h.bridge.tick();
-  assert.equal(conversation(h).length, 2);
+  await h.restart(); await h.bridge.tick(); h.advance(2000); await h.bridge.tick();
+  assert.equal(conversation(h).length, 3);
   assert.deepEqual(h.bridge.store.forPane('w1:p1').sentInputs, []);
   assert.equal(h.bridge.store.forPane('w1:p1').outputBatch, null);
   assert.ok(!JSON.stringify(h.errors).includes('secret'));
@@ -97,14 +98,16 @@ test('ambiguous transcript card send retries the same card and UUID after restar
 test('raw Feishu input is matched, a rejected blocked prompt does not suppress desktop input, and expired matches do not suppress it', async t => {
   const { h, file, topic, pane } = await setup(t);
   await h.bridge.handle(message('/t raw raw text', 'raw', topic));
-  await appendFile(file, user('raw text')); await h.bridge.tick(); assert.equal(conversation(h).length, 0);
+  await appendFile(file, user('raw text')); await h.bridge.tick();
+  assert.equal(conversation(h).length, 1); assert.equal(conversation(h)[0].content.header.title.content, '🤖 Claude · 工作中…');
   pane.agent_status = 'blocked';
   await h.bridge.handle(message('blocked question', 'blocked', topic));
-  await appendFile(file, user('blocked question')); h.advance(1000); await h.bridge.tick();
-  assert.equal(conversation(h).length, 1);
+  await appendFile(file, user('blocked question')); h.advance(2000); await h.bridge.tick();
+  assert.equal(conversation(h).length, 3);
+  assert.equal(conversation(h)[1].content.header.title.content, '🧑 电脑端输入');
   pane.agent_status = 'working'; await h.bridge.handle(message('expired question', 'expired', topic));
   h.advance(600001); await appendFile(file, user('expired question')); await h.bridge.tick();
-  assert.equal(conversation(h).length, 2);
+  assert.equal(conversation(h).length, 5);
 });
 
 test('transcript read crossing pane reuse freezes the binding and drops all new content', async t => {

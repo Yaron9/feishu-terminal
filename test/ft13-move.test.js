@@ -70,7 +70,8 @@ test('move keeps the transcript cursor through restart, catches up fresh turns a
   assert.equal(conversation(h).length, 1); assert.match(JSON.stringify(conversation(h)[0].content), /fresh 20/);
   assert.equal(conversation(h)[0].topicId, current.topicId);
   await h.restart(); await h.bridge.tick(); assert.equal(conversation(h).length, 1);
-  offset = 30; h.advance(1000); await h.bridge.tick(); assert.equal(conversation(h).length, 2);
+  offset = 30; h.advance(2000); await h.bridge.tick(); assert.equal(conversation(h).length, 1);
+  assert.match(JSON.stringify(h.feishu.calls.filter(c => c.type === 'patch').at(-1).card), /fresh 20[\s\S]*fresh 30/);
   assert.equal(reads.filter(c => c.atEnd).length, 1);
 });
 
