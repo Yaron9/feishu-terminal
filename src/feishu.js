@@ -136,7 +136,7 @@ export class Feishu {
   }
   async send(chatId, text, uuid = randomUUID()) {
     const data = await this.api(() => this.client.im.message.create({ params: { receive_id_type: 'chat_id' },
-      data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }), uuid } }));
+      data: { receive_id: chatId, msg_type: typeof text === 'string' ? 'text' : 'interactive', content: JSON.stringify(typeof text === 'string' ? { text } : text), uuid } }));
     if (!data?.message_id) throw new FeishuError('missing_message_id');
     return data.message_id;
   }

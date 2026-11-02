@@ -6,6 +6,7 @@ import { transcriptAdapters } from './transcripts/index.js';
 import { paneSubscriptions } from './herdr-client.js';
 import { readPane } from './pane-read.js';
 import { auditRecord, appendAudit } from './store.js';
+import { cleanTitle, topicCard, topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, resumeWarnings, menuControls, menuPageSize } from './menus.js';
@@ -113,6 +114,7 @@ export class Bridge {
     const binding = this.store.binding(event.chatId, event.topicId);
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
+      if (await this.pointToTopic(event)) return;
       const action = route(event.text, Boolean(binding));
       await this.log(event, binding, action.type, event.text ?? '');
       if (action.type === 'error') { await this.feishu.reply(event.topicId, action.message); return; }
@@ -122,15 +124,7 @@ export class Bridge {
       if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
       if (action.type === 'create') {
         if (event.isReply) { await this.feishu.reply(event.topicId, '这个话题还没有连接终端。请发送 /t ls，点 [打开] 进入终端话题。'); return; }
-        const pane = await this.createPane();
-        const identity = await this.identity(pane.pane_id);
-        await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity,
-          topicRoot: { text: event.text, createdAt: Number.isFinite(event.createdAt) ? event.createdAt : this.now() } });
-        await this.verify(this.store.binding(event.chatId, event.messageId));
-        this.resubscribe();
-        const created = this.store.binding(event.chatId, event.messageId);
-        await this.log(event, created, 'first_input', action.text);
-        await this.input(created, action.text);
+        await this.createTopic(event, action);
         return;
       }
       if (action.type === 'close') {
@@ -175,6 +169,67 @@ export class Bridge {
       // Never echo upstream error messages: they may contain terminal content.
       const code = /^[a-z_0-9]+$/i.test(String(error.code)) ? String(error.code) : 'operation_failed';
       await this.feishu.reply(event.topicId, `操作未完成（${code}），系统没有重复发送输入。请发送 /t screen 查看屏幕，或 /t ls 查看终端。`);
+    }
+  }
+  async createTopic(event, action) {
+    const pane = await this.createPane();
+    const identity = await this.identity(pane.pane_id);
+    const root = this.newRoot(pane, action.text);
+    const topicId = await this.feishu.send(event.chatId, root.card);
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata });
+    const created = this.store.binding(event.chatId, topicId);
+    await this.store.transaction(data => {
+      (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
+    });
+    await this.verify(created); this.resubscribe();
+    try {
+      await this.log(event, created, 'first_input', action.text);
+      await this.input(created, action.text);
+    } finally {
+      // Setup normally assigns the operator as owner; claim setup omits owner_id.
+      // Official DELETE docs (230026) restrict bots to their own messages,
+      // so creator/owner status is not sufficient to recall this user message.
+      await this.pointToTopic(event).catch(() => {});
+    }
+  }
+  async pointToTopic(event) {
+    const pointer = this.store.data.topicPointers?.find(p => p.chatId === event.chatId && p.oldTopicId === event.topicId);
+    if (!pointer) return false;
+    const title = this.store.binding(pointer.chatId, pointer.topicId)?.topicRoot?.text ?? pointer.title;
+    await this.feishu.reply(event.topicId, `已在新话题「${title}」打开，请到那里继续`);
+    return true;
+  }
+  newRoot(pane, fallback) {
+    const title = topicTitle(pane, fallback), card = topicCard(pane, title);
+    return { card, metadata: { type: 'interactive', text: title, publishedTitle: title,
+      createdAt: this.now(), lastAttemptAt: null, stopped: false } };
+  }
+  async syncTopicTitle(binding, pane) {
+    const root = this.store.binding(binding.chatId, binding.topicId)?.topicRoot;
+    // Legacy roots have unknown sender, edit count and administrator edit window.
+    // Never infer edit eligibility from a text prefix or migrate their type.
+    if (root?.type !== 'interactive' || root.stopped) return;
+    const state = this.state(binding), now = this.now();
+    if (now - root.createdAt >= 14 * 86400000) {
+      await this.updateGeneration(binding, { topicRoot: { ...root, stopped: true } }); return;
+    }
+    if (pane.terminal_title_stripped?.trim() && !cleanTitle(pane.terminal_title_stripped)) {
+      state.titleCandidate = null; return;
+    }
+    const title = topicTitle(pane);
+    if (state.titleCandidate !== title) { state.titleCandidate = title; state.titleSince = now; }
+    if (title === root.publishedTitle || now - state.titleSince < 10000 ||
+        (root.lastAttemptAt !== null && now - root.lastAttemptAt < 60000)) return;
+    await this.verify(binding);
+    const attempted = { ...root, lastAttemptAt: now };
+    await this.updateGeneration(binding, { topicRoot: attempted });
+    try {
+      await this.feishu.patch(binding.topicId, topicCard(pane, title));
+      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title } });
+    } catch (error) {
+      if (['230031', '230011', '230110'].includes(String(error.code)))
+        await this.updateGeneration(binding, { topicRoot: { ...attempted, stopped: true } });
+      else this.onError('topic_title_update_failed');
     }
   }
   log(event, binding, action, text = '') {
@@ -339,9 +394,9 @@ export class Bridge {
     const { panes } = await this.herdr.request('pane.list');
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
-    const text = `终端：${this.label(pane)}`, createdAt = this.now();
-    const topicId = await this.feishu.send(event.chatId, text);
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: { text, createdAt },
+    const root = this.newRoot(pane);
+    const topicId = await this.feishu.send(event.chatId, root.card);
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
@@ -389,9 +444,9 @@ export class Bridge {
           const { panes } = await this.herdr.request('pane.list');
           const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
           if (!pane) throw new Error('终端已变化，请重新 /t ls');
-          const text = `终端：${this.label(pane)}`, createdAt = this.now();
+          const root = this.newRoot(pane), text = root.metadata.text;
           await this.verify(binding);
-          const topicId = await this.feishu.send(event.chatId, text);
+          const topicId = await this.feishu.send(event.chatId, root.card);
           await this.verify(binding);
           const moved = await this.store.transaction(data => {
             const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
@@ -401,7 +456,11 @@ export class Bridge {
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
               retiredCardId: undefined, retiredCardAt: undefined, outputBatch: null,
-              topicRoot: { text, createdAt } });
+              topicRoot: root.metadata });
+            for (const pointer of data.topicPointers ?? []) {
+              if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
+                Object.assign(pointer, { topicId, title: text });
+            }
             return structuredClone(current);
           });
           const state = this.state(binding);
@@ -613,6 +672,7 @@ export class Bridge {
     state.lastRead = now; state.dirty = false;
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    await this.syncTopicTitle(binding, pane);
     await this.initializeTranscript(binding, { ...pane, agent: agent?.agent ?? pane.agent });
     const recent = state.transcriptSource ? visible : (await this.readVerified(binding, () => readPane(this.herdr, binding.paneId))).read;
     if (!state.initialized) {
