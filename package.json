@@ -11,5 +11,5 @@
     "test": "node --test test/*.test.js",
     "test:live": "node scripts/live-herdr.js"
   },
-  "dependencies": { "@larksuiteoapi/node-sdk": "1.76.0" }
+  "optionalDependencies": { "@larksuiteoapi/node-sdk": "1.76.0" }
 }

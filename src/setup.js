@@ -1,4 +1,3 @@
-import { registerApp as sdkRegisterApp } from '@larksuiteoapi/node-sdk';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -100,7 +99,7 @@ export function setupApi({ fetchImpl = fetch, base = 'https://open.feishu.cn', s
   };
 }
 
-export async function setup({ newGroup = false, newApp = false, operator, paths = runtimePaths(), registerApp = sdkRegisterApp,
+export async function setup({ newGroup = false, newApp = false, operator, paths = runtimePaths(), registerApp,
   fetchImpl = fetch, stdout = line => console.log(line), stderr = line => console.error(line), sleep = delay, now = Date.now, signal,
   claimClientFactory = credentials => new Feishu(credentials) } = {}) {
   let release, ready = Promise.resolve(), stage = 'registration';
@@ -132,6 +131,7 @@ export async function setup({ newGroup = false, newApp = false, operator, paths 
       catch { saved = false; }
     }
     stage = 'registration';
+    if (!saved && !registerApp) ({ registerApp } = await import('@larksuiteoapi/node-sdk'));
     const result = saved ? { client_id: env.FEISHU_APP_ID, client_secret: env.FEISHU_APP_SECRET,
       user_info: { open_id: progress.operator_open_id, tenant_brand: progress.tenant_brand } } : await registerApp({ createOnly: true,
       appPreset: { name: 'VPS 终端', desc: '飞书话题 ↔ VPS herdr 终端' },

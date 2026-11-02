@@ -1,25 +1,10 @@
-import * as lark from '@larksuiteoapi/node-sdk';
+import { FeishuAPI } from './feishu-api.js';
+import { FeishuWSClient, EventDispatcher } from './feishu-ws.js';
+export { FeishuWSClient } from './feishu-ws.js';
 import { randomUUID } from 'node:crypto';
 
-// The pinned SDK logs request bodies/errors, which can include credentials or
-// terminal data. Replace its logger entirely; bridge logs only safe codes.
+// Neither native transport logs request bodies, credentials or terminal data.
 export const quietLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
-
-const cardFrame = Symbol('cardFrame');
-// SDK 1.76.0 handleEventData drops type=card frames. Reuse its fragmentation,
-// dispatcher and acknowledgement path, restoring the original ACK frame type.
-// This small, version-pinned compatibility shim is exercised with SDK frames.
-export class FeishuWSClient extends lark.WSClient {
-  handleEventData(frame) {
-    if (!frame.headers.some(h => h.key === 'type' && h.value === 'card')) return super.handleEventData(frame);
-    return super.handleEventData({ ...frame, [cardFrame]: true,
-      headers: frame.headers.map(h => h.key === 'type' ? { ...h, value: 'event' } : h) });
-  }
-  sendMessage(frame) {
-    if (frame[cardFrame]) frame = { ...frame, headers: frame.headers.map(h => h.key === 'type' ? { ...h, value: 'card' } : h) };
-    return super.sendMessage(frame);
-  }
-}
 
 export function messageEvent(raw, botOpenId) {
   const event = raw.event ?? raw;
@@ -72,8 +57,8 @@ export class FeishuError extends Error {
 
 export class Feishu {
   constructor({ appId, appSecret, client, ws, logger = quietLogger } = {}) {
-    this.client = client ?? new lark.Client({ appId, appSecret, appType: lark.AppType.SelfBuild, domain: lark.Domain.Feishu, logger });
-    this.ws = ws ?? new FeishuWSClient({ appId, appSecret, domain: lark.Domain.Feishu, logger });
+    this.client = client ?? new FeishuAPI({ appId, appSecret });
+    this.ws = ws ?? new FeishuWSClient({ appId, appSecret, logger });
     this.sendQueue = Promise.resolve(); this.nextSend = 0;
   }
   async start(onEvent, onError = () => {}) {
@@ -81,7 +66,7 @@ export class Feishu {
       try { await onEvent(event); }
       catch (error) { onError('event_failed'); throw error; } // no successful ACK if the claim failed
     };
-    this.dispatcher = new lark.EventDispatcher({ logger: quietLogger }).register({
+    this.dispatcher = new EventDispatcher().register({
       'im.message.receive_v1': async raw => {
         const message = (raw.event ?? raw).message;
         if (message?.mentions?.length) {
@@ -160,15 +145,17 @@ export class Feishu {
     return message;
   }
   async threadMessages(threadId) {
-    const items = []; let pageToken;
+    const items = [], pages = new Set(); let pageToken;
     do {
       const data = await this.api(() => this.client.im.message.list({ params: {
         container_id_type: 'thread', container_id: threadId, page_size: 50,
         ...(pageToken ? { page_token: pageToken } : {}),
       } }));
       items.push(...(data?.items ?? []));
-      if (data?.has_more && (!data.page_token || data.page_token === pageToken)) throw new FeishuError('invalid_pagination');
+      if (data?.has_more && (!data.page_token || pages.has(data.page_token))) throw new FeishuError('invalid_pagination');
+      if (items.length > 5000 || (data?.has_more && pages.size >= 99)) throw new FeishuError('thread_history_limit');
       pageToken = data?.has_more ? data.page_token : null;
+      if (pageToken) pages.add(pageToken);
     } while (pageToken);
     return items;
   }
