@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { paneProcess } from './proc.js';
 import { readJsonl } from './jsonl.js';
-import { emptyBackground, trackBackground } from './background.js';
+import { emptyBackground, trackBackground, stopBackground } from './background.js';
 
 export const projectDirectory = cwd => cwd.replace(/[^a-zA-Z0-9]/g, '-');
 const realText = text => String(text).replace(/<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/gi, '').trim();
@@ -32,7 +32,7 @@ export function claudeItems(record, offset = 0) {
 }
 
 export class ClaudeTranscript {
-  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.backgrounds = new Map(); }
+  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.backgrounds = new Map(); this.sessions = new Map(); }
   async locate(pane) {
     const pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
     if (!pid) return null;
@@ -42,7 +42,11 @@ export class ClaudeTranscript {
       if (Number(sessionPid) !== pid || typeof cwd !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return null;
       const path = join(this.home, '.claude', 'projects', projectDirectory(cwd), `${sessionId}.jsonl`);
       // Validate the actual escaped directory/file rather than guessing another project.
-      return (await stat(path)).isFile() ? path : null;
+      if (!(await stat(path)).isFile()) return null;
+      const previous = this.sessions.get(path);
+      const restartedAt = new Date((await stat(join(this.home, '.claude', 'sessions', `${pid}.json`))).mtimeMs).toISOString();
+      this.sessions.set(path, { pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
+      return path;
     } catch { return null; }
   }
   // atEnd initializes a binding without reading historical records. Otherwise
@@ -60,6 +64,11 @@ export class ClaudeTranscript {
       if (done) break;
     }
     const result = await readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd) });
+    const session = this.sessions.get(path);
+    const restartedAt = session && (session.restarted || (cursor?.pid != null && cursor.pid !== session.pid))
+      ? session.restartedAt : cursor?.restartedAt;
+    if (restartedAt) { stopBackground(entry.background, restartedAt); result.cursor.restartedAt = restartedAt; }
+    if (session) result.cursor.pid = session.pid;
     result.cursor.background = structuredClone(entry.background);
     return result;
   }

@@ -149,7 +149,7 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
   if (running.length || finished.length) {
     elements.push(markdown(`**⏳ 后台运行中（${running.length}）**` + '\n' + running.map(task =>
       prose(`• ${short(task.description)} · ${task.status === 'unknown' ? '状态未知' : `已运行 ${task.minutes} 分钟`}`)).join('\n') +
-      (finished.length ? '\n' + finished.map(task => accent(`${task.status === 'completed' ? '✅' : task.status === 'failed' ? '❌' : '⏹'} ${short(task.description)} ${task.status === 'completed' ? '完成' : task.status === 'failed' ? `失败（exit ${task.exitCode ?? '?'}）` : '已停止'}`)).join('\n') : '')));
+      (finished.length ? '\n' + finished.map(task => accent(`${task.status === 'completed' ? '✅' : task.status === 'failed' ? '❌' : '⏹'} ${short(task.description)} ${task.status === 'completed' ? '完成' : task.status === 'failed' ? `失败（exit ${task.exitCode ?? '?'}）` : ['killed', 'stopped'].includes(task.status) ? '已停止' : short(task.status)}`)).join('\n') : '')));
 
   }
   const blocked = !turn.settled && turn.status === 'blocked';

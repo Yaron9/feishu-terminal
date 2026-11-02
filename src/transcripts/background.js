@@ -6,6 +6,15 @@ const textOf = r => {
 };
 const short = s => String(s ?? '').replace(/\s+/g, ' ').slice(0, 180);
 export const emptyBackground = () => ({ running: [], finished: [], pending: {} });
+export function stopBackground(state, restartedAt = null) {
+  const cutoff = Date.parse(restartedAt);
+  const stopped = state.running.filter(t => !Number.isFinite(cutoff) || !Number.isFinite(Date.parse(t.startedAt)) || Date.parse(t.startedAt) < cutoff);
+  state.running = state.running.filter(t => !stopped.includes(t));
+  state.finished = [...state.finished, ...stopped.map(t => ({ ...t, status: 'stopped', finishedAt: restartedAt, exitCode: null }))].slice(-5);
+  for (const [id, t] of Object.entries(state.pending)) {
+    if (!Number.isFinite(cutoff) || !Number.isFinite(Date.parse(t.startedAt)) || Date.parse(t.startedAt) < cutoff) delete state.pending[id];
+  }
+}
 export function trackBackground(state, record) {
   if (record.isSidechain) return;
   const blocks = record.message?.content;
@@ -30,9 +39,12 @@ export function trackBackground(state, record) {
   for (const match of text.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)) {
     const field = name => new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`).exec(match[1])?.[1];
     const id = field('task-id'), status = field('status');
-    if (!id || !['completed', 'failed', 'killed'].includes(status) || state.finished.some(t => t.id === id)) continue;
+    if (/previous session ended/i.test(field('summary') ?? '')) stopBackground(state, record.timestamp);
+    if (!id || !status) continue;
     const index = state.running.findIndex(t => t.id === id);
-    const task = index < 0 ? { id, description: short(field('summary')), startedAt: null } : state.running.splice(index, 1)[0];
+    const previous = state.finished.find(t => t.id === id);
+    const task = index < 0 ? previous ?? { id, description: short(field('summary')), startedAt: null } : state.running.splice(index, 1)[0];
+    state.finished = state.finished.filter(t => t.id !== id);
     const exit = /exit code (-?\d+)/.exec(field('summary') ?? '');
     state.finished.push({ ...task, outputFile: field('output-file') ?? task.outputFile, status, exitCode: exit ? Number(exit[1]) : null, finishedAt: record.timestamp ?? null });
     state.finished = state.finished.slice(-5);
@@ -42,9 +54,9 @@ export function screenActivity(screen) {
   const lines = stripVTControlCharacters(String(screen)).split(/\r?\n/).map(s => s.trim());
   return { spinner: lines.filter(s => /^[✻✽✶✳✢·*]\s+\S/.test(s) && /(?:…|\.\.\.|\bfor \d+\s*s|tokens|thinking)/i.test(s)).at(-1)?.slice(0, 240) ?? '',
     footerCount: lines.reduce((count, s) => {
-      const m = /\b(\d+)\s+(?:shells?|tasks?)(?:\s+still running)?\b/i.exec(s);
+      const m = /\b(\d+)\s+(?:shells?|tasks?|agents?)(?:\s+still running)?\b/i.exec(s);
       return m && /auto mode|to manage|still running|done\b/i.test(s) ? Number(m[1]) : count;
-    }, null) };
+    }, lines.some(s => /^(?:⏵⏵\s+auto mode\b|.*(?:bypass permissions|accept edits)\s+(?:on|·)|\?\s+for shortcuts\b|[❯›]\s*$)/i.test(s)) ? 0 : null) };
 }
 export function backgroundView(background, screen, now) {
   const { footerCount } = screenActivity(screen);
