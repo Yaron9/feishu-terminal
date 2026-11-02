@@ -64,10 +64,13 @@ export class PanePicker {
     await b.log(event, { topicId: entry.bindingTopic ?? card.topicId, paneId: entry.paneId }, `picker_${action}`);
     if (action === 'cancel') { await finish('已取消'); return; }
     const binding = b.store.forPane(entry.paneId);
-    if (action === 'open' && binding) { await finish(`已绑定话题 ${binding.topicId}`); return; }
     if ((binding?.topicId ?? null) !== entry.bindingTopic || (binding?.generation ?? null) !== entry.generation ||
       (binding && binding.chatId !== event.chatId)) { await finish(CHANGED); return; }
     try {
+      if (action === 'open' && binding) {
+        await b.open(event, entry.paneId, entry.identity.terminalId);
+        await finish({ index: Number(match[2]), text: `已在话题「${b.label(pane)}」，已置顶` }); return;
+      }
       if (action === 'open') {
         const topicId = await b.open(event, entry.paneId, entry.identity.terminalId);
         const opened = b.store.binding(event.chatId, topicId);

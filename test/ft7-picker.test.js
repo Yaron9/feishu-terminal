@@ -39,11 +39,11 @@ test('picker opens a verified unbound pane in a new top-level topic and starts i
   assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 1);
 });
 
-test('open on a bound pane reports the topic and never creates or rebinds it', async t => {
+test('open on a bound pane resumes the topic and never creates or rebinds it', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   await h.bridge.handle(message('/t ls', 'list'));
   await click(h, 'open');
-  assert.match(result(h), /已绑定话题 m1/); noButtons(h);
+  assert.match(result(h), /已在话题「.*」，已置顶/); noButtons(h);
   assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
   assert.equal(h.store.list().length, 1);
 });

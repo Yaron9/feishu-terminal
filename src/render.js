@@ -59,7 +59,10 @@ export function pickerCard(card, result) {
     tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
     value: { topic_id: card.topicId, nonce: card.nonce, key: `picker:${action}:${index}` },
   })) });
-  if (result) elements.push(text(result));
+  if (result && typeof result === 'object') card.entries.forEach((entry, index) => {
+    elements.push(text(index === result.index ? result.text : entry.label));
+  });
+  else if (result) elements.push(text(result));
   else card.entries.forEach((entry, index) => {
     elements.push(text(card.kind === 'confirm' ? `确定关闭「${entry.label}」？里面的会话会结束` : entry.label));
     elements.push(buttons(card.kind === 'list' ? [['打开', 'open'], ['关闭', 'close']] :
@@ -71,11 +74,12 @@ export function pickerCard(card, result) {
     header: { template: 'blue', title: { tag: 'plain_text', content: card.kind === 'list' ? '选择终端' : '关闭终端' } }, elements };
 }
 
-export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text }) {
+export function screenCard({ paneId, label = paneId, topicId, nonce, status = 'unknown', text, note }) {
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
   const code = screenText(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/`/g, '`\u200b');
   const elements = [{ tag: 'markdown', content: '```text\n' + code + '\n```' }];
+  if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     for (let i = 0; i < BUTTONS.length; i += 3) elements.push({
       tag: 'action', actions: BUTTONS.slice(i, i + 3).map(([label, key]) => ({

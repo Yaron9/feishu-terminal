@@ -34,7 +34,7 @@ export class Bridge {
     for (const b of this.store.list()) {
       this.state(b);
       if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
-      if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && b.pendingCard)
+      if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
         await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
     }
     this.resubscribe();
@@ -242,8 +242,12 @@ export class Bridge {
     await this.picker.show(event);
   }
   async open(event, paneId, expectedTerminalId) {
+    return this.enqueue(() => this.openSerial(event, paneId, expectedTerminalId), `open:${paneId}`);
+  }
+  async openSerial(event, paneId, expectedTerminalId) {
     const existing = this.store.forPane(paneId);
-    if (existing && !existing.frozen) { await this.feishu.reply(event.topicId, `Already bound to topic ${existing.topicId}.`); return; }
+    if (existing && existing.chatId !== event.chatId) throw new Error('终端已变化，请重新 /t ls');
+    if (existing && !existing.frozen) return this.recoverOpen(event, existing, expectedTerminalId);
     const identity = await this.identity(paneId, Boolean(expectedTerminalId));
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
@@ -252,7 +256,8 @@ export class Bridge {
       this.runtime.delete(existing.topicId);
       await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
       if (existing.outputBatch || existing.discardedOutput) await this.feishu.reply(existing.topicId, '旧终端未发送完的输出已丢弃');
-      await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.'); return;
+      await this.feishu.reply(existing.topicId, 'Pane rebound; identity verified.');
+      return this.recoverOpen(event, this.store.binding(existing.chatId, existing.topicId), expectedTerminalId);
     }
     // A fresh top-level bot post is a topic root, even when /t open was a reply.
     const { panes } = await this.herdr.request('pane.list');
@@ -263,6 +268,29 @@ export class Bridge {
     await this.verify(this.store.binding(event.chatId, topicId));
     this.resubscribe(); this.state(this.store.binding(event.chatId, topicId));
     return topicId;
+  }
+  async recoverOpen(event, binding, expectedTerminalId) {
+    const label = await this.resumeTopic(binding, expectedTerminalId);
+    if (event.kind === 'message' && event.isReply && event.topicId !== binding.topicId)
+      await this.feishu.reply(event.topicId, `该终端已绑定在话题「${label}」，已为你置顶该话题`);
+    return binding.topicId;
+  }
+  async resumeTopic(binding, expectedTerminalId) {
+    return this.enqueue(async () => {
+      await this.verify(binding);
+      if (expectedTerminalId && binding.identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
+      // Reconcile an older pending publication before preparing another version.
+      if (this.store.binding(binding.chatId, binding.topicId).pendingCard) await this.publishCard(binding, true);
+      await this.retireCard(binding);
+      if (this.store.binding(binding.chatId, binding.topicId).retiredCardId) throw new Error('Previous card retirement pending');
+      await this.refresh(binding, true, false, true);
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      const pending = await this.prepareCard(current, true);
+      if (!await this.updateGeneration(current, { pendingCard: pending })) throw new Error('Binding changed');
+      await this.publishCard(current, true);
+      if (this.store.binding(current.chatId, current.topicId)?.nonce !== pending.nonce) throw new Error('Card publication incomplete');
+      return pending.card.header.title.content;
+    }, `card:${binding.topicId}`);
   }
   async input(binding, text) {
     await this.verify(binding);
@@ -366,23 +394,56 @@ export class Bridge {
   refreshCard(binding) {
     return this.enqueue(() => this.publishCard(binding), `card:${binding.topicId}`);
   }
-  async publishCard(binding) {
+  async prepareCard(binding, resume = false) {
+    const state = this.state(binding), nonce = randomUUID();
+    await this.verify(binding);
+    const { panes } = await this.herdr.request('pane.list');
+    const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
+    if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
+      ...(resume && binding.cardId ? { previousCardId: binding.cardId } : {}),
+      uuid: randomUUID(), signature: state.nextSignature,
+      card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
+        status: state.status, text: state.visible, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+  }
+  async retireCard(binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (!this.sameGeneration(binding, current) || !current.retiredCardId) return;
+    const state = this.state(binding);
+    if (this.now() < (state.retireRetryAt ?? 0)) return;
+    try {
+      await this.verify(current);
+      await this.feishu.patch(current.retiredCardId, {
+        config: { wide_screen_mode: true, update_multi: true },
+        elements: [{ tag: 'div', text: { tag: 'plain_text', content: '已移至下方新卡片' } }],
+      });
+    } catch (error) {
+      if (!['230011', '230031', '230110'].includes(String(error.code))) {
+        state.retireFailures = (state.retireFailures ?? 0) + 1;
+        state.retireRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.retireFailures - 1));
+        this.onError('card_retirement_failed'); return;
+      }
+    }
+    state.retireFailures = 0; state.retireRetryAt = 0;
+    await this.store.transaction(data => {
+      const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+      if (this.sameGeneration(binding, b) && b.retiredCardId === current.retiredCardId) delete b.retiredCardId;
+    });
+  }
+  async publishCard(binding, immediate = false) {
     const state = this.state(binding), now = this.now();
     const current = this.store.binding(binding.chatId, binding.topicId);
     if (!this.sameGeneration(binding, current)) return;
     binding = current;
     if (!binding || binding.frozen || !state.verified) return;
+    await this.retireCard(binding);
     // A manual screen request and a blocked notification still obey 1 Hz.
-    if (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0) && (state.cardPending || binding.pendingCard)) {
+    // Explicit recovery posts a new reply immediately to bring its topic forward.
+    if ((immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0))) && (state.cardPending || binding.pendingCard)) {
       await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
-        const nonce = randomUUID();
-        const { panes } = await this.herdr.request('pane.list');
-        const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
-        if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
-        pending = { nonce, createdAt: now, targetId: binding.cardId ?? null, uuid: randomUUID(), signature: state.nextSignature,
-          card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce, status: state.status, text: state.visible }) };
+        pending = await this.prepareCard(binding);
         if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
       }
       try {
@@ -410,8 +471,12 @@ export class Bridge {
         // version always has a fresh nonce; consumed versions are never reused.
         await this.store.transaction(data => {
           const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
-          if (b?.pendingCard?.nonce === pending.nonce) Object.assign(b, { cardId, nonce: pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null });
+          if (this.sameGeneration(binding, b) && b.pendingCard?.nonce === pending.nonce) {
+            Object.assign(b, { cardId, nonce: pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null });
+            if (pending.previousCardId && pending.previousCardId !== cardId) b.retiredCardId = pending.previousCardId;
+          }
         });
+        await this.retireCard(binding);
       } catch (error) {
         state.cardFailures = (state.cardFailures ?? 0) + 1;
         state.cardRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.cardFailures - 1));
