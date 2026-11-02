@@ -13,7 +13,13 @@ export async function loadConfig(env = process.env) {
   if (!await stat(config.defaultCwd).then(info => info.isDirectory(), () => false)) throw new Error('defaultCwd must be an existing directory');
   // Credentials are never read from JSON, nor returned as part of the config.
   if ('appId' in config || 'appSecret' in config || 'FEISHU_APP_SECRET' in config) throw new Error('Credentials belong only in env/.env');
+  const backends = config.backends ?? ['hc', 'herdr'];
+  const newTerminalBackend = config.newTerminalBackend ?? 'hc', sessionFollow = config.sessionFollow ?? 'newest';
+  if (!Array.isArray(backends) || !backends.length || new Set(backends).size !== backends.length ||
+      !backends.every(b => ['hc', 'herdr'].includes(b)) || !backends.includes(newTerminalBackend) ||
+      !['newest', 'warn'].includes(sessionFollow)) throw new Error('Invalid backend/sessionFollow configuration');
   return { chatIds: config.chatIds, operatorOpenIds: config.operatorOpenIds, defaultCwd: config.defaultCwd,
+    backends, newTerminalBackend, sessionFollow,
     stateFile: resolve(dirname(filename), config.stateFile || join(homedir(), '.local/state/feishu-terminal/bridge.json')),
     auditFile: resolve(dirname(filename), config.auditFile || join(homedir(), '.local/state/feishu-terminal/audit.jsonl')) };
 }

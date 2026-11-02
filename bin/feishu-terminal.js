@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { loadConfig } from '../src/config.js';
 import { Store } from '../src/store.js';
-import { HerdrClient, monitorHerdr } from '../src/herdr-client.js';
+import { createBackends } from '../src/backends/index.js';
 import { Feishu } from '../src/feishu.js';
 import { Bridge } from '../src/bridge.js';
 import { acquireLock } from '../src/instance-lock.js';
@@ -44,9 +44,9 @@ async function main() {
   await mkdir(dirname(lockFile), { recursive: true, mode: 0o700 });
   releaseLock = await acquireLock(lockFile);
   const store = await new Store(config.stateFile).load();
-  const herdr = new HerdrClient();
-  stopHerdrProbe = monitorHerdr(herdr);
-  bridge = new Bridge({ herdr, feishu: new Feishu({ appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET }),
+  const backend = createBackends(config, { onError: code => console.error(code) });
+  await backend.list(); // Safe startup probe; one backend may be unavailable.
+  bridge = new Bridge({ backend, feishu: new Feishu({ appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET }),
     store, config, onError: code => console.error(code) });
   await bridge.start();
   console.log('feishu-terminal running');

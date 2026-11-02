@@ -10,7 +10,7 @@ export async function paneProcess(paneId, comm, procRoot = '/proc') {
       const base = join(procRoot, pid);
       if ((await readFile(join(base, 'comm'), 'utf8')).trim() !== comm) continue;
       const env = (await readFile(join(base, 'environ'), 'utf8')).split('\0');
-      if (!env.includes(`HERDR_PANE_ID=${paneId}`)) continue;
+      if (!env.includes(paneId.startsWith('hc:') ? `HC_TERMINAL_ID=${paneId.slice(3)}` : `HERDR_PANE_ID=${paneId}`)) continue;
       const stat = await readFile(join(base, 'stat'), 'utf8');
       const start = Number(stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/)[19]);
       if (Number.isFinite(start)) matches.push({ pid: Number(pid), start });

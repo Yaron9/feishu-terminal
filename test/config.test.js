@@ -33,6 +33,24 @@ test('config rejects a missing cwd and a regular file as cwd', async t => {
   }
 });
 
+test('backend and session-follow defaults are explicit; invalid combinations fail closed', async t => {
+  const dir = await mkdtemp(new URL('../.test-config-ft25-', import.meta.url));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'config.json');
+  const base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: dir };
+  const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture', FEISHU_TERMINAL_CONFIG: file };
+  await writeFile(file, JSON.stringify(base)); const defaults = await loadConfig(env);
+  assert.deepEqual(defaults.backends, ['hc', 'herdr']); assert.equal(defaults.newTerminalBackend, 'hc'); assert.equal(defaults.sessionFollow, 'newest');
+  for (const invalid of [{ backends: [] }, { backends: ['hc', 'hc'] }, { backends: ['other'] },
+    { backends: ['herdr'] }, { newTerminalBackend: 'other' }, { sessionFollow: 'kill' }]) {
+    await writeFile(file, JSON.stringify({ ...base, ...invalid })); await assert.rejects(loadConfig(env), /backend/);
+  }
+  await writeFile(file, JSON.stringify({ ...base, backends: ['hc'], sessionFollow: 'warn' }));
+  assert.deepEqual((await loadConfig(env)).backends, ['hc']);
+  await writeFile(file, JSON.stringify({ ...base, backends: ['herdr'], newTerminalBackend: 'herdr' }));
+  assert.equal((await loadConfig(env)).newTerminalBackend, 'herdr');
+});
+
 test('instance lock refuses a live owner, releases cleanly, recovers a terminated PID and fails closed on corruption', async t => {
   const dir = await mkdtemp(new URL('../.test-lock-', import.meta.url));
   t.after(() => rm(dir, { recursive: true, force: true }));

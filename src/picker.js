@@ -9,18 +9,22 @@ const EXPIRED = '卡片已过期，请重新 /t ls';
 // One nonce covers all buttons on a card; an action invalidates every sibling.
 export class PanePicker {
   constructor(bridge) { this.bridge = bridge; }
+  details(pane, options) {
+    const details = paneDetails(pane, options);
+    return { ...details, summary: `${pane.backendLabel ? pane.backendLabel + ' · ' : ''}${details.summary}` };
+  }
   async entry(pane, chatId) {
     const b = this.bridge.store.forPane(pane.pane_id);
     const topic = b?.chatId === chatId ? await this.bridge.topicDescription(b) : null;
-    return { paneId: pane.pane_id, label: this.bridge.label(pane),
-      ...paneDetails(pane, { bound: Boolean(b), frozen: Boolean(b?.frozen), owned: this.bridge.store.data.createdTerminals?.includes(pane.terminal_id) }),
+    return { paneId: pane.pane_id, label: `${pane.backendLabel ? pane.backendLabel + ' · ' : ''}${this.bridge.label(pane)}`,
+      ...this.details(pane, { bound: Boolean(b), frozen: Boolean(b?.frozen), owned: this.bridge.store.data.createdTerminals?.includes(pane.terminal_id) }),
       topicDescription: topic, canMove: Boolean(topic),
-      identity: (!b?.frozen && b?.identity) || { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id },
+      identity: (!b?.frozen && b?.identity) || this.bridge.backend.identity(pane),
       bindingTopic: b?.topicId ?? null, generation: b?.generation ?? null };
   }
   async show(event, binding) {
     const b = this.bridge;
-    const { panes } = await b.herdr.request('pane.list');
+    const panes = await b.backend.list();
     const selected = binding ? panes.filter(p => p.pane_id === binding.paneId) : panes;
     if (binding && !selected.length) { await b.feishu.reply(event.topicId, CHANGED); return; }
     const card = { kind: binding ? 'close' : 'list', chatId: event.chatId, topicId: event.topicId,
@@ -42,7 +46,7 @@ export class PanePicker {
   }
   async verify(entry) {
     const b = this.bridge;
-    const { panes } = await b.herdr.request('pane.list');
+    const panes = await b.backend.list();
     const pane = panes.find(p => p.pane_id === entry.paneId);
     if (!pane || !entry.identity?.terminalId || pane.terminal_id !== entry.identity.terminalId) throw new Error(CHANGED);
     let identity;
@@ -101,13 +105,13 @@ export class PanePicker {
         pane = await this.verify(entry);
         const owned = b.store.data.createdTerminals?.includes(pane.terminal_id);
         if (card.kind !== 'confirm' && (!owned || (pane.agent && ['working', 'blocked'].includes(pane.agent_status)))) {
-          await this.replace(card, 'confirm', { ...entry, label: b.label(pane), ...paneDetails(pane) }); return;
+          await this.replace(card, 'confirm', { ...entry, label: b.label(pane), ...this.details(pane) }); return;
         }
         const latest = b.store.forPane(entry.paneId);
         if ((latest?.generation ?? null) !== entry.generation || (latest?.topicId ?? null) !== entry.bindingTopic) {
           await finish(CHANGED); return;
         }
-        await b.herdr.request('pane.close', { pane_id: entry.paneId });
+        await b.backend.close(entry.paneId);
       }
       if (binding) {
         const removed = await b.store.transaction(data => {

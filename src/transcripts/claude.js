@@ -37,7 +37,16 @@ export function claudeItems(record, offset = 0) {
 export class ClaudeTranscript {
   constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.transcriptTurns = true; this.backgrounds = new Map(); this.sessions = new Map(); }
   async locate(pane) {
-    const pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
+    // A remote PID belongs to a different /proc namespace.
+    if (/^hc:[^/]+\//.test(pane.pane_id)) return null;
+    // hc exposes the actual foreground PID. Validate it before opening the
+    // exact session JSON, with the environment-based legacy lookup as fallback.
+    let pid = pane.foreground?.pid ?? pane.foreground_pid;
+    if (pid) {
+      try { if ((await readFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() !== 'claude') pid = null; }
+      catch { pid = null; }
+    }
+    if (!pid) pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
     if (!pid) return null;
     try {
       // Exact .json filename only. Never enumerate or open the adjacent *.key files.

@@ -2,6 +2,9 @@
   "chatIds": ["oc_REPLACE_WITH_ONE_GROUP_ID"],
   "operatorOpenIds": ["ou_REPLACE_WITH_OPERATOR_OPEN_ID"],
   "defaultCwd": "/home/REPLACE_WITH_USER",
+  "backends": ["hc", "herdr"],
+  "newTerminalBackend": "hc",
+  "sessionFollow": "newest",
   "stateFile": "./state/bridge.json",
   "auditFile": "./state/audit.jsonl"
 }

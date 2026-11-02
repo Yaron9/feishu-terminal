@@ -45,6 +45,12 @@ export async function fakeHerdr() {
           case 'tab.create': result = { type: 'tab_created', root_pane: create() }; break;
           case 'pane.list': result = { type: 'pane_list', panes: [...panes.values()] }; break;
           case 'pane.get': if (pane) result = { type: 'pane_info', pane }; else error = 'pane_not_found'; break;
+          case 'pane.process_info':
+            if (!pane) { error = 'pane_not_found'; break; }
+            result = { type: 'pane_process_info', process_info: { pane_id: pane.pane_id,
+              foreground_process_group_id: pane.foreground_pid ?? pane.pid ?? null,
+              foreground_processes: pane.foreground_pid || pane.pid ? [{ pid: pane.foreground_pid ?? pane.pid, name: pane.agent ?? 'sh' }] : [] } };
+            break;
           case 'agent.list': result = { type: 'agent_list', agents: [...panes.values()].filter(pane => pane.agent) }; break;
           case 'agent.prompt':
             if (pane?.agent_status === 'blocked') error = 'agent_blocked';
