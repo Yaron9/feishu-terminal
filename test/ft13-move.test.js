@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, pickerEvent } from './helpers.js';
+import { legacyHarness as harness, message, pickerEvent } from './helpers.js';
 import { route } from '../src/router.js';
 import { messageEvent } from '../src/feishu.js';
 
-const sends = h => h.feishu.calls.filter(c => c.type === 'send' && c.text.startsWith('终端：'));
+const sends = h => h.feishu.calls.filter(c => c.type === 'send' && typeof c.text === 'object' && c.text.schema === '2.0');
 const conversation = h => h.feishu.calls.filter(c => c.type === 'reply' && c.content?.schema === '2.0');
 const patched = h => h.feishu.calls.filter(c => c.type === 'patch').at(-1).card;
 const buttons = card => card.elements.flatMap(e => e.actions ?? []);
@@ -41,7 +41,7 @@ test('picker move rotates topic, generation, nonce and card, consumes its nonce 
   assert.notEqual(current.cardId, old.cardId); assert.notEqual(current.nonce, old.nonce);
   assert.equal(current.pendingCard, null); assert.equal(current.outputBatch, null);
   assert.equal(current.lastTranscript, old.lastTranscript);
-  assert.match(sends(h)[0].text, /^终端：/);
+  assert.equal(sends(h)[0].text.schema, '2.0');
   assert.ok(h.feishu.calls.some(c => c.type === 'reply' && c.topicId === current.topicId && c.msgType === 'interactive'));
   assert.ok(h.feishu.calls.some(c => c.type === 'reply' && c.topicId === old.topicId && /^已移到新话题「/.test(c.content)));
   assert.match(JSON.stringify(patched(h)), /已移到新话题，在列表最上面/);
@@ -155,7 +155,7 @@ test('legacy state lazily migrates real root text/time without changing transcri
   assert.equal(h.bridge.store.forPane('w1:p1').transcript.cursor.offset, 42);
   assert.equal(h.bridge.store.forPane('w1:p1').topicRoot.text.length, 43);
   await click(h, 'move'); assert.equal(h.bridge.store.forPane('w1:p1').transcript.cursor.offset, 42);
-  await h.restart(); assert.ok(h.bridge.store.forPane('w1:p1').topicRoot.text.startsWith('终端：'));
+  await h.restart(); assert.equal(h.bridge.store.forPane('w1:p1').topicRoot.type, 'interactive');
 });
 
 test('missing legacy root metadata never prevents move and does not invent a timestamp', async t => {

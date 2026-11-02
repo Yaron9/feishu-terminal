@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { detectMenu, resumeWarnings } from '../src/menus.js';
 import { menuCard } from '../src/render.js';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 import { resume, numbered, model, config } from './fixtures/ft17-menus.js';
 
 const buttons = card => !card || typeof card !== 'object' ? [] :

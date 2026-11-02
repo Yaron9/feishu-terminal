@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, pickerEvent, outputReplies } from './helpers.js';
+import { legacyHarness as harness, message, pickerEvent, outputReplies } from './helpers.js';
 
 const writes = fake => fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
 const records = outputReplies;
 const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive') && !(c.card ?? c.content)?.schema);
 
-test('new post creates workspace/pane, binds original root, and sends first shell input in order', async t => {
+test('legacy-root fixture creates workspace/pane and sends first shell input in order', async t => {
   const h = await harness(t);
   await h.bridge.handle(message('echo hello'));
   const binding = h.store.binding('oc_test', 'm1'); assert.equal(binding.paneId, 'w1:p1');

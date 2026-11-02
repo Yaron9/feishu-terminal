@@ -135,7 +135,21 @@ export function pickerEvent(h, action, index = 0, override = {}) {
     topicId: card.topicId, messageId: card.messageId, nonce: card.nonce, key: `picker:${action}:${index}`, ...override };
 }
 
-export async function harness(t, bridgeOptions = {}) {
+// Existing regression suites explicitly exercise pre-ft19 user-root bindings.
+// New-topic behavior is tested through the unmodified Bridge in harness().
+class LegacyFixtureBridge extends Bridge {
+  async createTopic(event, action) {
+    const pane = await this.createPane(), identity = await this.identity(pane.pane_id);
+    await this.store.bind({ chatId: event.chatId, topicId: event.messageId, paneId: pane.pane_id, identity,
+      topicRoot: { text: event.text, createdAt: Number.isFinite(event.createdAt) ? event.createdAt : this.now() } });
+    const binding = this.store.binding(event.chatId, event.messageId);
+    await this.verify(binding); this.resubscribe();
+    await this.log(event, binding, 'first_input', action.text);
+    await this.input(binding, action.text);
+  }
+}
+export const legacyHarness = (t, options = {}) => harness(t, { ...options, BridgeClass: LegacyFixtureBridge });
+export async function harness(t, { BridgeClass = Bridge, ...bridgeOptions } = {}) {
   const temp = await mkdtemp(new URL('../.test-', import.meta.url));
   const fake = await fakeHerdr();
   let time = 0;
@@ -143,7 +157,7 @@ export async function harness(t, bridgeOptions = {}) {
   const store = await new Store(join(temp, 'state.json')).load();
   const feishu = mockFeishu(now), audits = [], errors = [];
   const config = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: '/tmp', stateFile: store.file, auditFile: join(temp, 'audit.jsonl') };
-  const makeBridge = state => new Bridge({ herdr: new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 300, reconnectMs: 10 }), feishu,
+  const makeBridge = state => new BridgeClass({ herdr: new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 300, reconnectMs: 10 }), feishu,
     store: state, config, now, audit: async record => audits.push(record), onError: code => errors.push(code), ...bridgeOptions });
   let bridge = makeBridge(store); await bridge.start({ timers: false });
   t.after(async () => { await bridge.stop(); await fake.close(); await rm(temp, { recursive: true, force: true }); });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 
 test('rebind discards partly sent output with a note and tags new batches with its generation', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd'));

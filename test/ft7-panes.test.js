@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { paneLabel } from '../src/panes.js';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 
 test('pane summaries use titles, Chinese agent states, home paths, ownership and binding with id last', () => {
   const pane = { pane_id: 'w1:p2', terminal_title_stripped: 'Metame 飞书双端同步', foreground_cwd: '/home/me', agent: 'claude' };
@@ -31,7 +31,7 @@ test('screen and topic headers use pane summaries and ownership persists after u
   await h.restart();
   assert.match(h.bridge.label(h.fake.panes.get('w1:p1')), /从飞书新开 · 未绑定/);
   await h.bridge.handle(message('/t open w1:p1', 'open'));
-  assert.match(h.feishu.calls.find(c => c.type === 'send').text, /^终端：New title · 命令行/);
+  assert.equal(h.feishu.calls.find(c => c.type === 'send').text.header.title.content, 'New title');
   const desktop = h.fake.create();
   assert.match(h.bridge.label(desktop), /电脑端已有 · 未绑定/);
 });

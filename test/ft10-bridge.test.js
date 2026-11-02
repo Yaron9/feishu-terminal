@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, appendFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ClaudeTranscript } from '../src/transcripts/claude.js';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 
 const user = text => JSON.stringify({ type: 'user', uuid: text, message: { content: text } }) + '\n';
 const assistant = text => JSON.stringify({ type: 'assistant', uuid: text, message: { content: [

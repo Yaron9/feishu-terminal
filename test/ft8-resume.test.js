@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { harness, message, pickerEvent } from './helpers.js';
+import { legacyHarness as harness, message, pickerEvent } from './helpers.js';
 
 const screens = h => h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive' && !c.content.header?.title.content.startsWith('终端列表'));
 const writes = h => h.fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt', 'pane.close'].includes(c.method));

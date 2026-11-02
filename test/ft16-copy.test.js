@@ -6,7 +6,7 @@ import { allCards } from './fixtures/ft16-samples.js';
 import { screenControls, stripChrome, outputCard, screenCard, turnCard } from '../src/render.js';
 import { HELP } from '../src/router.js';
 import { WELCOME } from '../src/setup.js';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 
 const buttons = card => {
   if (!card || typeof card !== 'object') return [];

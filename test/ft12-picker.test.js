@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, pickerEvent } from './helpers.js';
+import { legacyHarness as harness, message, pickerEvent } from './helpers.js';
 
 const kills = h => h.fake.calls.filter(c => c.method === 'pane.close');
 const patches = h => h.feishu.calls.filter(c => c.type === 'patch');

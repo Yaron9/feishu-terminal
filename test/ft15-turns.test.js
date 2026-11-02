@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 import { turnCard } from '../src/render.js';
 import { turnChunks } from '../src/turns.js';
 

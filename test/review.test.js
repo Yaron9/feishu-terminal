@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { harness, message, eventually, outputReplies } from './helpers.js';
+import { legacyHarness as harness, message, eventually, outputReplies } from './helpers.js';
 
 const writes = h => h.fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt', 'pane.close'].includes(c.method));
 const texts = h => outputReplies(h.feishu);

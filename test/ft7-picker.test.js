@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { actionEvent } from '../src/feishu.js';
-import { harness, message, pickerEvent } from './helpers.js';
+import { legacyHarness as harness, message, pickerEvent } from './helpers.js';
 
 const kills = h => h.fake.calls.filter(c => c.method === 'pane.close');
 const patches = h => h.feishu.calls.filter(c => c.type === 'patch');
@@ -33,7 +33,7 @@ test('picker opens a verified unbound pane in a new top-level topic and starts i
   const binding = h.store.forPane('w1:p1');
   assert.equal(binding.topicId, h.feishu.calls.find(c => c.type === 'send').id);
   assert.notEqual(binding.topicId, 'existing-topic');
-  assert.match(h.feishu.calls.find(c => c.type === 'send').text, /^终端：/);
+  assert.equal(h.feishu.calls.find(c => c.type === 'send').text.schema, '2.0');
   assert.ok(binding.cardId); assert.match(result(h), /已打开话题/); noButtons(h);
   await h.bridge.handle({ ...event, eventId: 'replay' });
   assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 1);

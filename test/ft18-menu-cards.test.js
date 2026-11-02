@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { menuCard } from '../src/render.js';
 import { detectMenu } from '../src/menus.js';
-import { harness, message } from './helpers.js';
+import { legacyHarness as harness, message } from './helpers.js';
 import { resume, model } from './fixtures/ft17-menus.js';
 
 const bound = h => h.bridge.store.forPane('w1:p1');
