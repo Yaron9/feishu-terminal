@@ -8,7 +8,7 @@ import { FeishuError } from '../src/feishu.js';
 import { fakeHerdr } from './helpers.js';
 
 async function run(t, { badReadback = false, missedInterrupt = false, wsFailed = false,
-  historyDenied, perIdDenied = false, scroll } = {}) {
+  historyDenied, perIdDenied = false, scroll, schema2Fallback = false, invalidDelivery } = {}) {
   const dir = await mkdtemp(new URL('../.test-selftest-', import.meta.url));
   const fake = await fakeHerdr();
   t.after(async () => { await fake.close(); await rm(dir, { recursive: true, force: true }); });
@@ -34,6 +34,23 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
       return result;
     } };
   const messages = new Map(), logs = [], readCalls = []; let sequence = 0, time = 0, closeCount = 0, patchCount = 0, historyCalls = 0;
+  const readback = (original, validateDelivery = true) => {
+    const message = structuredClone(original);
+    const card = JSON.parse(message.body.content);
+    if (schema2Fallback && card.schema === '2.0') {
+      // Feishu returns only this legacy fallback shape for schema-2.0 cards.
+      message.body.content = JSON.stringify({ title: card.header.title.content, elements: [[
+        { tag: 'img', image_key: 'img_fixture' },
+        { tag: 'text', text: '请升级至最新版本客户端，以查看内容' },
+      ]] });
+      if (validateDelivery && invalidDelivery === 'title') message.body.content = JSON.stringify({ title: '[selftest] 💻 当前屏幕' });
+      if (validateDelivery && invalidDelivery === 'thread') message.thread_id = 'omt_other';
+      if (validateDelivery && invalidDelivery === 'type') message.msg_type = 'text';
+      if (validateDelivery && invalidDelivery === 'id') message.message_id = 'om_other';
+    }
+    if (badReadback) message.body.content = '{}';
+    return message;
+  };
   const feishu = {
     ws: { getConnectionStatus: () => ({ state: wsFailed ? 'failed' : 'connected' }) },
     async start() {}, close() { closeCount++; },
@@ -50,14 +67,13 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
       readCalls.push(['get', id]);
       // Keep the root lookup available so denial exercises Bridge output readback.
       if (perIdDenied && id !== 'om_1') throw new FeishuError(230027);
-      const message = structuredClone(messages.get(id));
-      if (badReadback) message.body.content = '{}';
-      return message;
+      return readback(messages.get(id));
     },
     async threadMessages() {
       historyCalls++; readCalls.push(['list']);
       if (historyDenied) throw new FeishuError(historyDenied);
-      return badReadback ? [] : structuredClone([...messages.values()]);
+      // History must not mask an invalid per-id delivery response.
+      return badReadback ? [] : [...messages.values()].map(message => readback(message, false));
     },
   };
   const code = await selftest({ config: { chatIds: ['oc_fixture'], operatorOpenIds: ['ou_fixture'], defaultCwd: '/tmp' },
@@ -82,6 +98,30 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   for (const message of r.messages.values()) {
     if (!message.body.content.includes('synthetic inbound:')) assert.ok(readIds.has(message.message_id));
   }
+});
+
+for (const historyDenied of [undefined, 230027, 99991672, 99991676]) {
+  test(`selftest verifies schema-2.0 fallback cards with history denial ${historyDenied}`, async t => {
+    const r = await run(t, { schema2Fallback: true, historyDenied });
+    assert.equal(r.code, 0, r.logs.join('\n'));
+    assert.equal(r.logs.filter(line => line.startsWith('PASS')).length, 10);
+    assert.equal(r.logs.filter(line => line === 'NOTE card body not readable via API (schema 2.0); verified sent payload + delivered message id').length, 1);
+    if (historyDenied) assert.equal(r.historyCalls, 1);
+  });
+}
+
+for (const invalidDelivery of ['title', 'thread', 'type', 'id']) {
+  test(`selftest rejects schema-2.0 fallback with incorrect delivered ${invalidDelivery}`, async t => {
+    const r = await run(t, { schema2Fallback: true, invalidDelivery });
+    assert.equal(r.code, 1);
+    assert.ok(r.logs.includes('FAIL echo -> topic output read back'));
+  });
+}
+
+test('selftest schema-2.0 fallback still requires the expected token in the sent output', async t => {
+  const r = await run(t, { schema2Fallback: true, missedInterrupt: true });
+  assert.equal(r.code, 1);
+  assert.ok(r.logs.includes('FAIL /t k ctrl+c (interrupt verified)'));
 });
 
 for (const offset of [0, 3]) {

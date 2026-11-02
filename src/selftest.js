@@ -26,7 +26,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
     feishu.close(); herdr.close(); return 1;
   }
   print(`SELFTEST herdr ${endpointLabel(herdr.endpoint ?? (socket ? { path: socket } : endpointFromEnv(env)))}; may differ from the service's endpoint.`);
-  const owned = new Set(), replies = new Set(), sent = new Set();
+  const owned = new Set(), replies = new Set(), sent = new Set(), sentCards = new Map();
   let bridge, temp, failed = false, activeStep = 'initialize', patches = 0, patchIds = [];
   const runStep = async (name, fn) => { activeStep = name; signal?.throwIfAborted(); await fn(); print(`PASS ${name}`); };
   const waitFor = test => until(test, { timeoutMs, sleep, now, signal });
@@ -38,10 +38,16 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       sent.add(id); return id;
     },
     async reply(topic, content, type = 'text', uuid) {
-      const id = await feishu.reply(topic, type === 'text' ? '[selftest] ' + content : labelCard(content), type, uuid);
+      const payload = type === 'text' ? '[selftest] ' + content : labelCard(content);
+      const snapshot = type === 'interactive' ? structuredClone(payload) : null;
+      const id = await feishu.reply(topic, payload, type, uuid);
+      if (snapshot) sentCards.set(id, snapshot);
       sent.add(id); replies.add(id); return id;
     },
-    async patch(id, card) { await feishu.patch(id, labelCard(card)); patches++; patchIds.push(id); },
+    async patch(id, card) {
+      const payload = labelCard(card), snapshot = structuredClone(payload);
+      await feishu.patch(id, payload); sentCards.set(id, snapshot); patches++; patchIds.push(id);
+    },
     close() { feishu.close(); },
   };
   const terminal = {
@@ -91,11 +97,22 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       }
       return messages;
     };
-    let historyDenied = false;
+    let historyDenied = false, cardBodyNote = false;
+    const deliveredCard = (message, card) => {
+      const body = JSON.parse(message.body?.content || '{}');
+      if (message.msg_type !== 'interactive' || message.thread_id !== threadId ||
+          (body.title ?? body.header?.title?.content) !== card.header.title.content) return false;
+      if (!cardBodyNote) {
+        print('NOTE card body not readable via API (schema 2.0); verified sent payload + delivered message id');
+        cardBodyNote = true;
+      }
+      return true;
+    };
     const readback = async text => {
       await bridge.tick();
       // Per-id reads verify our own replies/cards without depending on group history.
       const messages = await readSent();
+      const byId = new Map(messages.map(message => [message.message_id, message]));
       if (!historyDenied) {
         try { messages.push(...await feishu.threadMessages(threadId)); }
         catch (error) {
@@ -108,6 +125,12 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       // the echo command, synthetic input label or an on-demand screen card.
       return messages.some(m => {
         if (!replies.has(m.message_id)) return false;
+        const card = sentCards.get(m.message_id);
+        if (card?.schema === '2.0') {
+          return card.header.title.content === '[selftest] 💻 输出' &&
+            card.body?.elements?.[0]?.content?.split(/\r?\n/).some(line => line.trim() === text) &&
+            deliveredCard(byId.get(m.message_id), card);
+        }
         const body = JSON.parse(m.body?.content || '{}');
         const output = m.msg_type === 'text' ? body.text :
           m.msg_type === 'interactive' && body.header?.title?.content === '[selftest] 💻 输出'
@@ -141,6 +164,9 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
         const binding = store.binding(config.chatIds[0], root);
         if (patches <= before || !patchIds.includes(binding.cardId)) return false;
         const card = await feishu.getMessage(binding.cardId);
+        const payload = sentCards.get(binding.cardId);
+        if (payload?.schema === '2.0') return card.message_id === binding.cardId &&
+          JSON.stringify(payload).includes(patchMarker) && deliveredCard(card, payload);
         return card.msg_type === 'interactive' && JSON.stringify(card.body).includes(patchMarker);
       });
     });
