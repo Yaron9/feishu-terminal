@@ -1,4 +1,4 @@
-import { stripVTControlCharacters } from 'node:util';
+import { stripVTControlCharacters } from './ansi.js';
 import { detectMenu, menuControls } from './menus.js';
 import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
 

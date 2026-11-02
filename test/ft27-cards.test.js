@@ -18,6 +18,9 @@ async function outputFixture(t) {
 }
 
 test('tail selects latest nonempty line, strips ANSI/control/binary garbage and bounds display columns', () => {
+  assert.equal(extractBackgroundTail('\x1b[31mok\x07'), 'ok');
+  assert.equal(extractBackgroundTail('\x1b]0;title\x07rest'), 'rest');
+  assert.equal(extractBackgroundTail('\x1b]0;title\x1b\\\x1b[31mok\x07\x1b[0m\x9b32m\x1bM rest\x00\x85'), 'ok rest');
   assert.equal(extractBackgroundTail('old\n\x1b[31m# pass 288\x1b[0m\x07\n \n'), '# pass 288');
   assert.equal(extractBackgroundTail('\n \n\x00\x7f\ufffd'), '');
   assert.equal(extractBackgroundTail('x'.repeat(100)), 'x'.repeat(80));

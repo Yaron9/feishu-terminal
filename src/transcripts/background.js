@@ -1,7 +1,7 @@
 import { open, realpath, lstat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { posix, sep } from 'node:path';
-import { stripVTControlCharacters } from 'node:util';
+import { stripVTControlCharacters } from '../ansi.js';
 
 const textOf = r => {
   const c = r.message?.content ?? r.content ?? '';

@@ -1,4 +1,4 @@
-import { stripVTControlCharacters } from 'node:util';
+import { stripVTControlCharacters } from './ansi.js';
 
 const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
 const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|选择|设置|恢复会话)/i;
