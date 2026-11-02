@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, userCard, outputCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard } from './render.js';
+import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { transcriptAdapters } from './transcripts/index.js';
 import { paneSubscriptions } from './herdr-client.js';
 import { readPane } from './pane-read.js';
@@ -278,22 +279,8 @@ export class Bridge {
     const { items, cursor } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
     if (JSON.stringify(cursor) === JSON.stringify(checkpoint.cursor)) return null;
     const inputs = (current.sentInputs ?? []).filter(item => item.expires > this.now());
-    const consumedInputs = [], chunks = [];
-    let text = [], tools = [];
-    const reply = () => {
-      if (text.length || tools.length) chunks.push({ card: assistantCard(text.join('\n\n'), tools, this.agentName(source.key)), uuid: randomUUID() });
-      text = []; tools = [];
-    };
-    for (const item of items) {
-      if (item.role === 'user') {
-        reply();
-        const index = inputs.findIndex(input => input.hash === this.inputHash(item.text));
-        if (index !== -1) consumedInputs.push(inputs.splice(index, 1)[0].id);
-        else chunks.push({ card: userCard(item.text), uuid: randomUUID() });
-      } else if (item.role === 'assistant') text.push(item.text);
-      else if (item.role === 'tool') tools.push(item.text);
-    }
-    reply();
+    const { chunks, consumedInputs } = turnChunks(items, current.turn, source,
+      this.agentName(source.key), state.status, inputs, text => this.inputHash(text));
     return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs,
       transcript: { adapter: source.key, path: source.path, cursor } };
   }
@@ -334,7 +321,8 @@ export class Bridge {
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
       await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
-        lastTranscript: undefined, transcript: null, sentInputs: [], nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
+        lastTranscript: undefined, transcript: null, turn: null, cardTurnId: null, cardSignature: null,
+        sentInputs: [], nonce: randomUUID(), pendingCard: null, outputBatch: null, discardedOutput: false });
       this.runtime.delete(existing.topicId);
       await this.verify(this.store.binding(existing.chatId, existing.topicId)); this.resubscribe();
       if (existing.outputBatch || existing.discardedOutput) await this.feishu.reply(existing.topicId, '旧终端未发送完的输出已丢弃');
@@ -380,38 +368,46 @@ export class Bridge {
       if (!binding || binding.chatId !== event.chatId || (expected &&
         (expected.bindingTopic !== binding.topicId || expected.generation !== binding.generation)))
         throw new Error('终端已变化，请重新 /t ls');
-      return this.enqueue(() => this.enqueue(async () => {
+      return this.enqueue(async () => {
         await this.verify(binding);
         if (this.store.binding(binding.chatId, binding.topicId).outputBatch) {
           await this.flush(binding);
           if (this.store.binding(binding.chatId, binding.topicId).outputBatch) throw new Error('Output delivery pending');
         }
-        const { panes } = await this.herdr.request('pane.list');
-        const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
-        if (!pane) throw new Error('终端已变化，请重新 /t ls');
-        const text = `终端：${this.label(pane)}`, createdAt = this.now();
-        await this.verify(binding);
-        const topicId = await this.feishu.send(event.chatId, text);
-        await this.verify(binding);
-        const moved = await this.store.transaction(data => {
-          const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
-          if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
-          Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
-            cardCreatedAt: null, pendingCard: null, retiredCardId: undefined, outputBatch: null,
-            topicRoot: { text, createdAt } });
-          return structuredClone(current);
-        });
-        const state = this.state(binding);
-        this.runtime.delete(binding.topicId);
-        this.runtime.set(topicId, { ...state, verified: false, lastCard: -Infinity, cardRetryAt: 0,
-          retireRetryAt: 0, cardPending: true, dirty: true });
-        await this.verify(moved); this.resubscribe();
-        try { await this.refresh(moved, true); }
-        finally {
-          await this.feishu.reply(binding.topicId, `已移到新话题「${text}」`).catch(() => {});
-        }
-        return topicId;
-      }, `card:${binding.topicId}`), `output:${binding.topicId}`);
+        return this.enqueue(async () => {
+          // A turn may have an uncertain status publication without an output batch.
+          if (this.store.binding(binding.chatId, binding.topicId).pendingCard) {
+            await this.publishCard(binding);
+            if (this.store.binding(binding.chatId, binding.topicId).pendingCard) throw new Error('Card delivery pending');
+          }
+          const { panes } = await this.herdr.request('pane.list');
+          const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
+          if (!pane) throw new Error('终端已变化，请重新 /t ls');
+          const text = `终端：${this.label(pane)}`, createdAt = this.now();
+          await this.verify(binding);
+          const topicId = await this.feishu.send(event.chatId, text);
+          await this.verify(binding);
+          const moved = await this.store.transaction(data => {
+            const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
+            if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
+            Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
+              cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
+              retiredCardId: undefined, retiredCardAt: undefined, outputBatch: null,
+              topicRoot: { text, createdAt } });
+            return structuredClone(current);
+          });
+          const state = this.state(binding);
+          this.runtime.delete(binding.topicId);
+          this.runtime.set(topicId, { ...state, verified: false, lastCard: -Infinity, cardRetryAt: 0,
+            retireRetryAt: 0, cardPending: true, dirty: true });
+          await this.verify(moved); this.resubscribe();
+          try { await this.refresh(moved, true); }
+          finally {
+            await this.feishu.reply(binding.topicId, `已移到新话题「${text}」`).catch(() => {});
+          }
+          return topicId;
+        }, `card:${binding.topicId}`);
+      }, `output:${binding.topicId}`);
     }, `open:${paneId}`);
   }
   async recoverOpen(event, binding, expectedTerminalId) {
@@ -425,11 +421,21 @@ export class Bridge {
       await this.verify(binding);
       if (expectedTerminalId && binding.identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
       // Reconcile an older pending publication before preparing another version.
-      if (this.store.binding(binding.chatId, binding.topicId).pendingCard) await this.publishCard(binding, true);
+      if (this.store.binding(binding.chatId, binding.topicId).pendingCard) {
+        await this.publishCard(binding, true);
+        if (this.store.binding(binding.chatId, binding.topicId).pendingCard) throw new Error('Card delivery pending');
+      }
       await this.retireCard(binding);
       if (this.store.binding(binding.chatId, binding.topicId).retiredCardId) throw new Error('Previous card retirement pending');
       await this.refresh(binding, true, false, true);
-      const current = this.store.binding(binding.chatId, binding.topicId);
+      let current = this.store.binding(binding.chatId, binding.topicId);
+      if (this.state(binding).transcriptSource && !current.turn) {
+        const source = this.state(binding).transcriptSource;
+        const turn = freshTurn(source, this.agentName(source.key), this.state(binding).status);
+        if (['idle', 'done'].includes(this.state(binding).status)) { turn.settled = true; turn.status = 'idle'; }
+        await this.updateGeneration(binding, { turn });
+        current = this.store.binding(binding.chatId, binding.topicId);
+      }
       const pending = await this.prepareCard(current, true);
       if (!await this.updateGeneration(current, { pendingCard: pending })) throw new Error('Binding changed');
       await this.publishCard(current, true);
@@ -543,10 +549,15 @@ export class Bridge {
     const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane)).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     state.visible = visible.text; state.nextSignature = signature;
+    if (state.transcriptSource && force) state.forceTurnCard = true;
     if (!deferCard) await this.refreshCard(binding);
   }
   refreshCard(binding) {
     return this.enqueue(() => this.publishCard(binding), `card:${binding.topicId}`);
+  }
+  turnMode(binding) {
+    return Boolean(this.state(binding).transcriptSource || binding.pendingCard?.turnId ||
+      binding.outputBatch?.chunks[binding.outputBatch.next]?.turn);
   }
   async prepareCard(binding, resume = false) {
     const state = this.state(binding), nonce = randomUUID();
@@ -554,6 +565,16 @@ export class Bridge {
     const { panes } = await this.herdr.request('pane.list');
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
+    if (this.turnMode(binding) && binding.turn) {
+      const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id;
+      return { nonce, createdAt: this.now(), targetId: resume || newTurn ? null : binding.cardId ?? null,
+        ...((resume || (newTurn && !binding.cardTurnId)) && binding.cardId ? {
+          previousCardId: binding.cardId,
+          ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
+        } : {}),
+        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn),
+        card: turnCard({ turn, topicId: binding.topicId, nonce, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+    }
     return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId } : {}),
       uuid: randomUUID(), signature: state.nextSignature,
@@ -565,8 +586,10 @@ export class Bridge {
     if (!this.sameGeneration(binding, current) || !current.retiredCardId) return;
     const state = this.state(binding);
     if (this.now() < (state.retireRetryAt ?? 0)) return;
+    if (Number.isFinite(current.retiredCardAt) && this.now() - current.retiredCardAt < 2000) return;
     try {
       await this.verify(current);
+      if (Number.isFinite(current.retiredCardAt) && !await this.updateGeneration(current, { retiredCardAt: this.now() })) return;
       await this.feishu.patch(current.retiredCardId, {
         config: { wide_screen_mode: true, update_multi: true },
         elements: [{ tag: 'div', text: { tag: 'plain_text', content: '已移至下方新卡片' } }],
@@ -581,7 +604,9 @@ export class Bridge {
     state.retireFailures = 0; state.retireRetryAt = 0;
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
-      if (this.sameGeneration(binding, b) && b.retiredCardId === current.retiredCardId) delete b.retiredCardId;
+      if (this.sameGeneration(binding, b) && b.retiredCardId === current.retiredCardId) {
+        delete b.retiredCardId; delete b.retiredCardAt;
+      }
     });
   }
   async publishCard(binding, immediate = false) {
@@ -591,9 +616,30 @@ export class Bridge {
     binding = current;
     if (!binding || binding.frozen || !state.verified) return;
     await this.retireCard(binding);
-    // A manual screen request and a blocked notification still obey 1 Hz.
-    // Explicit recovery posts a new reply immediately to bring its topic forward.
-    if ((immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0))) && (state.cardPending || binding.pendingCard)) {
+    if (this.turnMode(binding)) {
+      // The transcript turn is the status card. Idle panes with no observed
+      // turn never acquire a separate live-screen reply.
+      if (!binding.turn && !binding.pendingCard) return;
+      if (binding.turn) {
+        if (!binding.turn.settled && ['blocked', 'working'].includes(state.status) && binding.turn.status !== state.status) {
+          binding.turn.status = state.status;
+          if (!await this.updateGeneration(binding, { turn: binding.turn })) return;
+        }
+        state.nextSignature = turnSignature(binding.turn);
+        state.cardPending = state.forceTurnCard || binding.cardTurnId !== binding.turn.id ||
+          binding.cardSignature !== state.nextSignature || binding.cardNonce !== binding.nonce;
+      }
+    }
+    // Turn patches, including manual refresh and retries, obey a durable 2 s
+    // interval. Fallback status cards keep 1 Hz; recovery sends a new reply.
+    const turnPublication = this.turnMode(binding) && binding.turn;
+    const targetId = binding.pendingCard ? binding.pendingCard.targetId :
+      turnPublication && binding.cardTurnId !== binding.turn?.id ? null : binding.cardId;
+    const turnThrottled = turnPublication && targetId && binding.cardAttemptId === targetId &&
+      now - binding.cardAttemptAt < 2000;
+    const ready = turnPublication ? !turnThrottled && now >= (state.cardRetryAt ?? 0) :
+      immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0));
+    if (ready && (state.cardPending || binding.pendingCard)) {
       await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
@@ -604,6 +650,7 @@ export class Bridge {
         let cardId = pending.targetId;
         if (cardId) {
           await this.verify(binding);
+          if (pending.turnId && !await this.updateGeneration(binding, { cardAttemptId: cardId, cardAttemptAt: this.now() })) return;
           try { await this.feishu.patch(cardId, pending.card); }
           catch (error) {
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
@@ -626,8 +673,12 @@ export class Bridge {
         await this.store.transaction(data => {
           const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
           if (this.sameGeneration(binding, b) && b.pendingCard?.nonce === pending.nonce) {
-            Object.assign(b, { cardId, nonce: pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null });
-            if (pending.previousCardId && pending.previousCardId !== cardId) b.retiredCardId = pending.previousCardId;
+            Object.assign(b, { cardId, nonce: pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null,
+              cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce });
+            if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
+            if (pending.previousCardId && pending.previousCardId !== cardId) {
+              b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt;
+            }
           }
         });
         await this.retireCard(binding);
@@ -638,6 +689,7 @@ export class Bridge {
       }
       state.cardFailures = 0; state.cardRetryAt = 0;
       state.lastCard = this.now(); state.signature = pending.signature; state.blockedNotice = false;
+      state.forceTurnCard = false;
       state.cardPending = state.nextSignature !== pending.signature;
     }
   }
@@ -662,7 +714,9 @@ export class Bridge {
           this.onError('transcript_unavailable');
           return this.flush(binding);
         }
-        if (!batch) return;
+        if (!batch) {
+          await this.settleTurn(binding); return;
+        }
       } else {
         if (!state.pending && !state.settle) return;
         if (state.agent && !['idle', 'done'].includes(state.status)) return;
@@ -683,6 +737,13 @@ export class Bridge {
     while (batch.next < batch.chunks.length) {
       if (!this.sameGeneration(binding, this.store.binding(binding.chatId, binding.topicId))) return;
       const chunk = batch.chunks[batch.next];
+      if (chunk.turn) {
+        const published = await this.enqueue(() => this.publishTurn(binding, chunk.turn), `card:${binding.topicId}`);
+        if (!published) return;
+        batch.next++;
+        if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
+        continue;
+      }
       // Feishu deduplicates UUIDs for one hour. Stop ambiguous retries before
       // that expires instead of risking another copy after a long outage.
       if (chunk.attemptAt !== undefined && this.now() - chunk.attemptAt >= 55 * 60 * 1000)
@@ -699,5 +760,29 @@ export class Bridge {
     if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null,
       ...(batch.transcript ? { transcript: batch.transcript } : {}) })) return;
     state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
+  }
+  async publishTurn(binding, turn) {
+    let current = this.store.binding(binding.chatId, binding.topicId);
+    if (!this.sameGeneration(binding, current) || current.frozen) return false;
+    if (current.pendingCard) {
+      await this.publishCard(current);
+      current = this.store.binding(binding.chatId, binding.topicId);
+      if (!this.sameGeneration(binding, current) || current.pendingCard) return false;
+    }
+    const signature = turnSignature(turn);
+    if (current.turn?.id !== turn.id || turnSignature(current.turn) !== signature) {
+      if (!await this.updateGeneration(binding, { turn })) return false;
+    }
+    await this.publishCard(this.store.binding(binding.chatId, binding.topicId));
+    current = this.store.binding(binding.chatId, binding.topicId);
+    return this.sameGeneration(binding, current) && !current.pendingCard &&
+      current.cardTurnId === turn.id && current.cardSignature === turnSignature(current.turn);
+  }
+  async settleTurn(binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId), state = this.state(binding);
+    if (!this.sameGeneration(binding, current) || !current.turn || current.turn.settled) return;
+    if (['idle', 'done'].includes(state.status) || current.turn.path !== state.transcriptSource?.path) {
+      await this.updateGeneration(binding, { turn: { ...current.turn, settled: true, status: 'idle' } });
+    }
   }
 }

@@ -92,6 +92,25 @@ export function splitText(text, maxBytes = 12000) {
 
 const BUTTONS = [['Enter', 'enter'], ['Esc', 'esc'], ['1', '1'], ['2', '2'], ['3', '3'], ['y', 'y'], ['n', 'n'], ['Ctrl-C', 'ctrl+c'], ['Refresh', 'refresh']];
 
+export function turnCard({ turn, topicId, nonce, note }) {
+  const elements = [markdown((turn.truncated ? '（仅显示末尾）\n\n' : '') + markup(tail(turn.text, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
+  if (turn.toolCount) elements.push({ tag: 'collapsible_panel', expanded: false,
+    header: { title: { tag: 'plain_text', content: `🔧 工具调用 (${turn.toolCount})` } },
+    elements: [markdown((turn.toolsTruncated ? '（仅显示末尾）\n\n' : '') + markup(tail(turn.tools, 1500)))] });
+  if (note) elements.unshift(markdown(note));
+  const blocked = !turn.settled && turn.status === 'blocked';
+  if (blocked) for (let i = 0; i < BUTTONS.length; i += 3) elements.push({
+    tag: 'column_set', flex_mode: 'none', columns: BUTTONS.slice(i, i + 3).map(([label, key]) => ({
+      tag: 'column', width: 'weighted', weight: 1, elements: [{
+        tag: 'button', text: { tag: 'plain_text', content: label }, type: 'default',
+        value: { topic_id: topicId, nonce, key },
+      }],
+    })),
+  });
+  return roleCard(`🤖 ${String(turn.agent).slice(0, 40)}${turn.settled ? '' : blocked ? ' · 等待确认' : ' · 工作中…'}`,
+    blocked ? 'orange' : 'blue', elements);
+}
+
 export function pickerCard(card, result) {
   result ??= card.result;
   const elements = [];
