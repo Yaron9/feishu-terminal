@@ -11,7 +11,7 @@ export class PanePicker {
   entry(pane) {
     const b = this.bridge.store.forPane(pane.pane_id);
     return { paneId: pane.pane_id, label: this.bridge.label(pane),
-      identity: b?.identity ?? { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id },
+      identity: (!b?.frozen && b?.identity) || { terminalId: pane.terminal_id, workspaceId: pane.workspace_id, tabId: pane.tab_id },
       bindingTopic: b?.topicId ?? null, generation: b?.generation ?? null };
   }
   async show(event, binding) {

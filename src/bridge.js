@@ -314,7 +314,8 @@ export class Bridge {
     return pane;
   }
   label(pane) {
-    return paneLabel(pane, { bound: this.store.list().some(b => b.chatId === this.chatId && b.paneId === pane.pane_id),
+    const binding = this.store.list().find(b => b.chatId === this.chatId && b.paneId === pane.pane_id);
+    return paneLabel(pane, { bound: Boolean(binding), frozen: Boolean(binding?.frozen),
       owned: this.store.data.createdTerminals?.includes(pane.terminal_id) });
   }
   async list(event) {
