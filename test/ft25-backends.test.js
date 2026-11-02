@@ -48,7 +48,7 @@ test('namespaced remote core IDs, raw legacy IDs, core identity and backend fail
   hc.coreId('replaced'); assert.notDeepEqual(backend.identity(await backend.get('hc:mac/t3')), before);
   hc.fail('terminal.list', 'unavailable'); assert.deepEqual((await backend.list()).map(p => p.pane_id), [old.pane_id]);
   herdr.fail('pane.list', 'unavailable'); assert.deepEqual((await backend.list()).map(p => p.pane_id), ['hc:mac/t3']);
-  assert.ok(logs.includes('backend_unreachable hc')); assert.ok(logs.includes('backend_unreachable herdr'));
+  assert.ok(logs.some(l => l.startsWith('backend_unreachable hc '))); assert.ok(logs.some(l => l.startsWith('backend_unreachable herdr ')));
 });
 
 test('hc reported status wins; unreported screens use menus, spinners and prompt heuristics', () => {

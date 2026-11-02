@@ -67,5 +67,5 @@ test('hc bridge remains usable while herdr is down; hc outage cannot freeze lega
   assert.equal(Boolean(h.store.forPane(old.pane_id).frozen), false);
   h.herdr.fail('pane.list', 'unavailable'); await h.bridge.handle(message('pwd', 'new'));
   assert.ok(h.store.forPane('hc:t1'));
-  assert.ok(h.errors.includes('backend_unreachable hc')); assert.ok(h.errors.includes('backend_unreachable herdr'));
+  assert.ok(h.errors.some(l => l.startsWith('backend_unreachable hc '))); assert.ok(h.errors.some(l => l.startsWith('backend_unreachable herdr ')));
 });

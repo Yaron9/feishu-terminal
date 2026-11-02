@@ -45,6 +45,8 @@ export class HerdrClient {
     this.sockets = new Set();
     this.subscriptions = new Set();
     this.closed = false;
+    this.requestQueue = [];
+    this.activeRequests = 0;
   }
 
   socket(onLine, onClose) {
@@ -73,6 +75,27 @@ export class HerdrClient {
   }
 
   request(method, params = {}) {
+    // herdr serves one request per socket. Bound fan-out from per-pane
+    // refresh/list/process_info calls instead of opening an unbounded burst.
+    return new Promise((resolve, reject) => {
+      this.requestQueue.push({ method, params, resolve, reject });
+      this.drainRequests();
+    });
+  }
+
+  drainRequests() {
+    // Leave room for another topic when a request stalls. Long-lived event
+    // subscriptions do not consume these four request slots.
+    while (this.activeRequests < 4 && this.requestQueue.length) {
+      const { method, params, resolve, reject } = this.requestQueue.shift();
+      this.activeRequests++;
+      this.requestOnce(method, params).then(resolve, reject).finally(() => {
+        this.activeRequests--; this.drainRequests();
+      });
+    }
+  }
+
+  requestOnce(method, params = {}) {
     if (this.closed) return Promise.reject(new HerdrError('client_closed'));
     return new Promise((resolve, reject) => {
       const id = randomUUID();
@@ -89,7 +112,7 @@ export class HerdrClient {
         else finish(new HerdrError('invalid_response'));
       }, () => finish(new HerdrError('connection_closed')));
       const timer = setTimeout(() => finish(new HerdrError('timeout')), this.timeoutMs);
-      socket.once('error', () => finish(new HerdrError('connection_error')));
+      socket.once('error', error => finish(new HerdrError('connection_error', `${error.code ?? 'socket_error'}: ${error.message}`)));
       socket.once('connect', () => socket.write(JSON.stringify({ id, method, params }) + '\n'));
     });
   }

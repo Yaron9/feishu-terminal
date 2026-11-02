@@ -19,11 +19,14 @@ export class Backends {
   async list() {
     const results = await Promise.allSettled([...this.backends.values()].map(async b => {
       try { return await b.list(); }
-      catch (error) { this.onError(`backend_unreachable ${b.name}`); throw error; }
+      catch (error) { this.reportError(b, error); throw error; }
     }));
     return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
   }
   get(id, options) { return this.backend(id).get(id, options); }
+  reportError(backend, error) {
+    this.onError(`backend_unreachable ${backend.name} ` + JSON.stringify({ code: error.code ?? 'unknown', message: error.message }));
+  }
   read(id, options) { return this.backend(id).read(id, options); }
   sendText(id, text, options) { return this.backend(id).sendText(id, text, options); }
   sendKeys(id, keys) { return this.backend(id).sendKeys(id, keys); }
@@ -42,7 +45,7 @@ export class Backends {
       const selected = ids.filter(id => this.backend(id) === b);
       if (!selected.length) continue;
       try { stops.push(b.subscribe(selected, onEvent, state => onState(state, selected))); }
-      catch { this.onError(`backend_unreachable ${b.name}`); }
+      catch (error) { this.reportError(b, error); }
     }
     return () => stops.forEach(stop => stop());
   }
