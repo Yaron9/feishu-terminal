@@ -1,10 +1,10 @@
 # Feishu Terminal
 
-One Feishu topic controls one herdr pane. A single Node.js process runs on the machine running herdr, using Feishu's official SDK long connection and the local herdr NDJSON socket. There is no SSH transport, tunnel requirement or public listening port. Your desktop `herdr attach` and Feishu see the same terminal.
+One Feishu topic controls one terminal. A single Node.js process runs on the terminal host, using Feishu's official SDK long connection and local herdr-core / legacy herdr sockets. There is no public listening port. Herdr desktop (via `hc connect`) and Feishu control the same herdr-core terminals.
 
 ## Run
 
-Requires Node.js >=22, npm, and an already running herdr server (developed against 0.9.5 / protocol 22).
+Requires Node.js >=22, npm, and an already running herdr-core daemon (developed against 0.1.16 / protocol generation 1). Legacy herdr 0.9.5 / protocol 22 remains supported during migration.
 
 ```sh
 npm ci --omit=dev
@@ -18,6 +18,31 @@ npm start
 Configure exactly one group in `chatIds`, allowed Feishu `operatorOpenIds`, and an existing absolute Linux `defaultCwd`. Credentials come only from runtime env/the config's sibling `.env`: `FEISHU_APP_ID`, `FEISHU_APP_SECRET`. The default config is always `~/.config/feishu-terminal/config.json`; `FEISHU_TERMINAL_CONFIG` overrides it. Relative state/audit paths resolve from the config directory. The default socket is `~/.config/herdr/herdr.sock`; override with `HERDR_SOCKET_PATH`. Only the explicit isolated test uses `HERDR_TCP=127.0.0.1:49450`, which takes precedence over the socket path.
 
 For persistent Linux service installation, see [deploy/README.md](deploy/README.md). Do not point an existing state file at a different herdr session: pane IDs are local to one server.
+
+## 迁移到 herdr-core
+
+在 VPS 同一用户下运行 `herdr-core serve`。已有 hc 的机器无需重装；Herdr 桌面通过 SSH 的 `hc connect` 连接该 VPS。飞书桥接在 VPS 本机直接连接 socket，不需要额外 SSH 子进程。
+
+配置默认启用两个后端，新话题使用 herdr-core：
+
+```json
+{
+  "backends": ["hc", "herdr"],
+  "newTerminalBackend": "hc",
+  "sessionFollow": "newest"
+}
+```
+
+1. 更新代码后重启飞书桥接服务，保留现有 `stateFile`。旧 herdr 的 `w1:p2` 等编号和绑定不需迁移；hc 编号为 `hc:t1`，远程机器为 `hc:mac/t3`。`/t ls` 显示「herdr-core」和「旧 herdr」。一个后端不可用时，另一个仍可使用。
+2. 在 Herdr 桌面打开 VPS 上的 hc 终端，执行 `claude --resume <sessionId>`（使用原会话的目录）。也可在飞书群顶层发送这条命令，新终端默认创建在 hc；若该会话已有绑定，继续使用原话题，避免生成第二个绑定。
+3. 桥接每秒扫描会话进程。原话题自动跟随启动时间最新的 Claude，保留话题、读取位置和轮次卡片；先保存新绑定，再重新核实旧进程的 Claude 名称、会话 ID 和启动时间，然后发送 SIGTERM。最多等待 10 秒，不发送 SIGKILL；仍存活或无法核实的 PID 会显示在话题中。菜单和旧卡片按钮重新校验后才能操作。
+4. 全部话题转移后，设置 `"backends": ["hc"]`，重启桥接，再按需移除旧 herdr。若新进程只在普通 SSH 中，桥接只警告、不终止任何进程。目标已绑定另一个话题时不抢占。`"sessionFollow": "warn"` 可恢复只警告的行为。
+
+hc 默认 socket 是 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/herdr-core/default.sock`，本次 VPS 为 `/run/user/1000/herdr-core/default.sock`。可用 `HC_SOCKET_PATH` 或 hc 自身的 `HC_TERMINAL_SOCKET` 指定（后者优先）。桥接必须与 Claude 同用户运行，能够读取本机 `/proc` 和 `~/.claude/sessions/<pid>.json`；不读取 `.key` 文件。远程 hc 编号可控制，但自动会话跟随仅检查本机进程。
+
+所有 hc 屏幕读取都用 `terminal.read` 的 `lines: 0`；历史和后台任务通过 Claude JSONL 读取，避免滚动或改变程序尺寸。hc 的 send/keys 会等待人停止输入约 3 秒，桥接为写操作保留 60 秒窗口。`started: false/null` 不代表输入失败；只有一次发送，断线或超时后先检查屏幕并 `/t ok`，不会重发。`/t raw` 用短暂 framed attach 发送带括号粘贴的文字，不追加 Enter；其确认只表示 core 已处理输入帧，不保证程序已执行。
+
+后端接口见 [src/backends](src/backends)：`list/get/read/sendText/sendKeys/close/create/subscribe`，以及 `identity/processOf/status`；桥接、菜单、轮次和话题使用同一接口。
 
 ## 一次扫码安装
 
