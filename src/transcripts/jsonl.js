@@ -6,7 +6,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
 // No retained transcript text in a cursor. Partial lines (including split UTF-8)
 // are reread next poll; oversized records are skipped with bounded memory.
-export async function readJsonl(path, cursor, project, { end = false } = {}) {
+export async function readJsonl(path, cursor, project, { end = false, onReset = () => {} } = {}) {
   if (!(await lstat(path)).isFile()) throw new Error('transcript_regular_file_required');
   const file = await open(path, 'r');
   try {
@@ -19,7 +19,7 @@ export async function readJsonl(path, cursor, project, { end = false } = {}) {
       return digest(bytes);
     }
     if (cursor && (cursor.identity !== identity || offset > stat.size || cursor.anchor !== await anchor(offset))) {
-      offset = 0; skip = false;
+      offset = 0; skip = false; onReset();
     }
     if (end) {
       offset = stat.size;

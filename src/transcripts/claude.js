@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { paneProcess } from './proc.js';
 import { readJsonl } from './jsonl.js';
+import { emptyBackground, trackBackground } from './background.js';
 
 export const projectDirectory = cwd => cwd.replace(/[^a-zA-Z0-9]/g, '-');
 const realText = text => String(text).replace(/<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/gi, '').trim();
@@ -31,7 +32,7 @@ export function claudeItems(record, offset = 0) {
 }
 
 export class ClaudeTranscript {
-  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); }
+  constructor({ home = homedir(), procRoot = '/proc' } = {}) { Object.assign(this, { home, procRoot }); this.backgrounds = new Map(); }
   async locate(pane) {
     const pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
     if (!pid) return null;
@@ -46,5 +47,20 @@ export class ClaudeTranscript {
   }
   // atEnd initializes a binding without reading historical records. Otherwise
   // the cursor is the opaque object returned by the preceding read.
-  read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd) }); }
+  async read(path, cursor) {
+    let entry = this.backgrounds.get(path);
+    if (!entry) { entry = { background: emptyBackground(), scan: null }; this.backgrounds.set(path, entry); }
+    // Drain bounded windows on startup and then only appended bytes. The
+    // tracker cursor is independent of the delivery cursor (pending retries).
+    for (;;) {
+      const next = await readJsonl(path, entry.scan, record => { trackBackground(entry.background, record); return []; },
+        { onReset: () => { entry.background = emptyBackground(); } });
+      const done = next.cursor.offset === entry.scan?.offset;
+      entry.scan = next.cursor;
+      if (done) break;
+    }
+    const result = await readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd) });
+    result.cursor.background = structuredClone(entry.background);
+    return result;
+  }
 }
