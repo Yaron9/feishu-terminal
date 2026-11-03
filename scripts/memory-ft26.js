@@ -6,7 +6,7 @@ import { getHeapStatistics, getHeapSpaceStatistics } from 'node:v8';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const cleanup = [];
-const feishu = new Feishu({ appId: 'cli_0123456789abcdef', appSecret: 'fixture' });
+const feishu = new Feishu({ appId: 'cli_fixture', appSecret: 'fixture' });
 feishu.ws.start = async () => {}; // Keep real client allocations; isolate network.
 const h = await harness({ after(fn) { cleanup.push(fn); } }, { feishu });
 try {
