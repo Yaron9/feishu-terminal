@@ -166,7 +166,7 @@ test('Feishu resume starts hc once without a competing binding, then the origina
   assert.equal(runs[0].params.line, 'claude --resume same');
   assert.equal(h.hc.calls.filter(c => c.method === 'terminal.send').length, 0);
   assert.ok(h.store.data.topicPointers.some(p => p.oldTopicId === request.messageId && p.topicId === before.topicId));
-  const term = h.hc.terminals.get('t1'); term.foreground = { pid: 202, name: 'claude', argv: ['claude'], cwd: '/tmp/project' };
+  const term = h.hc.terminals.get('t1'); term.agent = 'claude'; term.foreground = { pid: 202, name: 'claude', argv: ['claude'], cwd: '/tmp/project' };
   await h.process(202, 200, 'hc:t1'); await scan();
   assert.equal(binding().paneId, 'hc:t1'); assert.equal(binding().cardId, before.cardId);
   assert.deepEqual(h.kills, [{ pid: 101, signal: 'SIGTERM' }]);

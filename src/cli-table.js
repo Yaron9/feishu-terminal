@@ -2,7 +2,7 @@
 import { join, win32, posix } from 'node:path';
 
 // Compare foreign path styles without resolving them against this host's cwd.
-function sameCwd(a, b) {
+export function sameCwd(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   const windows = /^[a-z]:[\\/]/i.test(a) || /^[a-z]:[\\/]/i.test(b) || a.startsWith('\\\\') || b.startsWith('\\\\');
   return windows ? win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase() : posix.normalize(a) === posix.normalize(b);
@@ -75,4 +75,16 @@ export const CLI_TABLE = Object.freeze([
 export function lookupCli(terminal) {
   const fields = [terminal?.agent, terminal?.status?.app].filter(v => typeof v === 'string').map(v => v.toLowerCase());
   return CLI_TABLE.find(row => fields.some(field => row.agents.includes(field))) ?? null;
+}
+
+// hc may expose an argv vector or a Windows shim command as one argv entry.
+// Derive the resume prefix from the table instead of interpreting a shell.
+export function resumeSessionId(row, argv = []) {
+  const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const prefix = row.resume.slice(0, row.resume.indexOf('{id}')).trim().split(/\s+/);
+  const executable = escape(prefix.shift());
+  const args = prefix.map(escape).join('\\s+');
+  const pattern = new RegExp(`(?:^|[\\s/\\\\"'])${executable}(?:\\.(?:cmd|bat|exe))?["']?\\s+${args}\\s+["']?([a-zA-Z0-9_-]+)(?=["'\\s]|$)`, 'gi');
+  const ids = [...String(argv.join(' ')).matchAll(pattern)].map(match => match[1]);
+  return new Set(ids).size === 1 ? ids[0] : null;
 }

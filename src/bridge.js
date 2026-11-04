@@ -9,6 +9,7 @@ import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { transcriptAdapters } from './transcripts/index.js';
 import { bridgeBackend } from './backends/index.js';
 import { SessionFollow } from './session-follow.js';
+import { Wake } from './wake.js';
 import { auditRecord, appendAudit } from './store.js';
 import { cleanTitle, topicCard, topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
@@ -19,10 +20,12 @@ const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.lengt
   createHash('sha256').update(clean(text)).digest('hex') : null;
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry, wakeOptions }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
+    this.sessionFollow.backend = this.backend;
+    this.wake = new Wake(this, wakeOptions);
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
     this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
     this.registry = registry ?? createConfigRegistry(config);
@@ -133,7 +136,7 @@ export class Bridge {
     if (!(group.operatorOpenIds ?? this.config.operatorOpenIds ?? []).includes(event.openId)) {
       await this.refuse(event); return;
     }
-    const binding = this.store.binding(event.chatId, event.topicId);
+    let binding = this.store.binding(event.chatId, event.topicId);
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
       if (await this.pointToTopic(event)) return;
@@ -161,6 +164,14 @@ export class Bridge {
         await this.feishu.reply(binding.topicId, action.kill ? '终端已关闭，话题已停止同步。' : '话题已停止同步，终端仍在 VPS 上运行。');
         return;
       }
+      if (binding && ['input', 'raw', 'keys', 'screen', 'ok'].includes(action.type)) {
+        try { await this.verify(binding); }
+        catch (error) { if (error.code !== 'binding_dormant') throw error; }
+        binding = this.store.binding(binding.chatId, binding.topicId);
+        if (binding.dormant || binding.wakePending || binding.queuedInputs?.length) {
+          await this.wake.route(binding, action); return;
+        }
+      }
       if (action.type === 'screen') {
         this.state(binding).dirty = true; await this.refresh(binding, true);
         const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
@@ -180,6 +191,7 @@ export class Bridge {
       if (action.type === 'input') await this.input(binding, action.text);
       this.state(binding).dirty = true;
     } catch (error) {
+      if (error.code === 'binding_dormant') return;
       if (error.code === 'backend_unavailable' && binding && !this.store.binding(binding.chatId, binding.topicId)?.frozen) {
         await this.outageNotice(binding); return;
       }
@@ -287,17 +299,20 @@ export class Bridge {
     const expected = binding;
     binding = this.store.binding(binding.chatId, binding.topicId);
     if (!this.sameGeneration(expected, binding)) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+    if (binding.dormant) throw Object.assign(new Error('Binding dormant'), { code: 'binding_dormant' });
     if (binding.frozen || !binding.identity) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     const state = this.state(binding);
     await this.outageNotice(binding);
     if (this.now() < (state.verifyRetryAt ?? 0)) throw Object.assign(new Error('Verification backing off'), { code: 'backend_unavailable' });
     try {
-      const current = await this.identity(binding.paneId, binding.allowDesktop);
+      const terminal = await this.backend.get(binding.paneId, { allowDesktop: binding.allowDesktop });
+      const current = this.backend.identity(terminal);
       const latest = this.store.binding(binding.chatId, binding.topicId);
       if (!this.sameGeneration(binding, latest) || latest.frozen) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
       if (Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
         throw Object.assign(new Error('Identity mismatch'), { code: 'identity_mismatch', identityProof: true });
       Object.assign(state, { verified: true, verifyRetryAt: 0 });
+      await this.wake.observe(binding, terminal);
       if (!state.ioOutage) Object.assign(state, { outageSince: null, outageNotified: false, verifyAttempts: 0 });
     } catch (error) {
       if (error.code === 'binding_changed') throw error;
@@ -308,8 +323,12 @@ export class Bridge {
         try {
           const panes = await this.backend.backend(binding.paneId).list();
           const pane = panes.find(p => p.pane_id === binding.paneId);
+          if (!pane || pane.state === 'finished') {
+            await this.wake.dormant(binding);
+            throw Object.assign(new Error('Binding dormant'), { code: 'binding_dormant' });
+          }
           proven = !pane || !this.identitiesMatch(binding, pane);
-        } catch (listError) { error = listError; }
+        } catch (listError) { if (listError.code === 'binding_dormant') throw listError; error = listError; }
       }
       if (!proven) {
         return this.backendUnavailable(binding, error);
@@ -406,9 +425,9 @@ export class Bridge {
     await this.verify(binding);
     return result;
   }
-  async writeInput(binding, method, params, allowClear = false) {
+  async writeInput(binding, method, params, allowClear = false, staged = false) {
     await this.verify(binding);
-    const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check;
+    const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check && !staged;
     if (wasChecking && !allowClear) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     // Persist intent before the mutation, so a crash also requires inspection.
     await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
@@ -458,7 +477,7 @@ export class Bridge {
       state.transcriptSource = { key, path, adapter };
       const session = adapter.sessions?.get(path);
       if (key === 'claude' && session?.sessionId && current.claudeSessionId !== session.sessionId)
-        await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionHandoff: null });
+        await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionId: session.sessionId, sessionHandoff: null });
     } catch (error) {
       state.transcriptSource = null;
       if (error.code === 'binding_unverified' || error.code === 'binding_changed') throw error;
@@ -512,7 +531,8 @@ export class Bridge {
     const identity = await this.identity(paneId, Boolean(expectedTerminalId));
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
-      await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
+      await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false, dormant: false,
+        cli: null, cwd: null, sessionId: null, wakeTarget: null, wakePending: false, wakeAttempt: null, queuedInputs: [],
         claudeSessionId: null, sessionHandoff: null,
         lastTranscript: undefined, transcript: null, turn: null, cardTurnId: null, cardSignature: null,
         cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
@@ -652,9 +672,9 @@ export class Bridge {
       return pending.card.header.title.content;
     }, `card:${binding.topicId}`);
   }
-  async input(binding, text) {
+  async input(binding, text, staged = false) {
     await this.verify(binding);
-    if (this.store.binding(binding.chatId, binding.topicId).needs_check) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
+    if (this.store.binding(binding.chatId, binding.topicId).needs_check && !staged) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     const state = this.state(binding);
     await this.initializeTranscript(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
@@ -682,9 +702,10 @@ export class Bridge {
         if (this.sameGeneration(binding, b)) b.sentInputs = (b.sentInputs ?? []).filter(item => item.id !== inputId);
       });
       this.status(state, 'blocked', agent?.agent); state.dirty = true;
-      await this.refresh(binding, true, true); return;
+      await this.refresh(binding, true, true); return false;
     }
     state.dirty = true;
+    return true;
   }
   async button(event, binding) {
     if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
@@ -707,7 +728,17 @@ export class Bridge {
       await this.feishu.reply(event.topicId, '卡片已过期，请重新 /t screen'); return;
     }
     try { await this.verify(binding); }
-    catch { await this.feishu.reply(event.topicId, '终端已变化，请重新 /t ls'); return; }
+    catch (error) {
+      if (error.code !== 'binding_dormant') {
+        await this.feishu.reply(event.topicId, '终端已变化，请重新 /t ls'); return;
+      }
+    }
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (current?.dormant || current?.wakePending) {
+      if (menuAction && current.wakeCardId === event.messageId) return;
+      if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce, isMenu)) return;
+      await this.wake.button(current, event); return;
+    }
     if (menuAction && binding.cardMenu?.kind !== 'list') {
       await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
     }
@@ -809,10 +840,12 @@ export class Bridge {
         .catch(() => this.onError('binding_recovery_failed'));
     }
     for (const snapshot of this.store.list().filter(b => this.registry.get(b.chatId))) {
+      await this.enqueue(() => this.wake.tick(this.store.binding(snapshot.chatId, snapshot.topicId)), snapshot.topicId)
+        .catch(() => this.onError('wake_retry_failed'));
       // Input, output and card work all drain before the atomic retarget.
       await this.enqueue(() => this.enqueue(() => this.enqueue(async () => {
         let binding = this.store.binding(snapshot.chatId, snapshot.topicId);
-        if (!binding) return;
+        if (!binding || binding.wakeTarget || binding.wakeAttempt?.phase === 'launching') return;
         if (this.config.sessionFollow === 'warn') return;
         if (binding.sessionHandoff && !binding.sessionHandoff.done) {
           await this.finishHandoff(binding); return;
@@ -833,13 +866,14 @@ export class Bridge {
             const sessionId = await this.sessionFollow.sessionIdOf(pid);
             const active = sessionId && await this.sessionFollow.process(pid, sessionId);
             if (active && active.terminalId === binding.paneId && sessionId !== binding.claudeSessionId) {
-              await this.updateGeneration(binding, { claudeSessionId: sessionId, sessionHandoff: null });
+              await this.updateGeneration(binding, { claudeSessionId: sessionId, sessionId, sessionHandoff: null });
               binding = this.store.binding(binding.chatId, binding.topicId);
             }
           }
         }
-        if (!binding.claudeSessionId) return;
-        const candidates = await this.sessionFollow.candidates(binding.claudeSessionId);
+        const followedSession = binding.sessionId ?? binding.claudeSessionId;
+        if (!followedSession) return;
+        const candidates = await this.sessionFollow.candidates(followedSession);
         if (!candidates.length) return;
         const winner = candidates[0], terminals = await this.backend.list();
         const terminal = this.sessionFollow.terminal(winner, terminals, this.backend);
@@ -852,12 +886,14 @@ export class Bridge {
         }
         const identity = await this.identity(terminal.pane_id, true);
         const live = await this.sessionFollow.process(winner.pid, winner.sessionId);
-        if (!live || live.start !== winner.start || live.terminalId !== winner.terminalId) return;
+        if (!live || live.start !== winner.start || live.terminalId !== winner.terminalId ||
+          (winner.hcIdentity && live.hcIdentity?.terminalId !== winner.hcIdentity.terminalId)) return;
         const generation = randomUUID();
         const moved = await this.store.transaction(data => {
           const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
           if (!this.sameGeneration(binding, current) || data.bindings.some(b => b !== current && b.paneId === terminal.pane_id)) return null;
-          Object.assign(current, { paneId: terminal.pane_id, identity, generation, allowDesktop: true, frozen: false,
+          Object.assign(current, { paneId: terminal.pane_id, identity, generation, allowDesktop: true, frozen: false, dormant: false,
+            wakePending: false, wakeTarget: null, wakeAttempt: null,
             nonce: randomUUID(), menuNonce: randomUUID(), cardMenu: null, menuConfirm: null, menuPage: 0,
             pendingMenuCard: null, menuSignature: null,
             sessionHandoff: { winner, older: candidates.slice(1).map(p => ({ process: p })),

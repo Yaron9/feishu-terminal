@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CLI_TABLE, lookupCli, probeClaude, probeCodex, probePi } from '../src/cli-table.js';
+import { CLI_TABLE, lookupCli, probeClaude, probeCodex, probePi, resumeSessionId } from '../src/cli-table.js';
 import { hcEndpoint } from '../src/backends/hc.js';
 
 test('table matches hc agent fields and describes resume, readiness and exits', () => {
@@ -13,6 +13,16 @@ test('table matches hc agent fields and describes resume, readiness and exits', 
   assert.deepEqual(CLI_TABLE.map(x => x.resume), ['claude --resume {id}', 'codex resume {id} --no-daemon', 'pi --session {id}']);
   assert.ok(CLI_TABLE.every(x => x.readyStates.includes('idle') && x.readyStates.includes('done')));
   assert.deepEqual(CLI_TABLE.map(x => x.exit), [{ keys: ['/exit', 'enter'], maxAttempts: 1 }, { keys: ['ctrl+c'], maxAttempts: 3 }, { keys: ['ctrl+d'], maxAttempts: 1 }]);
+});
+
+test('resume IDs follow table templates in native argv and quoted Windows shims', () => {
+  for (const row of CLI_TABLE) {
+    const command = row.resume.replace('{id}', 'fixture-id');
+    assert.equal(resumeSessionId(row, command.split(' ')), 'fixture-id');
+    assert.equal(resumeSessionId(row, ['cmd.exe', '/c', `"C:\\Program Files\\npm\\${row.cli}.CMD" ${command.slice(row.cli.length + 1)}`]), 'fixture-id');
+    assert.equal(resumeSessionId(row, [command + ' && ' + row.resume.replace('{id}', 'another')]), null);
+    assert.equal(resumeSessionId(row, ['sh', '-c', row.cli]), null);
+  }
 });
 test('probes match cwd across Windows, macOS and Linux styles and refuse ambiguity', async t => {
   const home = await mkdtemp(join(tmpdir(), 'ft-probes-')); t.after(() => rm(home, { recursive: true, force: true }));

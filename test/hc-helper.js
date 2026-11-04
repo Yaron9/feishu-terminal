@@ -11,7 +11,8 @@ export async function fakeHc() {
     const address = `t${++sequence}`;
     const t = { address, argv: ['/bin/sh'], cwd: '/tmp', state: 'live', created_ms: sequence,
       pid: sequence + 1000, foreground: { pid: sequence + 1000, name: 'sh', argv: ['/bin/sh'], cwd: '/tmp' },
-      labels: {}, screen: 'exact', cols: 200, rows: 120, reported: false, status: null, turn: 0, title: '', ...props };
+      labels: {}, screen: 'exact', cols: 200, rows: 120, reported: false, status: null, turn: 0, title: '',
+      agent: /^(claude|codex|pi)$/.test(props.foreground?.name ?? '') ? props.foreground.name : null, ...props };
     terminals.set(t.address, t); return t;
   };
   const frame = (channel, kind, payload) => {

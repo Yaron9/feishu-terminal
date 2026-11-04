@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { HerdrClient, HerdrError } from '../herdr-client.js';
 import { detectMenu } from '../menus.js';
 import { screenActivity } from '../transcripts/background.js';
+import { lookupCli } from '../cli-table.js';
 
 const required = ['terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'events.subscribe', 'server.status'];
 const rpcError = e => new HerdrError(e.data?.kind === 'unavailable' ? 'connection_error' : e.data?.kind ?? 'hc_error');
@@ -154,7 +155,7 @@ export class HcBackend {
     return { ...t, pane_id: `hc:${t.address}`, terminal_id: `hc:${hello.core.id}:${t.address}:${t.created_ms}:${t.pid}`,
       backendLabel: 'herdr-core', foreground_pid: t.foreground?.pid ?? t.pid,
       foreground_cwd: t.foreground?.cwd, terminal_title_stripped: t.title,
-      agent: /^(claude|codex)$/i.test(t.foreground?.name ?? '') ? t.foreground.name.toLowerCase() : null,
+      agent: lookupCli(t)?.cli ?? t.agent ?? null,
       agent_status: this.status(t) };
   }
   async call(method, params) { let hello; const result = await this.client.request(method, params, h => { hello = h; }); return { result, hello }; }
@@ -186,8 +187,8 @@ export class HcBackend {
     return result;
   }
   close(id) { return this.client.request('terminal.kill', { terminal: this.address(id) }); }
-  async create(cmd, cwd) {
-    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), cwd, no_parent: true, wait: false, labels: { source: 'feishu-terminal' } });
+  async create(cmd, cwd, { labels = {} } = {}) {
+    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), cwd, no_parent: true, wait: false, labels: { ...labels, source: 'feishu-terminal' } });
     const terminal = await this.get(`hc:${result.address}`);
     return terminal;
   }

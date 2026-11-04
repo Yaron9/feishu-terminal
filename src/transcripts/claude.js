@@ -1,6 +1,7 @@
 import { readFile, stat, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
+import { probeClaude, lookupCli } from '../cli-table.js';
 import { paneProcess } from './proc.js';
 import { readJsonl } from './jsonl.js';
 import { emptyBackground, trackBackground, stopBackground } from './background.js';
@@ -54,6 +55,11 @@ export class ClaudeTranscript {
       catch { pid = null; }
     }
     if (!pid) pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
+    if (!pid && lookupCli(pane)?.cli === 'claude') {
+      const cwd = pane.foreground?.cwd ?? pane.foreground_cwd ?? pane.cwd;
+      const found = cwd && await probeClaude({ home: this.home, cwd, startedAfterMs: pane.created_ms ?? 0 });
+      if (found?.sessionId) pid = Number(basename(found.source, '.json'));
+    }
     if (!pid) return null;
     try {
       // Exact .json filename only. Never enumerate or open the adjacent *.key files.

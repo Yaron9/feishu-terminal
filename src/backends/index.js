@@ -31,10 +31,10 @@ export class Backends {
   sendText(id, text, options) { return this.backend(id).sendText(id, text, options); }
   sendKeys(id, keys) { return this.backend(id).sendKeys(id, keys); }
   close(id) { return this.backend(id).close(id); }
-  create(cmd, cwd) {
+  create(cmd, cwd, options) {
     const backend = this.backends.get(this.newTerminalBackend);
     if (!backend) throw Object.assign(new Error('Creation backend unavailable'), { code: 'backend_unavailable' });
-    return backend.create(cmd, cwd);
+    return backend.create(cmd, cwd, options);
   }
   identity(t) { return this.backend(t.pane_id).identity(t); }
   processOf(t) { return this.backend(t.pane_id).processOf(t); }
