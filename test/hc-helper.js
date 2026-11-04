@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 export async function fakeHc() {
   const calls = [], terminals = new Map(), sockets = new Set(), subscribers = new Set(), raw = [];
   let sequence = 0, dropped, failed, delay = 0, started = null, coreId = 'core-fixture';
-  const methods = ['hello', 'terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'terminal.attach', 'events.subscribe', 'server.status'];
+  const methods = ['hello', 'terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'terminal.rm', 'terminal.attach', 'events.subscribe', 'server.status'];
   const create = (props = {}) => {
     const address = `t${++sequence}`;
     const t = { address, argv: ['/bin/sh'], cwd: '/tmp', state: 'live', created_ms: sequence,
@@ -54,6 +54,10 @@ export async function fakeHc() {
           assert.equal(p.wait, false); setTimeout(() => respond({ turn: t.turn, started, status: t.status?.state ?? null }), delay); break;
         case 'terminal.keys': setTimeout(() => respond({ turn: t.turn, status: t.status?.state ?? null }), delay); break;
         case 'terminal.kill': t.state = 'finished'; respond(t); break;
+        case 'terminal.rm':
+          if (t.state === 'live') respond(null, 'live');
+          else { terminals.delete(t.address); respond({ removed: t.address }); }
+          break;
         case 'terminal.attach':
           assert.ok(framed); assert.equal(p.cols, t.cols); assert.equal(p.rows, t.rows); assert.equal(p.history, 0);
           respond({ channel: 1, terminal: t }); break;

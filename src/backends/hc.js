@@ -164,8 +164,13 @@ export class HcBackend {
     return result.terminals.filter(t => t.state === 'live').map(t => this.normalize(t, hello));
   }
   async get(id) {
+    const terminal = await this.inspect(id);
+    if (terminal.state !== 'live') throw new HerdrError('terminal_finished');
+    return terminal;
+  }
+  async inspect(id) {
     const { result, hello } = await this.call('terminal.get', { terminal: this.address(id) });
-    if (result.state !== 'live' || `hc:${result.address}` !== id) throw new HerdrError('terminal_finished');
+    if (`hc:${result.address}` !== id) throw new HerdrError('not_found');
     return this.normalize(result, hello);
   }
   async read(id, _options) {
@@ -187,8 +192,9 @@ export class HcBackend {
     return result;
   }
   close(id) { return this.client.request('terminal.kill', { terminal: this.address(id) }); }
-  async create(cmd, cwd, { labels = {} } = {}) {
-    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), cwd, no_parent: true, wait: false, labels: { ...labels, source: 'feishu-terminal' } });
+  remove(id) { return this.client.request('terminal.rm', { terminal: this.address(id) }); }
+  async create(cmd, cwd, { labels = {}, name } = {}) {
+    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), ...(name ? { name } : {}), cwd, no_parent: true, wait: false, labels: { ...labels, source: 'feishu-terminal' } });
     const terminal = await this.get(`hc:${result.address}`);
     return terminal;
   }

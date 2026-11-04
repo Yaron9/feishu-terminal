@@ -57,13 +57,15 @@ claude --resume <sessionId>
 
 终端结束或消失后，原话题进入 `dormant`，保留 CLI、目录和会话编号，不发送「终端已变化」。在该话题回复文字或点击有效卡片会提示「正在唤醒…」，使用下表恢复同一会话。最多等待 90 秒，`idle`、`done` 都算就绪；随后更换绑定身份及 generation，并通过原输入路径发送排队内容。
 
-| CLI | hc 标识（agent / status.app） | 恢复命令 |
-| --- | --- | --- |
-| Claude | `claude` / `claude-code` | `claude --resume <id>` |
-| Codex | `codex` | `codex resume <id> --no-daemon` |
-| pi | `pi` | `pi --session <id>` |
+| CLI | hc 标识（agent / status.app） | 恢复命令 | 空闲退出按键 |
+| --- | --- | --- | --- |
+| Claude | `claude` / `claude-code` | `claude --resume <id>` | `/ e x i t Enter` |
+| Codex | `codex` | `codex resume <id> --no-daemon` | Ctrl-C；未退出时最多 3 次 |
+| pi | `pi` | `pi --session <id>` | Ctrl-D |
 
 定义集中在 `src/cli-table.js`，包括就绪状态、退出按键及会话文件探针。会话不明时不猜测编号，只提示一次并保留消息。启动对话框超过等待时间会显示屏幕与按键卡片，原消息仍排队；处理对话框后刷新或等待下一次检查即可继续。唤醒按会话互斥，先检查现有进程；已经运行的会话会复用。无法核实的同目录终端会阻止新启动。丢失启动响应时只按标签查找结果，不重复执行启动。
+
+自动回收仅处理带 `ft.woken=1`、且本实例有绑定或创建记录的本机 hc 终端。连续就绪达到 `idleMinutes`（默认 10 分钟），没有等待确认的菜单、任何 `herdr.*` 桌面标签、排队输入或待核查写入时，按表发送退出按键。确认进程结束后才执行 `hc rm`，原话题静默进入 dormant；下一条消息仍可恢复同一会话。普通用户终端不会自动回收。工作状态、轮次变化、输入、绑定变化、桌面放置或连接故障会重新计算等待时间；桥接重启后重新等待完整时长。
 
 本仓库未附带 `skills/hc/SKILL.md`。向 Claude Code / Codex 的项目说明加入以下操作约束即可：
 
@@ -84,12 +86,15 @@ claude --resume <sessionId>
   "backends": ["hc", "herdr"],
   "newTerminalBackend": "hc",
   "sessionFollow": "newest",
+  "idleMinutes": 10,
   "stateFile": "./state/bridge.json",
   "auditFile": "./state/audit.jsonl"
 }
 ```
 
 `chatIds` 必须只有一个群，`operatorOpenIds` 至少一个；`defaultCwd` 必须是存在的绝对目录。省略 `backends`、`newTerminalBackend`、`sessionFollow` 时，默认分别为 `["hc", "herdr"]`、`"hc"`、`"newest"`。`sessionFollow: "warn"` 关闭自动迁移和终止，仅保留重复会话警告。`newTerminalBackend` 必须在 `backends` 中；仅使用 legacy herdr 时同时设置 `["herdr"]` 和 `"herdr"`。仅使用 hc 时设 `["hc"]`，避免探测不存在的旧后端。
+
+`idleMinutes` 是大于 0 的有限数字，可使用小数，默认 10；只影响自动唤醒终端的空闲回收。hc 的 `waiting_for_person`（有输入正等待人的草稿）也会阻止回收。
 
 | 后端 | 端点配置 |
 | --- | --- |
@@ -154,7 +159,9 @@ systemctl --user start feishu-terminal.service
 
 同一状态/群只运行一个实例。状态文件系统需支持 hard link；实例锁校验 PID 和启动时间，不因锁年龄抢占活实例。遇到损坏的锁，停服务检查进程后处理，不能直接删除仍在使用的锁。
 
-首次读取 version 1 状态会保留 `<stateFile>.v1.bak` 并迁移到 version 2；原备份不会覆盖。绑定中新增的 CLI、cwd、sessionId 和 dormant 字段由验证过程补齐。唤醒将排队输入、启动意图及目标身份写入状态；备份时也要保留这些字段。`needs_check` 仍保护结果不确定的写入。自动空闲回收和 `idleMinutes` 配置尚未实现。
+首次读取 version 1 状态会保留 `<stateFile>.v1.bak` 并迁移到 version 2；原备份不会覆盖。绑定中新增的 CLI、cwd、sessionId 和 dormant 字段由验证过程补齐。唤醒将排队输入、启动意图及目标身份写入状态；备份时也要保留这些字段。`needs_check` 仍保护结果不确定的写入。
+
+回收退出意图保存在状态的 `reaps` 中；确认完成后清除。退出按键结果不确定时不重发，若随后证实进程结束则继续移除；正常退出后暂时无法 rm，可在后续检查中补齐。退出按键用尽仍存活的终端会保留，不强制 kill。检查 `reap_failed` 日志、实际屏幕和桌面标签后再手动处理，保留原状态记录。
 
 ## 安全边界
 
@@ -204,6 +211,7 @@ import { createBridge, createConfigRegistry, createBackends } from 'feishu-termi
 
 const registry = createConfigRegistry(config); // 也可注入自己的 get(chatId) / list()
 const backends = createBackends(config);
+// config.idleMinutes 默认为 10；例如设为 1，空闲一分钟后回收自动唤醒终端。
 const bridge = createBridge({
   config, transport, registry, backends,
   storeFile: '/private/state/bridge.json',
@@ -222,6 +230,8 @@ await bridge.stop();
 `getMessage(messageId)`，具体约定见 `src/transport.js`。其中 `send` 创建话题根消息，`reply` 在线程内回复，
 `patch` 同时负责卡片更新和旧卡片停用。宿主可通过 `transport.botOpenId` 提供机器人身份以移除自身 @ 标记。
 
+内置 hc 后端提供 `inspect(id)`（含 finished 状态）和 `remove(id)`，供回收器先确认退出、再移除。注入的 hc 后端若缺少这两个方法，会跳过自动回收。宿主应保留桥接计时器，并使用同一份私有状态保存唤醒队列及退出意图；无需另建空闲回收任务。
+
 `handle(rawEvent)` 返回 `Promise<boolean>`，接收含 `header.event_type` / `event` 的原始事件，
 也接受 SDK 展平后的 `event_type` / `event_id` 字段；支持 `im.message.receive_v1` 和 `card.action.trigger`。
 未知群、非本桥接卡片、未知事件类型均返回 `false`，不写状态、不发消息。已接管的重复事件和无权限操作返回 `true`。
@@ -231,4 +241,4 @@ await bridge.stop();
 `registry.get(chatId)` 返回 `{chatId, project, cwd, machine, operatorOpenIds}` 或 `null`，`list()` 返回群条目数组。
 内置 registry 合并 `config.chatIds` 和可选的 `config.groups`；每群可配置 `project`、`cwd`、`machine`、
 `operatorOpenIds`，未配置的目录和权限继承全局值，显式空权限数组表示禁止控制。
-原有单群配置保持兼容；version 1 状态首次读取时自动备份并迁移。库包含上述 dormant 与按需唤醒流程，使用 hc 启动恢复命令，标签为 `ft.woken=1` 和 `session=<id>`。空闲回收将在后续阶段接入。
+原有单群配置保持兼容；version 1 状态首次读取时自动备份并迁移。库包含上述 dormant、按需唤醒和空闲回收流程，使用 hc 启动恢复命令，标签为 `ft.woken=1` 和 `session=<id>`。恢复现有用户终端时保留原标签，不会将其标记为可回收。

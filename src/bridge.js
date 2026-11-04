@@ -10,6 +10,7 @@ import { transcriptAdapters } from './transcripts/index.js';
 import { bridgeBackend } from './backends/index.js';
 import { SessionFollow } from './session-follow.js';
 import { Wake } from './wake.js';
+import { Reap } from './reap.js';
 import { auditRecord, appendAudit } from './store.js';
 import { cleanTitle, topicCard, topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
@@ -20,14 +21,15 @@ const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.lengt
   createHash('sha256').update(clean(text)).digest('hex') : null;
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry, wakeOptions }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry, wakeOptions, reapOptions }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
     this.sessionFollow.backend = this.backend;
     this.wake = new Wake(this, wakeOptions);
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
-    this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
+    this.queues = new Map(); this.runtime = new Map(); this.pendingInputs = new Map(); this.stopped = false;
+    this.reap = new Reap(this, reapOptions);
     this.registry = registry ?? createConfigRegistry(config);
     this.picker = new PanePicker(this);
     this.adapters = adapters;
@@ -116,11 +118,33 @@ export class Bridge {
     return this.store.claim(ids);
   }
   // SDK callbacks await only the local durable claim, never socket/API work.
+  trackInput(event) {
+    const id = event.topicId;
+    this.reap.input(id);
+    this.pendingInputs.set(id, (this.pendingInputs.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      const count = this.pendingInputs.get(id) - 1;
+      if (count) this.pendingInputs.set(id, count); else this.pendingInputs.delete(id);
+    };
+  }
   async accept(event) {
-    if (await this.claimEvent(event)) this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId).catch(() => {});
+    const release = this.trackInput(event);
+    try {
+      if (await this.claimEvent(event)) {
+        this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId)
+          .finally(release).catch(() => {});
+        return;
+      }
+    } catch (error) { release(); throw error; }
+    release();
   }
   async handle(event) {
-    if (await this.claimEvent(event)) return this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId);
+    const release = this.trackInput(event);
+    try {
+      if (await this.claimEvent(event)) return await this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId);
+    } finally { release(); }
   }
   async refuse(event) {
     if (event.chatId && event.openId && await this.store.claim([`refusal:${event.chatId}:${event.openId}`])) {
@@ -426,6 +450,7 @@ export class Bridge {
     return result;
   }
   async writeInput(binding, method, params, allowClear = false, staged = false) {
+    this.reap.input(binding.topicId);
     await this.verify(binding);
     const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check && !staged;
     if (wasChecking && !allowClear) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
@@ -673,6 +698,7 @@ export class Bridge {
     }, `card:${binding.topicId}`);
   }
   async input(binding, text, staged = false) {
+    this.reap.input(binding.topicId);
     await this.verify(binding);
     if (this.store.binding(binding.chatId, binding.topicId).needs_check && !staged) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     const state = this.state(binding);
@@ -830,7 +856,7 @@ export class Bridge {
         try { await this.flush(binding); } catch { this.onError('output_flush_failed'); }
         try { await this.refreshCard(binding); } catch { this.onError('card_refresh_failed'); }
       }, `output:${binding.topicId}`)
-    ))).finally(() => { this.tickPending = false; });
+    ))).then(() => this.reap.tick()).finally(() => { this.tickPending = false; });
   }
   async scanSessions() {
     if (this.now() - (this.lastSessionScan ?? -Infinity) < 1000) return;

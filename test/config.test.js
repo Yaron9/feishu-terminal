@@ -66,3 +66,17 @@ test('instance lock refuses a live owner, releases cleanly, recovers a terminate
   const recovered = await acquireLock(file); await recovered();
   await writeFile(file, 'corrupt'); await assert.rejects(acquireLock(file), /Invalid instance lock/);
 });
+
+test('idleMinutes defaults to ten and accepts positive finite durations only', async t => {
+  const dir = await mkdtemp(new URL('../.test-config-idle-', import.meta.url));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'config.json'), base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: dir };
+  const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture', FEISHU_TERMINAL_CONFIG: file };
+  await writeFile(file, JSON.stringify(base)); assert.equal((await loadConfig(env)).idleMinutes, 10);
+  for (const idleMinutes of [1, 0.5, 30]) {
+    await writeFile(file, JSON.stringify({ ...base, idleMinutes })); assert.equal((await loadConfig(env)).idleMinutes, idleMinutes);
+  }
+  for (const idleMinutes of [0, -1, '1', false, null]) {
+    await writeFile(file, JSON.stringify({ ...base, idleMinutes })); await assert.rejects(loadConfig(env), /idleMinutes/);
+  }
+});

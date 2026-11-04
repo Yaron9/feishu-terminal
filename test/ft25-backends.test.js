@@ -70,3 +70,17 @@ test('hc quiet delay and started:false acknowledge once; lost responses are not 
   fake.drop('terminal.send'); await assert.rejects(b.sendText('hc:t1', 'ambiguous', { submit: true }));
   assert.equal(fake.calls.filter(c => c.method === 'terminal.send').length, 2);
 });
+
+test('hc named creation, finished inspection and removal preserve terminal identity', async t => {
+  const fake = await fakeHc(), b = new HcBackend(new HcClient({ endpoint: fake.endpoint, timeoutMs: 300 }));
+  t.after(async () => { b.dispose(); await fake.close(); });
+  const terminal = await b.create('pi', '/tmp', { name: 'w2-fixture', labels: { 'ft.woken': '1', session: 'fixture' } });
+  const run = fake.calls.find(c => c.method === 'terminal.run');
+  assert.equal(run.params.name, 'w2-fixture'); assert.equal(run.params.labels['ft.woken'], '1');
+  await assert.rejects(b.remove(terminal.pane_id), { code: 'live' });
+  await b.close(terminal.pane_id);
+  await assert.rejects(b.get(terminal.pane_id), { code: 'terminal_finished' });
+  const finished = await b.inspect(terminal.pane_id);
+  assert.equal(finished.state, 'finished'); assert.deepEqual(b.identity(finished), b.identity(terminal));
+  await b.remove(terminal.pane_id); await assert.rejects(b.inspect(terminal.pane_id), { code: 'not_found' });
+});

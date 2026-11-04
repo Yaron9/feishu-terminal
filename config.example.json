@@ -5,6 +5,7 @@
   "backends": ["hc", "herdr"],
   "newTerminalBackend": "hc",
   "sessionFollow": "newest",
+  "idleMinutes": 10,
   "stateFile": "./state/bridge.json",
   "auditFile": "./state/audit.jsonl"
 }

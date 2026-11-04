@@ -26,12 +26,15 @@ export async function loadConfig(env = process.env) {
   if ('appId' in config || 'appSecret' in config || 'FEISHU_APP_SECRET' in config) throw new Error('Credentials belong only in env/.env');
   const backends = config.backends ?? ['hc', 'herdr'];
   const newTerminalBackend = config.newTerminalBackend ?? 'hc', sessionFollow = config.sessionFollow ?? 'newest';
+  const idleMinutes = config.idleMinutes === undefined ? 10 : config.idleMinutes;
+  if (typeof idleMinutes !== 'number' || !Number.isFinite(idleMinutes) || idleMinutes <= 0)
+    throw new Error('idleMinutes must be a positive finite number');
   if (!Array.isArray(backends) || !backends.length || new Set(backends).size !== backends.length ||
       !backends.every(b => ['hc', 'herdr'].includes(b)) || !backends.includes(newTerminalBackend) ||
       !['newest', 'warn'].includes(sessionFollow)) throw new Error('Invalid backend/sessionFollow configuration');
   return { chatIds: config.chatIds, operatorOpenIds: config.operatorOpenIds, defaultCwd: config.defaultCwd,
     ...(config.groups === undefined ? {} : { groups: config.groups }),
-    backends, newTerminalBackend, sessionFollow,
+    backends, newTerminalBackend, sessionFollow, idleMinutes,
     stateFile: resolve(dirname(filename), config.stateFile || join(homedir(), '.local/state/feishu-terminal/bridge.json')),
     auditFile: resolve(dirname(filename), config.auditFile || join(homedir(), '.local/state/feishu-terminal/audit.jsonl')) };
 }

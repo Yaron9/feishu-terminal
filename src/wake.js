@@ -199,6 +199,7 @@ export class Wake {
   async control(binding, keys) {
     const b = this.bridge, terminal = await this.target(binding);
     if (!terminal || binding.needs_check) return;
+    b.reap.input(binding.topicId);
     await b.updateGeneration(binding, { needs_check: true });
     await b.backend.sendKeys(terminal.pane_id, keys);
     await b.updateGeneration(binding, { needs_check: false });
