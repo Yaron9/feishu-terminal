@@ -134,9 +134,9 @@ function blockedPrompt(text) {
   return markdown('**等待你确认：** ' + literal(short(prompt || lines.at(-1) || '请查看终端中的确认提示', 300)) + '\n' + accent('点按钮等于在终端里按对应的键'));
 }
 
-function menuPrompt(menu, menuUI) {
+function menuPrompt(menu, menuUI, agent = 'Claude') {
   const warning = menuUI?.confirm ? '\n⚠️ 此会话已在其他终端运行，同时恢复可能损坏会话记录。确定仍要恢复？' : '';
-  return markdown('**Claude 正在等你从菜单里选择**' + (menu.title ? ' · ' + literal(short(menu.title, 100)) : '') +
+  return markdown((menu.context ? codeBlock(menu.context) + '\n' : '') + `**${literal(short(agent, 40))} 正在等你从菜单里选择**` + (menu.title ? ' · ' + literal(short(menu.title, 300)) : '') +
     '\n' + accent('点选项按钮即可选择，无需输入文字。') + warning);
 }
 
@@ -245,13 +245,13 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
 
 // JSON 2.0: one full-width interactive container per menu item. No text limits:
 // Markdown wraps naturally; callbacks carry only the index and safety identity.
-export function menuCard({ menu, topicId, nonce, menuUI = {}, result }) {
+export function menuCard({ menu, topicId, nonce, menuUI = {}, result, agent = 'Claude' }) {
   if (result !== undefined) return roleCard('菜单', result ? 'green' : 'grey',
     [markdown(result ? "<font color='green'>已选择：" + literal(result) + '</font>' : accent('菜单已关闭'))]);
   const controls = menu.kind === 'list' ? menuControls(menu, menuUI) :
     [...menu.items.map((item, i) => [item.label, String(i + 1)]), ['Esc 取消', 'esc'], ['刷新', 'refresh']];
   const value = key => ({ topic_id: topicId, nonce, key });
-  const elements = [menuPrompt(menu, menuUI)];
+  const elements = [menuPrompt(menu, menuUI, agent)];
   for (const [label, key] of controls) {
     const match = /^menu:(?:select|confirm):(\d+)$/.exec(key);
     const index = match ? Number(match[1]) : menu.kind === 'numbered' && /^\d$/.test(key) ? Number(key) - 1 : -1;
@@ -271,7 +271,7 @@ export function menuCard({ menu, topicId, nonce, menuUI = {}, result }) {
     elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(label, 60) },
       type: 'default', behaviors: [{ type: 'callback', value: value(key) }] });
   }
-  const card = roleCard('Claude · 等待菜单选择', 'orange', elements);
+  const card = roleCard(`${short(agent, 40)} · 等待菜单选择`, 'orange', elements);
   if (Buffer.byteLength(JSON.stringify(card)) >= 28000) throw new Error('Menu item exceeds card size limit');
   return card;
 }

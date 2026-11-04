@@ -1,10 +1,36 @@
 import { stripVTControlCharacters } from './ansi.js';
 
 const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
-const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|选择|设置|恢复会话)/i;
+const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|permission|allow|confirm|proceed|do you|would you|选择|设置|恢复会话|是否|确认|允许)/i;
 const chrome = value => !value || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]+$/u.test(value) || /[⌕🔍]|search…|search\.\.\./i.test(value);
 const numbered = line => /^\s*(?:[❯›>│┃║]\s*)?([1-9])[.)、．）]\s*(\S.*)$/u.exec(line);
 const empty = () => ({ kind: null, title: '', items: [], cursorIndex: -1 });
+const unbox = line => line.replace(/^\s*[│┃║]\s?|\s*[│┃║]\s*$/gu, '').trimEnd();
+
+function contextAbove(lines, question) {
+  const context = []; let index = question - 1;
+  while (index >= 0 && !unbox(lines[index]).trim()) index--;
+  for (; index >= 0 && context.length < 12; index--) {
+    const value = unbox(lines[index]);
+    if (chrome(value.trim())) break;
+    context.unshift(value);
+  }
+  // Permission headings often occupy their own block above the command.
+  if (index >= 1 && !lines[index].trim() && /^(?:Bash command|Shell command|Command|File|Tool|Permission)\b/i.test(unbox(lines[index - 1]).trim()))
+    context.unshift(unbox(lines[index - 1]));
+  const text = context.slice(-12).map(line => Array.from(line).slice(0, 300).join('')).join('\n').trim();
+  return text ? { context: text } : {};
+}
+
+// Status/output churn is not proof that a different approval is on screen.
+// Only a recognizable question and its command context can establish that.
+export function approvalContext(text = '') {
+  const lines = stripVTControlCharacters(String(text ?? '')).replace(/\r/g, '').split('\n');
+  const index = lines.findLastIndex(line => !hint.test(line) &&
+    /[?？]|\b(?:permission|allow|confirm|proceed)\b|\[(?:y\/n|yes\/no)\]|enter to continue|是否|确认|允许/i.test(line));
+  if (index < 0) return null;
+  return [contextAbove(lines, index).context, unbox(lines[index]).trim()].filter(Boolean).join('\n');
+}
 
 // Use the visible screen, before preview/chrome removal. All offsets are text
 // columns in that snapshot, not tmux coordinates or transcript line numbers.
@@ -14,11 +40,11 @@ export function detectMenu(text = '') {
   const hintIndex = lines.findLastIndex(line => hint.test(line));
   const numberRows = lines.map((line, index) => ({ match: numbered(line), index })).filter(row => row.match);
   if (numberRows.length && numberRows.every((row, i) => Number(row.match[1]) === i + 1)) {
-    const before = lines.slice(0, numberRows[0].index).filter(line => !chrome(line.trim()));
-    const title = before.at(-1)?.trim() ?? '';
+    const titleIndex = lines.slice(0, numberRows[0].index).findLastIndex(line => !chrome(unbox(line).trim()));
+    const title = titleIndex >= 0 ? unbox(lines[titleIndex]).trim() : '';
     if (numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index])) || hintIndex > numberRows[0].index ||
         /[?？]|permission|allow|confirm|proceed|是否|确认|允许/i.test(title)) {
-      return { kind: 'numbered', title, items: numberRows.map(row => ({ label: row.match[2].trim(), sublabel: '' })),
+      return { kind: 'numbered', title, ...contextAbove(lines, titleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '' })),
         cursorIndex: numberRows.findIndex(row => /^\s*[❯›>]/u.test(lines[row.index])) };
     }
   }
@@ -72,10 +98,12 @@ export function detectMenu(text = '') {
   if (!items.length || cursorIndex < 0 || (items.length === 1 && !namedTitle)) reliable = false;
   // An ordinary > quote without a menu title and siblings is not a menu.
   if (!namedTitle && !reliable) return empty();
-  return { kind: 'list', title, items: reliable ? items : [], cursorIndex: reliable ? cursorIndex : -1 };
+  return { kind: 'list', title, ...(titleIndex >= 0 ? contextAbove(lines, titleIndex) : {}), items: reliable ? items : [], cursorIndex: reliable ? cursorIndex : -1 };
 }
 
 export const sameMenu = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+export const sameMenuChoices = (a, b) => JSON.stringify(a && [a.kind, a.title, a.context ?? '', a.items.map(item => item.label)]) ===
+  JSON.stringify(b && [b.kind, b.title, b.context ?? '', b.items.map(item => item.label)]);
 
 export function resumeWarnings(menu, panes, paneId, screen = '') {
   if (menu?.kind !== 'list' || !/resume\s+session|恢复会话/i.test(menu.title)) return {};
@@ -99,10 +127,11 @@ const warningLabel = warnings => warnings?.length ? `⚠️ 已在 ${Array.from(
 // Conservative serialized row budget includes escaped Markdown, callback metadata
 // and layout. Reduce the whole page, never a session title.
 export function menuPageSize(menu, warnings = {}) {
+  const budget = Math.max(1000, 20000 - Buffer.byteLength(JSON.stringify(menu.context ?? '').replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
   const costs = menu.items.map((item, index) => 900 + Buffer.byteLength(JSON.stringify(
     [item.label, item.sublabel, warnings[index] ?? []]).replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
   for (let size = 10; size > 1; size--) {
-    if (costs.every((_, i) => i % size || costs.slice(i, i + size).reduce((a, b) => a + b, 0) < 20000)) return size;
+    if (costs.every((_, i) => i % size || costs.slice(i, i + size).reduce((a, b) => a + b, 0) < budget)) return size;
   }
   return 1;
 }

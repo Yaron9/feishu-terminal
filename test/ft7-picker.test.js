@@ -178,12 +178,12 @@ test('explicit close --kill remains immediate for desktop and working agents', a
   assert.ok(!h.feishu.calls.some(c => c.msgType === 'interactive'));
 });
 
-test('screen buttons also expire after ten minutes and never send a terminal key', async t => {
+test('screen buttons remain valid after ten minutes when the approval is unchanged', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
   const b = h.store.binding('oc_test', 'm1'), before = h.fake.calls.length; h.advance(600000);
   await h.bridge.handle({ kind: 'button', eventId: 'expired-screen', chatId: 'oc_test', openId: 'ou_test',
     topicId: 'm1', messageId: b.cardId, nonce: b.nonce, key: 'enter' });
-  assert.equal(h.fake.calls.length, before); assert.match(h.feishu.calls.at(-1).content, /卡片已过期/);
+  assert.equal(h.fake.calls.slice(before).filter(c => c.method === 'pane.send_keys').length, 1);
 });
 
 test('picker binds desktop workspaces with exact identity checks while text open keeps its workspace restriction', async t => {

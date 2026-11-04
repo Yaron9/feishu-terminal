@@ -199,7 +199,7 @@ test('hc list outage and external process evidence cannot authorize a competing 
   }
 });
 
-test('a valid own-card action wakes a dormant topic; foreign, expired and unauthorized cards cannot', async t => {
+test('a valid own-card action wakes a dormant topic; foreign and unauthorized cards cannot', async t => {
   const h = await harness(t); await h.bridge.refresh(h.binding(), true); await h.dormant();
   h.onRun = term => h.ready(term);
   await h.click('refresh', { messageId: 'foreign-card' });
@@ -281,10 +281,11 @@ test('a replaced wake target freezes without delivering queued input or sending 
   assert.equal(h.binding().queuedInputs.length, 1);
 });
 
-test('an expired dormant own-card cannot launch a process', async t => {
+test('a dormant own-card can still wake its session after ten minutes', async t => {
   const h = await harness(t); await h.bridge.refresh(h.binding(), true); await h.dormant(); h.advance(600000);
-  await h.click(); assert.equal(h.runs().length, 0);
-  assert.ok(h.feishu.calls.some(c => c.content === '卡片已过期，请重新 /t screen'));
+  h.onRun = terminal => h.ready(terminal);
+  await h.click(); assert.equal(h.runs().length, 1);
+  assert.ok(!h.feishu.calls.some(c => c.content === '卡片已过期，请重新 /t screen'));
 });
 
 test('a timeout key is skipped if the CLI became ready; queued text still arrives once', async t => {

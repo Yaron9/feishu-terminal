@@ -259,13 +259,13 @@ test('ft13 state and pending legacy output migrate without dropping UUIDs or rep
   await h.restart(); await poll(2000); assert.equal(replies(h).length, 1);
 });
 
-test('expired blocked controls refuse keys, /t screen renews them and still sends the full viewport', async t => {
+test('unchanged blocked controls remain actionable after ten minutes, and /t screen still sends the full viewport', async t => {
   const { h, pane, records, binding, poll } = await setup(t);
   pane.agent_status = 'blocked'; pane.visible = 'Full viewport with terminal chrome';
   records.push({ role: 'assistant', text: 'Waiting' }); await poll(); const old = binding();
   h.advance(600000); await h.bridge.handle(click(old));
-  assert.ok(h.feishu.calls.some(c => typeof c.content === 'string' && c.content.includes('卡片已过期')));
-  assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 0);
+  assert.ok(!h.feishu.calls.some(c => typeof c.content === 'string' && c.content.includes('卡片已过期')));
+  assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 1);
   await h.bridge.handle(message('/t screen', 'screen', old.topicId));
   assert.notEqual(binding().nonce, old.nonce); assert.equal(binding().cardId, old.cardId);
   assert.equal(replies(h).length, 1);
