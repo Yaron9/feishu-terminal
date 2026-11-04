@@ -14,7 +14,7 @@ export function topicTitle(pane, fallback) {
   return title || (activityOnly && cleanTitle(fallback)) || cleanTitle(pane.name) ||
     cleanTitle(pane.agent) || cleanTitle(pane.foreground?.name) || cleanTitle(fallback) || path.split('/').pop() || '终端';
 }
-export function topicCard(pane, title = topicTitle(pane), home = homedir(), sessionId = null) {
+export function topicCard(pane, title = topicTitle(pane), home = homedir(), sessionId = null, sessionTitle = title) {
   const path = String(pane.foreground_cwd || pane.cwd || '').replace(/\\/g, '/');
   const base = home.replace(/\\/g, '/').replace(/\/$/, '');
   const dir = path === base || path.startsWith(base + '/') ? '~' + path.slice(base.length) : path || '未提供目录';
@@ -22,5 +22,5 @@ export function topicCard(pane, title = topicTitle(pane), home = homedir(), sess
   const escape = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return withSessionHeader({ schema: '2.0', config: { update_multi: true },
     header: { title: { tag: 'plain_text', content: title } },
-    body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${escape(`${agent} · ${dir} · ${pane.pane_id}`)}</font>` }] } }, { title, sessionId });
+    body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${escape(`${agent} · ${dir} · ${pane.pane_id}`)}</font>` }] } }, { title: sessionTitle, sessionId });
 }

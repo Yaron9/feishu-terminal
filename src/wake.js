@@ -17,6 +17,7 @@ export class Wake {
     if (sessionTitle && sessionTitle !== b.store.binding(binding.chatId, binding.topicId)?.sessionTitle) {
       if (await b.updateGeneration(binding, { sessionTitle })) state.cardPending = state.forceTurnCard = true;
     }
+    await b.tree.observe(binding, terminal);
     if (b.now() - (state.lastSessionProbe ?? -Infinity) < 1000) return;
     state.lastSessionProbe = b.now();
     const facts = await b.sessionFollow.describe(terminal);
@@ -32,6 +33,7 @@ export class Wake {
     const b = this.bridge;
     await b.updateGeneration(binding, { dormant: true, frozen: false, pendingCard: null, pendingMenuCard: null,
       outputBatch: null, recoveryPending: null });
+    await b.tree.finished(binding);
     b.state(binding).verified = false; b.resubscribe();
   }
   async route(binding, action) {

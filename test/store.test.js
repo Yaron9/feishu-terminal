@@ -70,6 +70,16 @@ test('concurrent claims are durable, bounded, and dedupe both event and message 
   assert.equal(store.data.seen.length, 4); assert.equal(await store.claim(['m1']), true);
   assert.equal(await store.claim([]), false);
 });
+
+test('a known duplicate claim from a loaded observer cannot overwrite newer bindings or tree metadata', async t => {
+  const { store } = await fixture(t);
+  await store.claim(['message:already-claimed']);
+  const observer = await new Store(store.file).load();
+  await store.bind({ chatId: 'fixture-chat', topicId: 'fixture-child', paneId: 'hc:t1',
+    identity: { terminalId: 'fixture-terminal' }, tree: { parentTopicId: 'fixture-parent' } });
+  assert.equal(await observer.claim(['message:already-claimed']), false);
+  assert.deepEqual((await new Store(store.file).load()).list(), store.list());
+});
 test('corrupt state fails closed and audit never contains typed input', async t => {
   const { dir, store } = await fixture(t);
   await writeFile(store.file, '{broken'); await assert.rejects(new Store(store.file).load());

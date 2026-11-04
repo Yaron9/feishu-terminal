@@ -1,7 +1,7 @@
 // Message cards cannot change JSON schema after delivery. Keep rendering
 // independent of the current terminal mode, which can change across restarts.
 export const cardVersion = card => card.schema === '2.0' ? '2.0' : '1.0';
-export const kindVersion = kind => ({ status: '1.0', picker: '1.0', turn: '2.0', menu: '2.0', root: '2.0' })[kind];
+export const kindVersion = kind => ({ status: '1.0', picker: '1.0', turn: '2.0', menu: '2.0', root: '2.0', tree: '2.0' })[kind];
 
 export function renderSchema(card, version) {
   if (cardVersion(card) === version && version === '1.0') return card;

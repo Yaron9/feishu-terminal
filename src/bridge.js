@@ -12,8 +12,9 @@ import { bridgeBackend } from './backends/index.js';
 import { SessionFollow } from './session-follow.js';
 import { Wake } from './wake.js';
 import { Reap } from './reap.js';
+import { TerminalTree } from './terminal-tree.js';
 import { auditRecord, appendAudit } from './store.js';
-import { topicCard, topicTitle } from './topics.js';
+import { topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
@@ -33,6 +34,7 @@ export class Bridge {
     this.reap = new Reap(this, reapOptions);
     this.registry = registry ?? createConfigRegistry(config);
     this.picker = new PanePicker(this);
+    this.tree = new TerminalTree(this);
     this.adapters = adapters;
   }
   get queue() { return Promise.all([...this.queues.values()]); }
@@ -63,6 +65,7 @@ export class Bridge {
   async start({ timers = true } = {}) {
     this.starting = true;
     await this.scanSessions();
+    await this.tree.tick();
     for (const b of this.store.list()) {
       this.state(b);
       if (this.registry.get(b.chatId)) await this.verify(b).catch(() => {});
@@ -302,13 +305,17 @@ export class Bridge {
     return { title: current.sessionTitle || current.topicRoot?.publishedTitle || current.topicRoot?.text || '终端',
       sessionId: current.sessionId ?? current.claudeSessionId ?? null };
   }
-  sessionCard(card, binding) { return withSessionHeader(card, this.sessionIdentity(binding)); }
+  sessionCard(card, binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    return this.tree.decorate(withSessionHeader(card, this.sessionIdentity(current)), current);
+  }
   async newRoot(pane, fallback, known = {}) {
     const title = topicTitle(pane, fallback), facts = await this.sessionFollow.describe(pane);
     const sessionId = facts.sessionId ?? known.sessionId ?? null;
-    const card = topicCard(pane, title, undefined, sessionId);
+    const card = this.tree.root(pane, title, sessionId, known), publishedTitle = card.header.title.content;
     return { card, session: { ...facts, sessionId, sessionTitle: title },
-      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title, publishedSessionId: sessionId,
+      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: publishedTitle, publishedTitle, publishedSessionId: sessionId,
+      publishedTreeHeader: JSON.stringify(this.tree.view({ ...known, sessionTitle: title }, pane)),
       createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
   async syncTopicTitle(binding, pane) {
@@ -320,17 +327,19 @@ export class Bridge {
     if (now - root.createdAt >= 14 * 86400000) {
       await this.updateGeneration(binding, { topicRoot: { ...root, stopped: true } }); return;
     }
-    const session = this.sessionIdentity(binding), title = topicTitle(pane, session.title), sessionId = session.sessionId;
-    const candidate = JSON.stringify([title, sessionId]);
+    const current = this.store.binding(binding.chatId, binding.topicId), session = this.sessionIdentity(current);
+    const ownTitle = topicTitle(pane, session.title), title = this.tree.title(pane, ownTitle, current), sessionId = session.sessionId;
+    const treeHeader = JSON.stringify(this.tree.view(current, pane));
+    const candidate = JSON.stringify([title, sessionId, treeHeader]);
     if (state.titleCandidate !== candidate) { state.titleCandidate = candidate; state.titleSince = now; }
-    if ((title === root.publishedTitle && sessionId === (root.publishedSessionId ?? null)) || now - state.titleSince < 10000 ||
+    if ((title === root.publishedTitle && sessionId === (root.publishedSessionId ?? null) && treeHeader === (root.publishedTreeHeader ?? 'null')) || now - state.titleSince < 10000 ||
         (root.lastAttemptAt !== null && now - root.lastAttemptAt < 60000)) return;
     await this.verify(binding);
     const attempted = { ...root, lastAttemptAt: now };
     await this.updateGeneration(binding, { topicRoot: attempted });
     try {
-      await this.patchCard(binding.topicId, topicCard(pane, title, undefined, sessionId), 'root');
-      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title, publishedSessionId: sessionId } });
+      await this.patchCard(binding.topicId, this.tree.root(pane, ownTitle, sessionId, current), 'root');
+      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title, publishedSessionId: sessionId, publishedTreeHeader: treeHeader } });
     } catch (error) {
       if (['230031', '230011', '230110'].includes(String(error.code)))
         await this.updateGeneration(binding, { topicRoot: { ...attempted, stopped: true } });
@@ -576,8 +585,9 @@ export class Bridge {
   async open(event, paneId, expectedTerminalId) {
     return this.enqueue(() => this.openSerial(event, paneId, expectedTerminalId), `open:${paneId}`);
   }
-  async openSerial(event, paneId, expectedTerminalId) {
+  async openSerial(event, paneId, expectedTerminalId, options = {}) {
     const existing = this.store.forPane(paneId);
+    if (options.automatic && existing) return existing.topicId;
     if (existing && existing.chatId !== event.chatId) throw new Error('终端已变化，请重新 /t ls');
     if (existing && !existing.frozen) return this.recoverOpen(event, existing, expectedTerminalId);
     const identity = await this.identity(paneId, Boolean(expectedTerminalId));
@@ -600,10 +610,16 @@ export class Bridge {
     const panes = await this.backend.list();
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
-    const root = await this.newRoot(pane);
-    const topicId = await this.feishu.send(event.chatId, root.card);
+    const tree = options.intent?.tree ?? this.tree.relation(pane, event.chatId);
+    const root = options.intent?.root ?? await this.newRoot(pane, undefined, { tree, chatId: event.chatId });
+    if (options.automatic) {
+      const parent = this.store.binding(event.chatId, options.intent.parentTopicId);
+      if (!parent || parent.frozen || parent.dormant || !this.registry.get(event.chatId) || this.tree.parentId(pane) !== parent.paneId) return;
+      await this.verify(parent);
+    }
+    const topicId = await this.feishu.send(event.chatId, root.card, options.intent?.uuid);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...root.session, topicRoot: root.metadata, welcomePending: true,
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...root.session, ...(tree ? { tree } : {}), topicRoot: root.metadata, welcomePending: true,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
@@ -660,6 +676,7 @@ export class Bridge {
             const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
             if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
             Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
+              topicNavigation: null, childrenCard: null,
               cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
               welcomePending: true, firstTipTurnId: null, tipTurnId: null, tipText: null,
               lastTipAt: null, tipIndex: 0, backgroundTailCache: null,
@@ -667,6 +684,11 @@ export class Bridge {
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
               retiredCardId: undefined, retiredCardKind: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
               ...root.session, topicRoot: root.metadata });
+            for (const child of data.bindings) if (child.chatId === binding.chatId && child.tree?.parentTopicId === binding.topicId)
+              Object.assign(child.tree, { parentTopicId: topicId, parentTerminalId: current.identity.terminalId });
+            for (const intent of data.childTopics ?? []) if (intent.chatId === binding.chatId && intent.parentTopicId === binding.topicId) {
+              intent.parentTopicId = topicId; intent.tree.parentTopicId = topicId;
+            }
             for (const pointer of data.topicPointers ?? []) {
               if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
                 Object.assign(pointer, { topicId, title: text });
@@ -761,6 +783,7 @@ export class Bridge {
     return true;
   }
   async button(event, binding) {
+    if (event.key?.startsWith('tree:')) { await this.tree.navigate(event, binding); return; }
     if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
     if (event.key !== 'refresh' && !validKeys([event.key]) && !/^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '')) {
       await this.feishu.reply(event.topicId || event.messageId, '该按钮已停用'); return;
@@ -942,6 +965,7 @@ export class Bridge {
         for (const id of this.runtime.keys()) if (!topics.has(id)) this.runtime.delete(id);
       }
       await this.scanSessions();
+      await this.tree.tick();
     })().then(() => Promise.all(this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && this.state(b).verified).map(binding =>
       this.enqueue(async () => {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;

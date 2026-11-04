@@ -108,6 +108,9 @@ export class Store {
   // history, including crashes; ambiguous/failed input is never replayed.
   claim(ids) {
     const keys = [...new Set(ids.filter(Boolean))];
+    // A known rejection needs no write. In particular, a loaded observer must
+    // not replace newer persisted state just to reject an already claimed ID.
+    if (!keys.length || keys.some(id => this.data.seen.includes(id))) return Promise.resolve(false);
     return this.transaction(data => {
       if (!keys.length || keys.some(id => data.seen.includes(id))) return false;
       data.seen.push(...keys); data.seen = data.seen.slice(-this.dedupeLimit); return true;
@@ -117,6 +120,7 @@ export class Store {
     return this.transaction(data => {
       if (data.bindings.some(b => b.topicId === binding.topicId || b.paneId === binding.paneId)) throw new Error('Topic or pane already bound');
       data.bindings.push({ ...binding, generation: randomUUID(), nonce: randomUUID() });
+      if (binding.tree) data.treeSeen = [...new Set([...(data.treeSeen ?? []), binding.identity.terminalId])];
     });
   }
   update(chatId, topicId, patch) {

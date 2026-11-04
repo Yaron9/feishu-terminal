@@ -184,7 +184,7 @@ test('a manually opened child shows its own session identity and escaped title',
     foreground: { pid: 1201, name: 'pi', argv: ['pi'], cwd: h.config.defaultCwd } });
   await h.bridge.handle(message(`/t open hc:${child.address}`, 'open-child'));
   const root = h.feishu.calls.findLast(c => c.type === 'send').text;
-  assert.equal(root.header.title.content, '<at id=all> **child**');
+  assert.equal(root.header.title.content, '└ <at id=all> **child** · Design session');
   assert.match(header(root), /&lt;at id=all&gt; \\\*\\\*child\\\*\\\* · child-fi/);
   assert.ok(!header(root).includes('<at'));
   await h.bridge.handle(message('/t info', 'child-info', h.store.forPane(`hc:${child.address}`).topicId));
