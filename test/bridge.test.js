@@ -107,7 +107,7 @@ test('message/event dedupe persists across restart and ACL refuses once without 
   await h.bridge.handle(message('bad', 'denied', 'denied', { openId: 'ou_bad' }));
   await h.bridge.handle(message('bad again', 'denied2', 'denied2', { openId: 'ou_bad' }));
   await h.bridge.handle(message('wrong group', 'denied3', 'denied3', { chatId: 'oc_other' }));
-  assert.equal(h.fake.calls.length, 0); assert.equal(h.feishu.calls.length, 2);
+  assert.equal(h.fake.calls.length, 0); assert.equal(h.feishu.calls.length, 1);
   await Promise.all(Array.from({ length: 4 }, () => h.bridge.handle(message('pwd'))));
   assert.equal(writes(h.fake).length, 2);
   const restored = await h.restart(); assert.equal(restored.binding('oc_test', 'm1').paneId, 'w1:p1');

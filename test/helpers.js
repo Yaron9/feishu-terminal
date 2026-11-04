@@ -172,7 +172,7 @@ export async function harness(t, { BridgeClass = Bridge, ...bridgeOptions } = {}
   const config = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: '/tmp', stateFile: store.file, auditFile: join(temp, 'audit.jsonl') };
   const makeBridge = state => new BridgeClass({ herdr: new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 300, reconnectMs: 10 }), feishu,
     store: state, config, now, audit: async record => audits.push(record), onError: code => errors.push(code), ...bridgeOptions });
-  let bridge = makeBridge(store); await bridge.start({ timers: false });
+  let bridge = makeBridge(store); feishu.deliver = event => bridge.accept(event); await bridge.start({ timers: false });
   t.after(async () => { await bridge.stop(); await fake.close(); await rm(temp, { recursive: true, force: true }); });
   return { fake, store, feishu, audits, errors, now, config,
     get bridge() { return bridge; },

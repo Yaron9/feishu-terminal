@@ -1,3 +1,4 @@
+import { createConfigRegistry } from './registry.js';
 import { cardVersion, renderSchema, patchStoredCard, retirementCard } from './card-schema.js';
 import { backgroundView, screenActivity, refreshBackgroundTails } from './transcripts/background.js';
 import { planTurnTip } from './card-tips.js';
@@ -18,13 +19,13 @@ const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.lengt
   createHash('sha256').update(clean(text)).digest('hex') : null;
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
     this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
-    this.chatId = config.chatIds[0];
+    this.registry = registry ?? createConfigRegistry(config);
     this.picker = new PanePicker(this);
     this.adapters = adapters;
   }
@@ -49,29 +50,28 @@ export class Bridge {
     await this.scanSessions();
     for (const b of this.store.list()) {
       this.state(b);
-      if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
-      if (b.chatId === this.chatId && this.state(b).verified)
+      if (this.registry.get(b.chatId)) await this.verify(b).catch(() => {});
+      if (this.registry.get(b.chatId) && this.state(b).verified)
         await this.initializeTranscript(b).catch(() => this.onError('transcript_unavailable'));
-      if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
+      if (this.registry.get(b.chatId) && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
         await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
     }
     this.starting = false;
     this.resubscribe();
-    await this.feishu.start(event => this.accept(event), this.onError);
     if (timers) this.timer = setInterval(() => { this.tick().catch(() => {}); }, 250);
   }
   async stop() {
     this.stopped = true; clearInterval(this.timer); this.unsubscribe?.();
-    this.feishu.close(); await this.queue; this.backend.dispose();
+    await this.queue; await this.backend.dispose();
   }
   resubscribe() {
     if (this.starting) return;
     this.unsubscribe?.();
-    const panes = this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(b => b.paneId);
+    const panes = this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && this.state(b).verified).map(b => b.paneId);
     if (panes.length) this.unsubscribe = this.backend.subscribe(panes, event => {
       const data = event.data ?? {};
       const binding = this.store.forPane(data.pane_id ?? data.pane?.pane_id);
-      if (!binding || binding.chatId !== this.chatId || binding.frozen || !this.state(binding).verified) return;
+      if (!binding || !this.registry.get(binding.chatId) || binding.frozen || !this.state(binding).verified) return;
       this.enqueue(async () => {
         const state = this.state(binding); state.dirty = true;
         if (data.agent_status) this.status(state, data.agent_status, data.agent);
@@ -128,7 +128,9 @@ export class Bridge {
   async receive(event) {
     if (this.stopped) return;
     if (event.kind === 'message' && event.senderType !== 'user') return; // never loop on bot output
-    if (event.chatId !== this.chatId || !this.config.operatorOpenIds.includes(event.openId)) {
+    const group = this.registry.get(event.chatId);
+    if (!group) return;
+    if (!(group.operatorOpenIds ?? this.config.operatorOpenIds ?? []).includes(event.openId)) {
       await this.refuse(event); return;
     }
     const binding = this.store.binding(event.chatId, event.topicId);
@@ -204,7 +206,7 @@ export class Bridge {
       this.store.list().find(b => b.chatId === event.chatId && b.claudeSessionId === sessionId);
     if (original) {
       await this.log(event, original, 'session_resume_input', action.text);
-      const pane = await this.backend.create(action.text, this.config.defaultCwd);
+      const pane = await this.backend.create(action.text, this.registry.get(event.chatId)?.cwd ?? this.config.defaultCwd);
       await this.store.transaction(data => {
         (data.createdTerminals ??= []).push(pane.terminal_id);
         (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId,
@@ -212,7 +214,7 @@ export class Bridge {
       });
       await this.pointToTopic(event); return;
     }
-    const pane = await this.createPane();
+    const pane = await this.createPane(event.chatId);
     const identity = await this.identity(pane.pane_id);
     const root = this.newRoot(pane, action.text);
     const topicId = await this.feishu.send(event.chatId, root.card);
@@ -481,11 +483,11 @@ export class Bridge {
       transcript: { adapter: source.key, path: source.path, cursor,
         lastRecordAt: cursor.offset !== checkpoint.cursor.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
   }
-  async createPane() {
-    return this.enqueue(() => this.createPaneSerial(), 'pane-create');
+  async createPane(chatId) {
+    return this.enqueue(() => this.createPaneSerial(chatId), 'pane-create');
   }
-  async createPaneSerial() {
-    const pane = await this.backend.create(null, this.config.defaultCwd);
+  async createPaneSerial(chatId) {
+    const pane = await this.backend.create(null, this.registry.get(chatId)?.cwd ?? this.config.defaultCwd);
     if (pane?.terminal_id) await this.store.transaction(data => {
       data.createdTerminals ??= [];
       if (!data.createdTerminals.includes(pane.terminal_id)) data.createdTerminals.push(pane.terminal_id);
@@ -493,7 +495,7 @@ export class Bridge {
     return pane;
   }
   label(pane) {
-    const binding = this.store.list().find(b => b.chatId === this.chatId && b.paneId === pane.pane_id);
+    const binding = this.store.list().find(b => b.paneId === pane.pane_id);
     return paneLabel(pane, { bound: Boolean(binding), frozen: Boolean(binding?.frozen),
       owned: this.store.data.createdTerminals?.includes(pane.terminal_id) });
   }
@@ -787,7 +789,7 @@ export class Bridge {
         for (const id of this.runtime.keys()) if (!topics.has(id)) this.runtime.delete(id);
       }
       await this.scanSessions();
-    })().then(() => Promise.all(this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(binding =>
+    })().then(() => Promise.all(this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && this.state(b).verified).map(binding =>
       this.enqueue(async () => {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
@@ -802,11 +804,11 @@ export class Bridge {
   async scanSessions() {
     if (this.now() - (this.lastSessionScan ?? -Infinity) < 1000) return;
     this.lastSessionScan = this.now();
-    for (const b of this.store.list().filter(b => b.chatId === this.chatId && (b.frozen || b.recoveryPending))) {
+    for (const b of this.store.list().filter(b => this.registry.get(b.chatId) && (b.frozen || b.recoveryPending))) {
       await this.enqueue(() => this.enqueue(() => this.healBinding(b), `output:${b.topicId}`), b.topicId)
         .catch(() => this.onError('binding_recovery_failed'));
     }
-    for (const snapshot of this.store.list().filter(b => b.chatId === this.chatId)) {
+    for (const snapshot of this.store.list().filter(b => this.registry.get(b.chatId))) {
       // Input, output and card work all drain before the atomic retarget.
       await this.enqueue(() => this.enqueue(() => this.enqueue(async () => {
         let binding = this.store.binding(snapshot.chatId, snapshot.topicId);
@@ -878,7 +880,7 @@ export class Bridge {
       }, `card:${snapshot.topicId}`), `output:${snapshot.topicId}`), snapshot.topicId).catch(() => this.onError('session_follow_failed'));
     }
     let recovered = false;
-    for (const b of this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && !this.state(b).verified)) {
+    for (const b of this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && !this.state(b).verified)) {
       await this.verify(b).catch(() => {});
       recovered ||= this.state(b).verified;
     }
