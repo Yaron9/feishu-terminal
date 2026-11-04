@@ -13,12 +13,15 @@ async function opened(t) {
   return { h, pane };
 }
 
-test('root card is a shared session title and one grey agent/directory/pane line', () => {
+test('root card shows the session title, identity header and grey agent/directory/pane line', () => {
   const pane = { terminal_title_stripped: '✻ Session A', cwd: '/home/me/project', agent: 'claude', pane_id: 'w2:p1' };
   const card = topicCard(pane, topicTitle(pane), '/home/me');
   assert.equal(card.header.title.content, 'Session A');
   assert.equal(card.config.update_multi, true);
-  assert.deepEqual(card.body.elements, [{ tag: 'markdown', content: "<font color='grey'>Claude · ~/project · w2:p1</font>" }]);
+  assert.deepEqual(card.body.elements, [
+    { tag: 'markdown', content: "<font color='grey'>会话：Session A · 编号未知</font>" },
+    { tag: 'markdown', content: "<font color='grey'>Claude · ~/project · w2:p1</font>" },
+  ]);
   assert.equal(topicTitle({ cwd: '/a/project' }), 'project');
   assert.equal(topicTitle({}), '终端');
   assert.equal(topicTitle({ terminal_title_stripped: '⠋ ✻' }), '终端');

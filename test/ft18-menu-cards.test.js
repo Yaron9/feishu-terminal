@@ -107,12 +107,12 @@ test('ft18 long Chinese titles remain whole across reduced pages, and hidden ind
   const b = bound(h), card = payload(h.feishu.calls.findLast(c => c.id === b.menuCardId));
   assert.ok(b.menuPageSize < 10);
   assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000);
-  assert.ok(card.body.elements[1].elements[0].content.includes(title + '0'));
+  assert.ok(card.body.elements[2].elements[0].content.includes(title + '0'));
   await tap(h, `menu:select:${b.menuPageSize}`);
   assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 0);
   await tap(h, 'menu:more'); h.advance(1000); await h.bridge.tick();
   const next = payload(h.feishu.calls.findLast(c => c.id === b.menuCardId));
-  assert.ok(next.body.elements[1].elements[0].content.includes(title + b.menuPageSize));
+  assert.ok(next.body.elements[2].elements[0].content.includes(title + b.menuPageSize));
   assert.ok(Buffer.byteLength(JSON.stringify(next)) < 28000);
 });
 

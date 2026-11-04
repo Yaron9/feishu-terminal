@@ -46,9 +46,9 @@ test('many tool batches share one turn card with bounded cumulative text and pat
   assert.equal(replies(h).length, 1); assert.equal(binding().cardId, id);
   assert.equal(binding().turn.toolCount, 24);
   const card = patches(h, id).at(-1).card;
-  assert.match(card.body.elements[0].content, /Start[\s\S]*Step 23/);
-  assert.equal(card.body.elements[1].header.title.content, '🔧 工具调用 (24)');
-  assert.equal(card.body.elements[1].expanded, false);
+  assert.match(card.body.elements[1].content, /Start[\s\S]*Step 23/);
+  assert.equal(card.body.elements[2].header.title.content, '🔧 工具调用 (24)');
+  assert.equal(card.body.elements[2].expanded, false);
   const times = [replies(h)[0].time, ...patches(h, id).map(c => c.time)];
   assert.ok(times.length > 2);
   assert.ok(times.slice(1).every((time, i) => time - times[i] >= 2000), times.join(','));
@@ -85,7 +85,7 @@ test('settle finalizes the same card without controls and the next assistant ite
   await poll(10000); assert.equal(replies(h).length, 1);
   records.push({ role: 'assistant', text: 'Second answer' }); await poll();
   assert.equal(replies(h).length, 2); assert.notEqual(binding().cardId, first.cardId);
-  assert.equal(replies(h)[1].content.body.elements[0].content, 'Second answer');
+  assert.equal(replies(h)[1].content.body.elements[1].content, 'Second answer');
 });
 
 test('a user turn does not settle on the previous idle sample before its first assistant output', async t => {
@@ -226,7 +226,7 @@ test('move carries the live turn into a new topic without replaying text, tools 
   assert.notEqual(moved.generation, old.generation); assert.equal(replies(h)[1].topicId, moved.topicId);
   await h.restart(); records.push({ role: 'tool', text: 'Second tool' }); await poll(2000);
   assert.equal(replies(h).length, 2); assert.equal(binding().turn.toolCount, 2);
-  assert.equal(patches(h, moved.cardId).at(-1).card.body.elements[1].header.title.content, '🔧 工具调用 (2)');
+  assert.equal(patches(h, moved.cardId).at(-1).card.body.elements[2].header.title.content, '🔧 工具调用 (2)');
 });
 
 test('move preserves a throttled output batch and completes it in the old topic before moving', async t => {

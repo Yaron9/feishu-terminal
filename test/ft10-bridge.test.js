@@ -35,8 +35,8 @@ test('Claude cards distinguish desktop input, assistant and tools; Feishu input 
   const cards = conversation(h);
   assert.deepEqual(cards.map(c => c.content.header.title.content),
     ['🤖 Claude · 已完成', '🧑 电脑端输入', '🤖 Claude · 已完成', '🧑 电脑端输入', '🤖 Claude · 工作中']);
-  assert.equal(cards[0].content.body.elements[1].header.title.content, '🔧 工具调用 (1)');
-  assert.equal(cards[0].content.body.elements[1].expanded, false);
+  assert.equal(cards[0].content.body.elements[2].header.title.content, '🔧 工具调用 (1)');
+  assert.equal(cards[0].content.body.elements[2].expanded, false);
   assert.ok(!JSON.stringify(h.feishu.calls).includes('old history'));
   const binding = h.bridge.store.forPane('w1:p1'); assert.deepEqual(binding.sentInputs, []);
   assert.equal(binding.transcript.cursor.offset, Buffer.byteLength(user('old history') + user('phone question') + assistant('Answer from Claude') + user('desktop question') + user('phone question')));

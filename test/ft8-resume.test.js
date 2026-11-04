@@ -108,11 +108,23 @@ test('failed old-card retirement survives restart without republishing the recov
   assert.equal(active.retiredCardId, old.cardId); assert.notEqual(active.cardId, old.cardId);
   const count = screens(h).length, before = writes(h).length;
   await h.bridge.handle(screenClick(old)); assert.equal(writes(h).length, before);
+  const restartAt = h.feishu.calls.length;
   h.feishu.patch = patch; await h.restart();
   assert.equal(h.bridge.store.binding('oc_test', 'm1').retiredCardId, undefined);
   assert.equal(h.bridge.store.binding('oc_test', 'm1').cardId, active.cardId);
   assert.equal(screens(h).length, count);
   assert.match(JSON.stringify(h.feishu.calls.at(-1).card), /已移至下方新卡片/);
+  assert.ok(!h.feishu.calls.slice(restartAt).some(c => c.type === 'patch' && c.id === active.cardId));
+  assert.ok(!JSON.stringify(h.feishu.calls.slice(restartAt)).includes('undefined'));
+  // The first verified read supplies the real status/screen for the header
+  // refresh deferred at startup, without recreating the recovery reply.
+  h.fake.panes.get('w1:p1').visible = 'Approval after restart';
+  h.advance(1000); await h.bridge.tick();
+  const refreshed = h.feishu.calls.findLast(c => c.type === 'patch' && c.id === active.cardId);
+  assert.ok(refreshed);
+  assert.match(JSON.stringify(refreshed.card), /Approval after restart/);
+  assert.match(refreshed.card.header.title.content, /等待你确认/);
+  assert.equal(screens(h).length, count);
 });
 
 test('recovery refuses changed identities and bindings owned by another chat', async t => {

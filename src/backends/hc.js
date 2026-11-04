@@ -204,6 +204,9 @@ export class HcBackend {
   status(t, screen = '') {
     if (t.reported) return ({ done: 'idle', error: 'blocked' })[t.status?.state] ??
       (['working', 'blocked', 'idle'].includes(t.status?.state) ? t.status.state : 'unknown');
+    // A shell/SSH wrapper cannot report the remote CLI's readiness. Its screen
+    // may contain a prompt or spinner belonging to a different process.
+    if (t.agent && !lookupCli(t) && !t.status) return 'unknown';
     if (detectMenu(screen).kind) return 'blocked';
     if (screenActivity(screen).spinner) return 'working';
     return /(?:[❯›]\s*$|\?\s+for shortcuts)/mu.test(screen) ? 'idle' : 'unknown';

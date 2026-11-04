@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CLI_TABLE, sameCwd } from './cli-table.js';
 import { screenCard } from './render.js';
+import { topicTitle } from './topics.js';
 
 const ended = error => ['pane_not_found', 'terminal_finished', 'not_found'].includes(error.code);
 
@@ -12,6 +13,10 @@ export class Wake {
   }
   async observe(binding, terminal) {
     const b = this.bridge, state = b.state(binding);
+    const sessionTitle = topicTitle(terminal, b.sessionIdentity(binding).title);
+    if (sessionTitle && sessionTitle !== b.store.binding(binding.chatId, binding.topicId)?.sessionTitle) {
+      if (await b.updateGeneration(binding, { sessionTitle })) state.cardPending = state.forceTurnCard = true;
+    }
     if (b.now() - (state.lastSessionProbe ?? -Infinity) < 1000) return;
     state.lastSessionProbe = b.now();
     const facts = await b.sessionFollow.describe(terminal);
@@ -19,7 +24,9 @@ export class Wake {
     if (!b.sameGeneration(binding, current)) return;
     const changed = facts.cli !== current.cli || facts.cwd !== current.cwd;
     const sessionId = facts.sessionId ?? (changed ? null : current.sessionId) ?? current.claudeSessionId ?? null;
-    if (changed || sessionId !== current.sessionId) await b.updateGeneration(binding, { ...facts, sessionId });
+    if (changed || sessionId !== current.sessionId) {
+      if (await b.updateGeneration(binding, { ...facts, sessionId })) state.cardPending = state.forceTurnCard = true;
+    }
   }
   async dormant(binding) {
     const b = this.bridge;
@@ -177,9 +184,9 @@ export class Wake {
     const { read } = await b.backend.read(terminal.pane_id, { source: 'visible' });
     if (!await this.target(binding)) return;
     const nonce = randomUUID();
-    const card = screenCard({ paneId: terminal.pane_id, topicId: binding.topicId, nonce, text: read.text,
+    const card = b.sessionCard(screenCard({ paneId: terminal.pane_id, topicId: binding.topicId, nonce, text: read.text,
       label: binding.cli, agent: binding.cli, status: 'blocked', suppressMenu: true,
-      note: '唤醒仍在等待确认，消息已排队。请使用按键处理屏幕后刷新。' });
+      note: '唤醒仍在等待确认，消息已排队。请使用按键处理屏幕后刷新。' }), binding);
     const cardId = await b.feishu.reply(binding.topicId, card, 'interactive');
     await b.rememberCard(cardId, card, 'status');
     await b.updateGeneration(binding, { cardId, nonce, cardCreatedAt: b.now(), wakeCardId: cardId,

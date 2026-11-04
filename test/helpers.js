@@ -131,7 +131,9 @@ export function outputReplies(feishu) {
     (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content))))
     .map(c => {
       if (c.msgType === 'text') return c;
-      let text = c.content.body.elements[0].content.replace(/^(?:<font[^>]*>[^<]*<\/font>|（仅显示末尾）)\n\n?/, '');
+      const elements = c.content.body.elements;
+      const first = /^<font color='grey'>会话：/.test(elements[0].content) ? elements[1] : elements[0];
+      let text = first.content.replace(/^(?:<font[^>]*>[^<]*<\/font>|（仅显示末尾）)\n\n?/, '');
       if (text.startsWith('```text\n')) text = text.slice(8, -4).replace(/`\u200b/g, '`');
       return { ...c, card: c.content, content: text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&') };
     });

@@ -3,7 +3,7 @@ import { detectMenu, menuControls } from './menus.js';
 import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
 
 export function clean(text) {
-  return stripVTControlCharacters(String(text)).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  return stripVTControlCharacters(String(text ?? '')).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
 
 export function stripChrome(text) {
@@ -37,6 +37,12 @@ const CLIPPED = '内容较长，仅显示末尾约 1500 字';
 const tipLine = text => ({ ...markdown(accent(text)), text_size: 'notation' });
 const roleCard = (title, template, elements) => ({ schema: '2.0', config: { update_multi: true },
   header: { template, title: { tag: 'plain_text', content: title } }, body: { elements } });
+
+export function withSessionHeader(card, { title, sessionId }) {
+  const line = markdown("<font color='grey'>" + literal(`会话：${String(title).replace(/\s+/g, ' ')} · ${sessionId ? sessionId.slice(0, 8) : '编号未知'}`) + '</font>');
+  return card.body ? { ...card, body: { ...card.body, elements: [line, ...card.body.elements] } } :
+    { ...card, elements: [line, ...card.elements] };
+}
 
 export function assistantCard(text, tools = [], agent = 'Claude') {
   text = stripChrome(text);

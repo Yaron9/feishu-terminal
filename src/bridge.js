@@ -4,7 +4,7 @@ import { backgroundView, screenActivity, refreshBackgroundTails } from './transc
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard, withSessionHeader } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { transcriptAdapters } from './transcripts/index.js';
 import { bridgeBackend } from './backends/index.js';
@@ -12,7 +12,7 @@ import { SessionFollow } from './session-follow.js';
 import { Wake } from './wake.js';
 import { Reap } from './reap.js';
 import { auditRecord, appendAudit } from './store.js';
-import { cleanTitle, topicCard, topicTitle } from './topics.js';
+import { topicCard, topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, resumeWarnings, menuControls, menuPageSize } from './menus.js';
@@ -177,6 +177,15 @@ export class Bridge {
       await this.log(event, binding, action.type, event.text ?? '');
       if (action.type === 'error') { await this.feishu.reply(event.topicId, action.message); return; }
       if (action.type === 'list') { await this.list(event); return; }
+      if (action.type === 'info') {
+        if (!binding.dormant && !binding.frozen) {
+          try { await this.verify(binding); }
+          catch (error) { if (!['binding_dormant', 'backend_unavailable'].includes(error.code)) throw error; }
+        }
+        const current = this.store.binding(binding.chatId, binding.topicId), session = this.sessionIdentity(current);
+        await this.feishu.reply(binding.topicId, `会话：${session.title}\nCLI：${current.cli ?? '未知'}\n会话 ID：\n${session.sessionId ?? '未知，暂未取得可靠的会话编号'}`);
+        return;
+      }
       if (action.type === 'closePicker') { await this.picker.show(event, binding); return; }
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
       if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
@@ -261,10 +270,10 @@ export class Bridge {
     }
     const pane = await this.createPane(event.chatId);
     const identity = await this.identity(pane.pane_id);
-    const root = this.newRoot(pane, action.text);
+    const root = await this.newRoot(pane, action.text);
     const topicId = await this.feishu.send(event.chatId, root.card);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata, welcomePending: true });
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, ...root.session, topicRoot: root.metadata, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
     await this.store.transaction(data => {
       (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
@@ -287,9 +296,18 @@ export class Bridge {
     await this.feishu.reply(event.topicId, `已在新话题「${title}」打开，请到那里继续`);
     return true;
   }
-  newRoot(pane, fallback) {
-    const title = topicTitle(pane, fallback), card = topicCard(pane, title);
-    return { card, metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
+  sessionIdentity(binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    return { title: current.sessionTitle || current.topicRoot?.publishedTitle || current.topicRoot?.text || '终端',
+      sessionId: current.sessionId ?? current.claudeSessionId ?? null };
+  }
+  sessionCard(card, binding) { return withSessionHeader(card, this.sessionIdentity(binding)); }
+  async newRoot(pane, fallback, known = {}) {
+    const title = topicTitle(pane, fallback), facts = await this.sessionFollow.describe(pane);
+    const sessionId = facts.sessionId ?? known.sessionId ?? null;
+    const card = topicCard(pane, title, undefined, sessionId);
+    return { card, session: { ...facts, sessionId, sessionTitle: title },
+      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title, publishedSessionId: sessionId,
       createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
   async syncTopicTitle(binding, pane) {
@@ -301,19 +319,17 @@ export class Bridge {
     if (now - root.createdAt >= 14 * 86400000) {
       await this.updateGeneration(binding, { topicRoot: { ...root, stopped: true } }); return;
     }
-    if (pane.terminal_title_stripped?.trim() && !cleanTitle(pane.terminal_title_stripped)) {
-      state.titleCandidate = null; return;
-    }
-    const title = topicTitle(pane);
-    if (state.titleCandidate !== title) { state.titleCandidate = title; state.titleSince = now; }
-    if (title === root.publishedTitle || now - state.titleSince < 10000 ||
+    const session = this.sessionIdentity(binding), title = topicTitle(pane, session.title), sessionId = session.sessionId;
+    const candidate = JSON.stringify([title, sessionId]);
+    if (state.titleCandidate !== candidate) { state.titleCandidate = candidate; state.titleSince = now; }
+    if ((title === root.publishedTitle && sessionId === (root.publishedSessionId ?? null)) || now - state.titleSince < 10000 ||
         (root.lastAttemptAt !== null && now - root.lastAttemptAt < 60000)) return;
     await this.verify(binding);
     const attempted = { ...root, lastAttemptAt: now };
     await this.updateGeneration(binding, { topicRoot: attempted });
     try {
-      await this.patchCard(binding.topicId, topicCard(pane, title), 'root');
-      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title } });
+      await this.patchCard(binding.topicId, topicCard(pane, title, undefined, sessionId), 'root');
+      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title, publishedSessionId: sessionId } });
     } catch (error) {
       if (['230031', '230011', '230110'].includes(String(error.code)))
         await this.updateGeneration(binding, { topicRoot: { ...attempted, stopped: true } });
@@ -566,7 +582,7 @@ export class Bridge {
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
       await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false, dormant: false,
-        cli: null, cwd: null, sessionId: null, wakeTarget: null, wakePending: false, wakeAttempt: null, queuedInputs: [],
+        cli: null, cwd: null, sessionId: null, sessionTitle: null, wakeTarget: null, wakePending: false, wakeAttempt: null, queuedInputs: [],
         claudeSessionId: null, sessionHandoff: null,
         lastTranscript: undefined, transcript: null, turn: null, cardTurnId: null, cardSignature: null,
         cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
@@ -582,10 +598,10 @@ export class Bridge {
     const panes = await this.backend.list();
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
-    const root = this.newRoot(pane);
+    const root = await this.newRoot(pane);
     const topicId = await this.feishu.send(event.chatId, root.card);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata, welcomePending: true,
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...root.session, topicRoot: root.metadata, welcomePending: true,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
@@ -633,7 +649,7 @@ export class Bridge {
           const panes = await this.backend.list();
           const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
           if (!pane) throw new Error('终端已变化，请重新 /t ls');
-          const root = this.newRoot(pane), text = root.metadata.text;
+          const root = await this.newRoot(pane, undefined, binding), text = root.metadata.text;
           await this.verify(binding);
           const topicId = await this.feishu.send(event.chatId, root.card);
           await this.rememberCard(topicId, root.card, 'root');
@@ -648,7 +664,7 @@ export class Bridge {
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
               retiredCardId: undefined, retiredCardKind: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
-              topicRoot: root.metadata });
+              ...root.session, topicRoot: root.metadata });
             for (const pointer of data.topicPointers ?? []) {
               if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
                 Object.assign(pointer, { topicId, title: text });
@@ -1042,14 +1058,14 @@ export class Bridge {
           previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status',
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
-        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), tipPatch: tip.patch,
-        card: turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), session: this.sessionIdentity(binding), tipPatch: tip.patch,
+        card: this.sessionCard(turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
     }
     return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
-      uuid: randomUUID(), signature: state.nextSignature,
-      card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+      uuid: randomUUID(), signature: state.nextSignature, session: this.sessionIdentity(binding),
+      card: this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
+        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);
@@ -1091,7 +1107,7 @@ export class Bridge {
     const panes = await this.backend.list();
     const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
     const pageSize = menuPageSize(menu, warnings);
-    const signature = JSON.stringify({ menu, warnings, page: binding.menuPage ?? 0,
+    const signature = JSON.stringify({ menu, warnings, session: this.sessionIdentity(binding), page: binding.menuPage ?? 0,
       confirm: binding.menuConfirm, selected: binding.menuSelected, hash: menuScreenHash(menu, state.visible) });
     if (!binding.pendingMenuCard && signature === binding.menuSignature && binding.menuNonce === binding.menuPublishedNonce) return;
     if (this.now() < (state.menuRetryAt ?? 0) ||
@@ -1101,10 +1117,10 @@ export class Bridge {
       const nonce = randomUUID();
       pending = { nonce, uuid: randomUUID(), targetId: binding.menuCardId ?? null, createdAt: this.now(),
         signature, menu, pageSize, screenHash: menuScreenHash(menu, state.visible),
-        card: menuCard({ menu, topicId: binding.topicId, nonce,
+        card: this.sessionCard(menuCard({ menu, topicId: binding.topicId, nonce,
           menuUI: { page: binding.menuPage ?? 0, pageSize, warnings,
             confirm: sameMenu(binding.menuConfirm?.menu, menu) ? binding.menuConfirm : null },
-          ...(!menu.kind ? { result: binding.menuSelected ?? '' } : {}) }) };
+          ...(!menu.kind ? { result: binding.menuSelected ?? '' } : {}) }), binding) };
       if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
     }
     try {
@@ -1199,6 +1215,10 @@ export class Bridge {
     const ready = turnPublication ? !turnThrottled && now >= (state.cardRetryAt ?? 0) :
       immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0));
     if (ready && (state.cardPending || binding.pendingCard)) {
+      // Startup may observe new session metadata while only retrying retirement.
+      // Reconcile saved payloads, but wait for a screen read before creating a
+      // new status payload; verification alone supplies no screen or status.
+      if (!binding.pendingCard && !turnPublication && typeof state.visible !== 'string') return;
       await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
@@ -1249,8 +1269,10 @@ export class Bridge {
       }
       state.cardFailures = 0; state.cardRetryAt = 0;
       state.lastCard = this.now(); state.signature = pending.signature; state.blockedNotice = false;
-      state.forceTurnCard = false;
-      state.cardPending = state.nextSignature !== pending.signature || Boolean(pending.staleNonce);
+      // A retry must keep its fixed payload/UUID, then catch up with identity
+      // changes observed while that payload was pending (also pre-W6 cards).
+      state.forceTurnCard = JSON.stringify(pending.session) !== JSON.stringify(this.sessionIdentity(binding));
+      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce);
     }
   }
   async flush(binding) {
