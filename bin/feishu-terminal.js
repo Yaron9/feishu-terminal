@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 import { loadConfig } from '../src/config.js';
-import { Store } from '../src/store.js';
 import { createBackends } from '../src/backends/index.js';
 import { Feishu } from '../src/feishu.js';
-import { Bridge } from '../src/bridge.js';
+import { createBridge, createConfigRegistry } from '../src/lib.js';
+import { FeishuWSClient } from '../src/feishu-ws.js';
 import { acquireLock } from '../src/instance-lock.js';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { prepareEnvironment } from '../src/runtime.js';
 
-let bridge, releaseLock, commandAbort, stopHerdrProbe;
+let bridge, transport, releaseLock, commandAbort, stopHerdrProbe;
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
@@ -43,12 +43,14 @@ async function main() {
   const lockFile = config.stateFile + '.lock';
   await mkdir(dirname(lockFile), { recursive: true, mode: 0o700 });
   releaseLock = await acquireLock(lockFile);
-  const store = await new Store(config.stateFile).load();
   const backend = createBackends(config, { onError: code => console.error(code) });
   await backend.list(); // Safe startup probe; one backend may be unavailable.
-  bridge = new Bridge({ backend, feishu: new Feishu({ appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET }),
-    store, config, onError: code => console.error(code) });
+  const credentials = { appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET };
+  transport = new Feishu({ ...credentials, ws: new FeishuWSClient(credentials) });
+  bridge = createBridge({ config, transport, registry: createConfigRegistry(config), backends: backend,
+    storeFile: config.stateFile, auditFile: config.auditFile, log: code => console.error(code) });
   await bridge.start();
+  await transport.start(raw => bridge.accept(raw), code => console.error(code), { rawEvents: true });
   console.log('feishu-terminal running');
 }
 let stopping = false;
@@ -57,7 +59,7 @@ async function stop(exitCode) {
   stopHerdrProbe?.();
   if (commandAbort) { commandAbort.abort(); process.exitCode = exitCode; return; }
   const deadline = setTimeout(() => process.exit(exitCode), 15000); deadline.unref();
-  try { await bridge?.stop(); }
+  try { transport?.close(); await bridge?.stop(); }
   finally {
     if (releaseLock) await releaseLock();
     process.exitCode = exitCode;
