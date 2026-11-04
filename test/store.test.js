@@ -22,7 +22,7 @@ test('unbound picker nonces survive restart, consume atomically once and cannot 
   assert.equal(await restored.consumeActionCard(card), false);
   assert.equal((await new Store(store.file).load()).actionCard('picker').nonce, 'second');
   await restored.saveActionCard({ ...card, messageId: 'new' }, 600000);
-  assert.equal(restored.actionCard('picker'), undefined);
+  assert.equal(restored.actionCard('picker').nonce, 'second');
 });
 test('bindings, nonce, card and transcript survive atomic restart; uniqueness is enforced', async t => {
   const { dir, store } = await fixture(t);

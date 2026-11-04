@@ -110,12 +110,12 @@ test('picker callback ACL, message, topic, nonce, action and index reject forged
   await click(h, 'open'); assert.equal(h.store.list().length, 1);
 });
 
-test('picker cards expire at ten minutes, including after restart, with buttons removed', async t => {
+test('an unused topic picker remains valid after a day and restart', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); await closeCard(h);
-  const event = pickerEvent(h, 'kill'); h.advance(600000); await h.restart(); await h.subscribed();
-  const before = h.fake.calls.length; await h.bridge.handle(event);
-  assert.equal(h.fake.calls.length, before); assert.equal(kills(h).length, 0);
-  assert.match(result(h), /卡片已过期/); noButtons(h);
+  const event = pickerEvent(h, 'kill'); h.advance(86400000); await h.restart();
+  await h.bridge.handle(event);
+  assert.equal(kills(h).length, 1);
+  assert.match(result(h), /已关闭/); noButtons(h);
 });
 
 test('pending picker remains usable across restart before expiry', async t => {

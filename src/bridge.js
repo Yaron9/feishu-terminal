@@ -113,10 +113,11 @@ export class Bridge {
     if (status !== 'blocked') state.blockedNotice = false;
     state.status = status; state.agent = agent;
   }
-  rememberCard(id, card, kind) {
+  rememberCard(id, card, kind, owner) {
     return this.store.transaction(data => {
       if (data.cardSchemas) delete data.cardSchemas[id];
-      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind, updatedAt: this.store.now() };
+      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind, updatedAt: this.store.now(),
+        ...(owner ? { chatId: owner.chatId, topicId: owner.topicId } : {}) };
     });
   }
   patchCard(id, card, kind) { return patchStoredCard(this, id, card, kind); }
@@ -790,13 +791,14 @@ export class Bridge {
     }
     const isMenu = Boolean(binding?.menuCardId && event.messageId === binding.menuCardId);
     if (binding?.menuCardId && !isMenu && event.key !== 'refresh') {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     if (isMenu) binding = { ...binding, cardId: binding.menuCardId, nonce: binding.menuNonce, cardCreatedAt: binding.menuCreatedAt };
     else if (binding) binding = { ...binding, cardMenu: null };
     const menuAction = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '');
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
       (event.key !== 'refresh' && !validKeys([event.key]) && !menuAction)) {
+      if (binding) { await this.staleCard(binding, event); return; }
       await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
     const state = this.state(binding);
@@ -813,16 +815,16 @@ export class Bridge {
       await this.wake.button(current, event); return;
     }
     if (menuAction && binding.cardMenu?.kind !== 'list') {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'numbered' && !['esc', 'refresh',
       ...binding.cardMenu.items.map((_, i) => String(i + 1))].includes(event.key)) {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'list' && !menuControls(binding.cardMenu, {
       page: binding.menuPage, confirm: binding.menuConfirm, pageSize: binding.menuPageSize,
     }).some(([, key]) => key === event.key)) {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     // Consume the nonce durably before sending any key. A replay under a new
     // event_id cannot execute the same card action again, including on restart.
@@ -836,12 +838,12 @@ export class Bridge {
       } else {
         const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
         const panes = await this.backend.backend(binding.paneId).list(), pane = panes.find(p => p.pane_id === binding.paneId);
-        if (!pane || this.backend.status(pane, read.text) !== 'blocked' || detectMenu(read.text).kind ||
+        if (!pane || this.backend.status(pane, read.text) !== 'blocked' || (await this.liveMenu(binding, read.text)).kind ||
             ((binding.cardScreenHash ?? null) !== this.approvalHash(read.text))) {
           await this.changedCard(binding, event); return;
         }
         const fresh = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-        if (detectMenu(fresh.read.text).kind || this.approvalHash(fresh.read.text) !== this.approvalHash(read.text)) {
+        if ((await this.liveMenu(binding, fresh.read.text)).kind || this.approvalHash(fresh.read.text) !== this.approvalHash(read.text)) {
           await this.changedCard(binding, event); return;
         }
         await this.writeInput(binding, 'keys', { keys: [event.key] });
@@ -851,7 +853,7 @@ export class Bridge {
   }
   async menuButton(event, binding) {
     const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-    const menu = detectMenu(read.text);
+    const menu = await this.liveMenu(binding, read.text);
     if (!sameMenuChoices(binding.cardMenu, menu) || (event.key.startsWith('menu:confirm:') && !sameMenu(binding.cardMenu, menu)) ||
         (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, read.text)) {
       await this.changedCard(binding, event); return;
@@ -878,7 +880,7 @@ export class Bridge {
     // Recheck after durable nonce consumption, auditing and duplicate lookup.
     // No movement or Enter is sent for a stale item/cursor/title snapshot.
     const fresh = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-    if (!sameMenu(menu, detectMenu(fresh.read.text)) || menuScreenHash(menu, read.text) !== menuScreenHash(menu, fresh.read.text)) {
+    if (!sameMenu(menu, await this.liveMenu(binding, fresh.read.text)) || menuScreenHash(menu, read.text) !== menuScreenHash(menu, fresh.read.text)) {
       await this.changedCard(binding, event); return;
     }
     await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
@@ -889,6 +891,26 @@ export class Bridge {
     await this.updateGeneration(binding, { menuSelected: selected ?? null });
   }
   screenHash(text) { return createHash('sha256').update(clean(text)).digest('hex'); }
+  async liveMenu(binding, text) {
+    const panes = await this.backend.backend(binding.paneId).list();
+    const pane = panes.find(p => p.pane_id === binding.paneId);
+    return detectMenu(text, { status: pane ? this.backend.status(pane, text) : 'unknown', cli: pane?.agent ?? binding.cli });
+  }
+  async staleCard(binding, event) {
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (![current.cardId, current.menuCardId, current.retiredCardId].filter(Boolean).includes(event.messageId)) {
+      await this.feishu.reply(event.topicId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
+    }
+    const state = this.state(current);
+    state.forceTurnCard = true; state.cardPending = true;
+    if (event.messageId === current.menuCardId) {
+      // Keep a live duplicate-session confirmation intact on an old-nonce tap.
+      state.menuRetryAt = 0;
+      await this.updateGeneration(current, { menuSignature: null, menuAttemptAt: null });
+    }
+    // Turn and retirement patches retain their durable two-second throttle.
+    await this.refresh(this.store.binding(current.chatId, current.topicId), true);
+  }
   approvalHash(text) {
     const context = approvalContext(text);
     return context === null ? null : this.screenHash(context);
@@ -924,7 +946,7 @@ export class Bridge {
   async menuReply(binding, event, text) {
     if (!/^(?:[1-9]\d*|[yn])$/i.test(text)) return false;
     const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-    const menu = detectMenu(read.text);
+    const menu = await this.liveMenu(binding, read.text);
     if (!menu.kind) {
       const current = this.store.binding(binding.chatId, binding.topicId);
       if (!current.menuCardId) return false;
@@ -1116,7 +1138,13 @@ export class Bridge {
     }
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
-    const menu = detectMenu(visible.text), warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
+    const menu = detectMenu(visible.text, { status: state.status, cli: agent?.agent ?? binding.cli });
+    const warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
+    if (!menu.kind && state.menu?.kind) {
+      // A vanished menu must not leave output behind its publication backoff.
+      state.menuRetryAt = 0; state.menuFailures = 0; state.cardRetryAt = 0;
+      await this.updateGeneration(binding, { menuAttemptAt: null });
+    }
     const menuSignature = JSON.stringify({ menu, warnings, screenHash: menuScreenHash(menu, visible.text) });
     if ((binding.menuConfirm || binding.menuPage) && (!sameMenu(binding.cardMenu, menu) ||
         (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, visible.text)))
@@ -1199,6 +1227,13 @@ export class Bridge {
   async publishMenuCard(binding) {
     const state = this.state(binding), menu = state.menu ?? detectMenu(state.visible);
     if (!menu.kind && !binding.menuCardId && !binding.pendingMenuCard) return;
+    if (!menu.kind && binding.pendingMenuCard?.targetId) {
+      // A patch is a replace operation: retire the obsolete menu in its known
+      // message, rather than retrying old choices before the current state.
+      await this.updateGeneration(binding, { pendingMenuCard: null, menuAttemptAt: null,
+        menuCardId: binding.menuCardId ?? binding.pendingMenuCard.targetId });
+      binding = this.store.binding(binding.chatId, binding.topicId);
+    }
     const panes = await this.backend.list();
     const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
     const pageSize = menuPageSize(menu, warnings);
@@ -1243,6 +1278,12 @@ export class Bridge {
         cardMenu: pending.menu.kind ? pending.menu : null, cardMenuScreenHash: pending.screenHash,
         ...(!pending.menu.kind ? { menuSelected: null, menuConfirm: null, menuPage: 0 } : {}) });
       state.menuRetryAt = 0; state.menuFailures = 0;
+      if (!menu.kind && pending.menu.kind) {
+        // Reconcile an uncertain create with its original UUID, then retire it
+        // in this tick. The obsolete choices never become actionable locally.
+        await this.updateGeneration(binding, { menuNonce: null, menuAttemptAt: null });
+        await this.publishMenuCard(this.store.binding(binding.chatId, binding.topicId));
+      }
     } catch (error) {
       state.menuRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.menuFailures ?? 0));
       state.menuFailures = (state.menuFailures ?? 0) + 1;
@@ -1255,7 +1296,12 @@ export class Bridge {
     if (!this.sameGeneration(binding, current)) return;
     binding = current;
     if (!binding || binding.frozen || !state.verified) return;
-    await this.publishMenuCard(binding);
+    try { await this.publishMenuCard(binding); }
+    catch (error) {
+      if (state.menu?.kind) throw error;
+      // Retirement of a vanished menu must never gate transcript delivery.
+      this.reportFailure('menu_card_refresh_failed', error);
+    }
     binding = this.store.binding(binding.chatId, binding.topicId);
     // Menus own a reply and never change the existing turn/status card.
     if (state.menu?.kind) return;
