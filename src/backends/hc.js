@@ -193,8 +193,9 @@ export class HcBackend {
   }
   close(id) { return this.client.request('terminal.kill', { terminal: this.address(id) }); }
   remove(id) { return this.client.request('terminal.rm', { terminal: this.address(id) }); }
-  async create(cmd, cwd, { labels = {}, name } = {}) {
-    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), ...(name ? { name } : {}), cwd, no_parent: true, wait: false, labels: { ...labels, source: 'feishu-terminal' } });
+  async create(cmd, cwd, { labels = {}, name, parent } = {}) {
+    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), ...(name ? { name } : {}), cwd,
+      ...(parent ? { parent: this.address(parent) } : { no_parent: true }), wait: false, labels: { ...labels, source: 'feishu-terminal' } });
     const terminal = await this.get(`hc:${result.address}`);
     return terminal;
   }

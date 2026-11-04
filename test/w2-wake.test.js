@@ -32,7 +32,7 @@ async function harness(t, { cli = 'pi', known = true, ready = 'idle' } = {}) {
         return { terminals: [...terminals.values()] };
       }
       if (method === 'terminal.run') {
-        const term = create({ labels: params.labels, cwd: params.cwd, argv: ['cmd.exe', '/c', params.line], status: null });
+        const term = create({ labels: params.labels, cwd: params.cwd, parent: params.parent, argv: ['cmd.exe', '/c', params.line], status: null });
         await h.onRun(term);
         if (h.loseRun) { h.loseRun = false; throw Object.assign(new Error('lost'), { code: 'connection_closed' }); }
         return term;
@@ -306,4 +306,48 @@ test('Claude transcript lookup uses unique Windows cwd metadata when /proc is ab
   assert.equal(await adapter.locate(terminal), file);
   await writeFile(join(sessions, '456.json'), JSON.stringify({ pid: 456, sessionId: 'other', cwd: h.cwd }));
   assert.equal(await adapter.locate(terminal), null);
+});
+
+test('parent wake leaves children dormant through restart; only child-topic input resumes and reattaches that child', async t => {
+  const h = await harness(t); h.bridge.config.sessionFollow = 'warn';
+  const child = h.create({ parent: 't1', name: 'w6-child', labels: { session: 'child-fixture' } });
+  h.advance(); await h.bridge.tick();
+  const childBinding = h.store.forPane(`hc:${child.address}`), parentTopic = h.binding().topicId;
+  assert.ok(childBinding?.tree);
+  h.old.state = child.state = 'finished'; h.advance(); await h.bridge.tick();
+  assert.equal(h.store.binding('oc_test', childBinding.topicId).dormant, true);
+  h.onRun = terminal => h.ready(terminal, 'done');
+  await h.send('parent-only', 'wake-parent');
+  const parent = h.store.binding('oc_test', parentTopic);
+  assert.equal(h.runs().length, 1); assert.equal(parent.dormant, false);
+  assert.equal(h.store.binding('oc_test', childBinding.topicId).dormant, true);
+  assert.equal(h.store.binding('oc_test', childBinding.topicId).tree.parentTerminalId, parent.identity.terminalId);
+  await h.bridge.stop();
+  const restored = await new Store(h.store.file).load();
+  const bridge = new Bridge({ backend: h.backend, feishu: h.feishu, store: restored, config: h.bridge.config,
+    now: h.bridge.now, adapters: {}, sessionFollow: h.follow, audit: async () => {} });
+  t.after(() => bridge.stop()); await bridge.start({ timers: false }); h.advance(); await bridge.tick();
+  assert.equal(h.runs().length, 1, 'startup and polling must not eagerly launch children');
+  await bridge.handle(message('child-only', 'wake-child', childBinding.topicId));
+  assert.equal(h.runs().length, 2);
+  assert.equal(h.runs()[1].params.line, 'pi --session child-fixture');
+  assert.equal(h.runs()[1].params.parent, parent.paneId.slice(3));
+  assert.equal(h.runs()[1].params.no_parent, undefined);
+  const resumed = restored.binding('oc_test', childBinding.topicId);
+  assert.equal(resumed.dormant, false); assert.equal(resumed.sessionId, 'child-fixture');
+  assert.equal(resumed.tree.parentTopicId, parentTopic); assert.notEqual(resumed.tree.status, 'finished');
+  assert.ok(restored.data.treeSeen.includes(resumed.identity.terminalId));
+  assert.deepEqual(h.sends().map(call => call.params.text), ['parent-only', 'child-only']);
+});
+
+test('child-topic input can resume a child alone while its parent stays dormant', async t => {
+  const h = await harness(t); h.bridge.config.sessionFollow = 'warn';
+  const child = h.create({ parent: 't1', name: 'w6-child', labels: { session: 'child-fixture' } });
+  h.advance(); await h.bridge.tick(); const binding = h.store.forPane(`hc:${child.address}`);
+  h.old.state = child.state = 'finished'; h.advance(); await h.bridge.tick();
+  h.onRun = terminal => h.ready(terminal, 'done');
+  await h.bridge.handle(message('child-only', 'wake-child-alone', binding.topicId));
+  assert.equal(h.runs().length, 1); assert.equal(h.runs()[0].params.no_parent, true);
+  assert.equal(h.runs()[0].params.line, 'pi --session child-fixture');
+  assert.equal(h.binding().dormant, true); assert.equal(h.store.binding('oc_test', binding.topicId).dormant, false);
 });

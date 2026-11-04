@@ -196,3 +196,107 @@ test('library rejects invalid idleMinutes even when config loading is bypassed',
     backend: h.backend, store: h.store, feishu: h.feishu, config: { ...h.config, idleMinutes },
   }), /idleMinutes/);
 });
+
+test('a parent waits for working, blocked and unknown unbound children to complete their own idle dwell', async t => {
+  for (const state of ['working', 'blocked', null]) {
+    const h = await harness(t, { idleMinutes: 1 });
+    const child = h.create({ parent: 't1', labels: {}, status: state && { app: 'pi', state } });
+    await h.bridge.reap.tick(); h.advance(600000); await h.bridge.reap.tick();
+    assert.equal(h.keys().length, 0, String(state));
+    child.status = { app: 'pi', state: 'done' };
+    await h.bridge.reap.tick(); h.advance(59999); await h.bridge.reap.tick();
+    assert.equal(h.keys().length, 0);
+    h.advance(1); await h.bridge.reap.tick();
+    assert.deepEqual(h.keys().map(call => call.params.terminal), ['t1']);
+    assert.equal(child.state, 'live', 'unowned children are never independently signalled');
+  }
+});
+
+test('a working parent does not stop an owned idle child from being reaped alone', async t => {
+  const h = await harness(t, { idleMinutes: 1 }); h.terminal.status.state = 'working';
+  const child = h.create({ parent: 't1', labels: { 'ft.woken': '1', session: 'child' } });
+  const identity = h.backend.identity(await h.backend.get(`hc:${child.address}`));
+  await h.store.transaction(data => { data.createdTerminals = [identity.terminalId]; });
+  await h.bridge.reap.tick(); h.advance(); await h.bridge.reap.tick();
+  assert.deepEqual(h.keys().map(call => call.params.terminal), ['t2']);
+  assert.equal(h.terminal.state, 'live');
+});
+
+test('grandchildren, late children and a changed child identity restart the dependency dwell', async t => {
+  for (const change of ['grandchild', 'late', 'identity']) {
+    const h = await harness(t, { idleMinutes: 1 });
+    const child = h.create({ parent: 't1', labels: {} });
+    const grand = change === 'grandchild' && h.create({ parent: child.address, labels: {}, status: { app: 'pi', state: 'working' } });
+    await h.bridge.reap.tick(); h.advance(59000);
+    if (change === 'late') h.create({ parent: 't1', labels: {} });
+    if (change === 'identity') child.created_ms++;
+    if (grand) grand.status.state = 'done';
+    await h.bridge.reap.tick(); h.advance(1000); await h.bridge.reap.tick();
+    assert.equal(h.keys().length, 0, change);
+    h.advance(59000); await h.bridge.reap.tick(); assert.equal(h.keys().length, 1, change);
+  }
+});
+
+test('child placement, pending input and visible approval veto a parent exit', async t => {
+  for (const veto of ['placed', 'pending', 'approval', 'waiting']) {
+    const h = await harness(t, { idleMinutes: 1 });
+    const child = h.create({ parent: 't1', labels: {} });
+    const identity = h.backend.identity(await h.backend.get(`hc:${child.address}`));
+    await h.store.bind({ chatId: 'oc_test', topicId: 'child-topic', paneId: `hc:${child.address}`, identity });
+    await h.bridge.reap.tick(); h.advance();
+    if (veto === 'placed') child.labels['herdr.tab'] = 'fixture';
+    if (veto === 'pending') h.bridge.pendingInputs.set('child-topic', 1);
+    if (veto === 'approval') child.output = 'Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel';
+    if (veto === 'waiting') child.waiting_for_person = true;
+    await h.bridge.reap.tick(); assert.equal(h.keys().length, 0, veto);
+  }
+});
+
+test('a child changing or appearing during the final parent check prevents exit', async t => {
+  for (const race of ['working', 'new', 'pending', 'parent-working']) {
+    const h = await harness(t, { idleMinutes: 1 });
+    const child = h.create({ parent: 't1', labels: {} });
+    const identity = h.backend.identity(await h.backend.get(`hc:${child.address}`));
+    await h.store.bind({ chatId: 'oc_test', topicId: 'child-topic', paneId: `hc:${child.address}`, identity });
+    await h.bridge.reap.tick(); h.advance();
+    const save = h.bridge.reap.save.bind(h.bridge.reap);
+    h.bridge.reap.save = async record => {
+      await save(record);
+      if (race === 'working') child.status.state = 'working';
+      if (race === 'new') h.create({ parent: 't1', labels: {} });
+      if (race === 'pending') h.bridge.pendingInputs.set('child-topic', 1);
+      if (race === 'parent-working') h.onRead = term => { if (term.address === child.address) h.terminal.status.state = 'working'; };
+    };
+    await h.bridge.reap.tick(); assert.equal(h.keys().length, 0, race);
+    assert.equal(h.store.data.reaps.length, 0);
+  }
+});
+
+test('finished children do not hold a parent open and a descendant outage cancels exit', async t => {
+  for (const outage of [false, true]) {
+    const h = await harness(t, { idleMinutes: 1 });
+    const child = h.create({ parent: 't1', labels: {}, state: outage ? 'live' : 'finished' });
+    await h.bridge.reap.tick(); h.advance();
+    h.onGet = term => { if (outage && term.address === child.address) throw Object.assign(new Error('offline'), { code: 'unavailable' }); };
+    await h.bridge.reap.tick(); assert.equal(h.keys().length, outage ? 0 : 1);
+    if (outage) {
+      h.onGet = () => {};
+      await h.bridge.reap.tick(); await h.bridge.reap.tick();
+      h.advance(59999); await h.bridge.reap.tick(); assert.equal(h.keys().length, 0);
+      h.advance(1); await h.bridge.reap.tick(); assert.equal(h.keys().length, 1);
+    }
+  }
+});
+
+test('a saved child resumed before its parent still holds the parent open without a native parent address', async t => {
+  const h = await harness(t, { idleMinutes: 1 });
+  const child = h.create({ labels: {}, status: { app: 'pi', state: 'working' } });
+  const identity = h.backend.identity(await h.backend.get(`hc:${child.address}`));
+  await h.store.bind({ chatId: 'oc_test', topicId: 'child-topic', paneId: `hc:${child.address}`, identity,
+    tree: { parentTopicId: 'topic', parentTerminalId: h.binding().identity.terminalId } });
+  await h.bridge.reap.tick(); h.advance(600000); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 0);
+  child.status.state = 'done'; await h.bridge.reap.tick(); h.advance(59999); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 0); h.advance(1); await h.bridge.reap.tick();
+  assert.deepEqual(h.keys().map(call => call.params.terminal), ['t1']);
+});

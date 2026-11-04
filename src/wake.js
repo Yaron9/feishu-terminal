@@ -115,9 +115,19 @@ export class Wake {
         // A lost run response may still create a process. Keep its intent and
         // discover it by labels on future ticks; never retry that mutation.
         if (binding.wakeAttempt?.phase === 'launching') return;
+        // Restore native ancestry only when the saved parent is already live.
+        // Waking either topic never recursively launches the other sessions.
+        const parent = b.tree.parent(binding);
+        let parentId;
+        if (parent && !parent.dormant && !parent.frozen && /^hc:t[a-zA-Z0-9]+$/.test(parent.paneId)) {
+          try {
+            const live = await b.backend.get(parent.paneId);
+            if (b.identitiesMatch(parent, live)) parentId = parent.paneId;
+          } catch (error) { if (!ended(error)) throw error; }
+        }
         await b.updateGeneration(binding, { wakeAttempt: { phase: 'launching', at: b.now() } });
         terminal = await b.backend.backends.get('hc').create(row.resume.replace('{id}', binding.sessionId), binding.cwd,
-          { labels: { 'ft.woken': '1', session: binding.sessionId } });
+          { labels: { 'ft.woken': '1', session: binding.sessionId }, ...(parentId ? { parent: parentId } : {}) });
         await b.store.transaction(data => { (data.createdTerminals ??= []).push(terminal.terminal_id); });
       }
       await b.updateGeneration(binding, { wakeTarget: { paneId: terminal.pane_id, identity: b.backend.identity(terminal) },
@@ -154,6 +164,9 @@ export class Wake {
         unknownSessionNotified: false, allowDesktop: true, nonce: randomUUID(), menuNonce: randomUUID(),
         pendingCard: null, pendingMenuCard: null, cardMenu: null, menuConfirm: null, menuPage: 0,
         menuCardId: null, cardSignature: null, menuSignature: null, sessionHandoff: null, outputBatch: null });
+      if (current.tree) data.treeSeen = [...new Set([...(data.treeSeen ?? []), current.identity.terminalId])];
+      for (const child of data.bindings) if (child.chatId === current.chatId && child.tree?.parentTopicId === current.topicId)
+        child.tree.parentTerminalId = current.identity.terminalId;
       return structuredClone(current);
     });
     if (!moved) return;
