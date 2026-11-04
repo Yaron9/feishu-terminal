@@ -1,6 +1,8 @@
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { statSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { HerdrClient, HerdrError } from '../herdr-client.js';
 import { detectMenu } from '../menus.js';
 import { screenActivity } from '../transcripts/background.js';
@@ -12,9 +14,24 @@ const checkHello = h => {
     throw new HerdrError('hc_incompatible');
   return h;
 };
-export function hcEndpoint(env = process.env) {
-  return { path: env.HC_TERMINAL_SOCKET || env.HC_SOCKET_PATH ||
-    join(env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`, 'herdr-core', 'default.sock') };
+export function hcEndpoint(env = process.env, platform = process.platform, isDir = path => { try { return statSync(path).isDirectory(); } catch { return false; } }) {
+  const session = env.HC_SESSION?.trim() || 'default';
+  if (session === '.' || session === '..' || /[\x00-\x1f/\\:*?"<>|]/.test(session)) throw new Error('invalid HC_SESSION');
+  const home = env.HOME || (platform === 'win32' ? env.USERPROFILE : null) || homedir();
+  const configHome = env.XDG_CONFIG_HOME || (platform === 'win32' ? env.APPDATA || join(home, 'AppData', 'Roaming') : join(home, '.config'));
+  let configured;
+  try {
+    const config = readFileSync(join(configHome, 'herdr-core', 'config.toml'), 'utf8');
+    const root = config.split(/^\s*\[/m, 1)[0];
+    const value = /^\s*socket\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/m.exec(root)?.[1];
+    if (value) configured = value[0] === '"' ? JSON.parse(value) : value.slice(1, -1);
+  } catch { /* hc ignores unreadable or invalid config */ }
+  const override = env.HC_TERMINAL_SOCKET || env.HC_SOCKET_PATH || env.HC_SOCKET || configured;
+  if (override) return { path: override };
+  if (platform === 'win32') return { path: `\\\\.\\pipe\\herdr-core-${(env.USERNAME || '').replace(/[^a-zA-Z0-9]/g, '')}-${session}.sock` };
+  const run = env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`;
+  const state = env.XDG_STATE_HOME || join(home, '.local', 'state');
+  return { path: env.XDG_RUNTIME_DIR || isDir(run) ? join(run, 'herdr-core', `${session}.sock`) : join(state, 'herdr-core', session, `${session}.sock`) };
 }
 
 // Plain JSON-RPC over the local socket: no helper process, attach viewer or

@@ -59,7 +59,7 @@ test('hc reported status wins; unreported screens use menus, spinners and prompt
   assert.equal(b.status({}, '❯ '), 'idle');
   assert.equal(b.status({}, 'something'), 'unknown');
   b.dispose();
-  assert.equal(hcEndpoint({ XDG_RUNTIME_DIR: '/run/user/77' }).path.replaceAll('\\', '/'), '/run/user/77/herdr-core/default.sock');
+  assert.equal(hcEndpoint({ XDG_RUNTIME_DIR: '/run/user/77' }, 'linux').path.replaceAll('\\', '/'), '/run/user/77/herdr-core/default.sock');
 });
 
 test('hc quiet delay and started:false acknowledge once; lost responses are not retried', async t => {
