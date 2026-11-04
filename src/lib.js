@@ -3,6 +3,7 @@ import { Store } from './store.js';
 import { bridgeTransport } from './transport.js';
 import { normalizeEvent } from './events.js';
 export { createConfigRegistry } from './registry.js';
+export { createBackends } from './backends/index.js';
 
 /**
  * Create a connection-free bridge. backends is the existing backend facade

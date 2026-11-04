@@ -46,10 +46,7 @@ export function normalizeEvent(raw, botOpenId) {
   if (!raw || typeof raw !== 'object') return null;
   const type = raw.header?.event_type ?? raw.event?.type ?? raw.event_type;
   if (type === eventTypes[0]) return messageEvent(raw, botOpenId);
-  if (type === eventTypes[1]) {
-    if ((raw.event ?? raw).action?.value?.ft_bridge !== cardOwner) return null;
-    return actionEvent(raw);
-  }
+  if (type === eventTypes[1]) return actionEvent(raw);
   return null;
 }
 

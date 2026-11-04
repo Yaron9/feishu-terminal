@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createBridge, createConfigRegistry } from 'feishu-terminal';
+import { createBridge, createConfigRegistry, createBackends } from 'feishu-terminal';
 import { normalizeEvent, markCard } from '../src/events.js';
 import { Backends } from '../src/backends/index.js';
 import { HerdrBackend } from '../src/backends/herdr.js';
@@ -84,7 +84,17 @@ test('public bridge isolates two groups, topics, group cwd, picker actions and o
   action.event.operator.open_id = 'ou_second'; action.event.action.value = value;
   const before = writeCount(); await h.bridge.handle(action);
   assert.equal(writeCount(), before); assert.deepEqual((await h.state()).list(), state.list());
+  const ownAction = structuredClone(action);
+  ownAction.header.event_id = 'ev_markerless';
+  ownAction.event.context.open_chat_id = first.chatId;
+  ownAction.event.operator.open_id = 'ou_test';
+  delete ownAction.event.action.value.ft_bridge;
+  assert.equal(await h.bridge.handle(ownAction), true);
   assert.equal((await readFile(h.auditFile, 'utf8')).includes('first_input'), true);
+});
+
+test('backend factory is available from the public package', () => {
+  assert.equal(typeof createBackends, 'function');
 });
 
 test('public handle rejects unknown chats, foreign cards and event types without any side effects', async t => {

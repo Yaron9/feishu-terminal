@@ -211,7 +211,7 @@ await bridge.stop();
 `handle(rawEvent)` 返回 `Promise<boolean>`，接收含 `header.event_type` / `event` 的原始事件，
 也接受 SDK 展平后的 `event_type` / `event_id` 字段；支持 `im.message.receive_v1` 和 `card.action.trigger`。
 未知群、非本桥接卡片、未知事件类型均返回 `false`，不写状态、不发消息。已接管的重复事件和无权限操作返回 `true`。
-卡片回调 `value.ft_bridge` 标记为 `feishu-terminal`，并核对本地卡片记录；升级前未标记的旧卡片需重新获取。
+卡片回调按群路由，并核对本地卡片记录、nonce 和操作权限；升级前未标记的旧卡片也可使用。
 独立运行入口使用 `accept(rawEvent)`，仅等待本地持久化去重，后台排队执行，以满足飞书回调时限。
 
 `registry.get(chatId)` 返回 `{chatId, project, cwd, machine, operatorOpenIds}` 或 `null`，`list()` 返回群条目数组。
