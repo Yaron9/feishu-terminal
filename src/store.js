@@ -1,20 +1,34 @@
-import { mkdir, open, readFile, rename, appendFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, appendFile, unlink, copyFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 
 export class Store {
   constructor(file, { dedupeLimit = 10000, cardSchemaLimit = 4096, now = Date.now } = {}) {
     Object.assign(this, { file, dedupeLimit, cardSchemaLimit, now });
-    this.data = { version: 1, bindings: [], seen: [] }; this.queue = Promise.resolve();
+    this.data = { version: 2, bindings: [], seen: [] }; this.queue = Promise.resolve();
   }
   async load() {
     try {
       const data = JSON.parse(await readFile(this.file, 'utf8'));
-      if (data.version !== 1 || !Array.isArray(data.bindings) || !Array.isArray(data.seen)) throw new Error('Invalid bridge state');
+      if (![1, 2].includes(data.version) || !Array.isArray(data.bindings) || !Array.isArray(data.seen)) throw new Error('Invalid bridge state');
       const topics = new Set(), panes = new Set();
       for (const b of data.bindings) {
         if (!b.chatId || !b.topicId || !b.paneId || topics.has(b.topicId) || panes.has(b.paneId)) throw new Error('Invalid bindings');
         topics.add(b.topicId); panes.add(b.paneId);
+      }
+      if (data.version === 1) {
+        // Never overwrite the first pre-migration snapshot on subsequent loads.
+        try { await copyFile(this.file, this.file + '.v1.bak', constants.COPYFILE_EXCL); }
+        catch (error) { if (error.code !== 'EEXIST') throw error; }
+        data.version = 2;
+        for (const b of data.bindings) {
+          b.dormant ??= false;
+          b.cli ??= null;
+          b.cwd ??= null;
+          b.sessionId ??= b.claudeSessionId ?? null;
+        }
+        await this.write(data);
       }
       this.data = data;
       this.prune(this.data);

@@ -133,11 +133,13 @@ test('own card marker survives picker, status, menu, v1/v2 conversion and replay
   }
 });
 
-test('old version-one state loads without migration or rewriting; legacy bindings remain readable', async t => {
+test('old version-one state migrates with a backup; legacy bindings remain readable', async t => {
   const old = { version: 1, bindings: [{ chatId: 'oc_test1', topicId: 'om_old', paneId: 'old-pane', frozen: true }], seen: ['event:old'] };
   const h = await fixture(t, old);
-  assert.deepEqual((await h.state()).data, old);
-  assert.equal(await readFile(h.storeFile, 'utf8'), JSON.stringify(old));
+  const migrated = { ...old, version: 2, bindings: [{ ...old.bindings[0], dormant: false, cli: null, cwd: null, sessionId: null }] };
+  assert.deepEqual((await h.state()).data, migrated);
+  assert.deepEqual(JSON.parse(await readFile(h.storeFile, 'utf8')), migrated);
+  assert.equal(await readFile(h.storeFile + '.v1.bak', 'utf8'), JSON.stringify(old));
   assert.equal(await h.bridge.handle(message('/t ls')), true);
   assert.equal((await h.state()).binding('oc_test1', 'om_old').paneId, 'old-pane');
 });

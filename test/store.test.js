@@ -37,7 +37,7 @@ test('bindings, nonce, card and transcript survive atomic restart; uniqueness is
   await store.unbind('oc_a', 'm1'); assert.deepEqual(store.list(), []);
 });
 
-test('pre-ft7 and ft7 version-1 snapshots load unchanged with optional recovery fields absent', async t => {
+test('version-1 snapshots migrate with a preserved backup and existing recovery fields', async t => {
   const { store } = await fixture(t);
   const binding = { chatId: 'oc_a', topicId: 'topic', paneId: 'w1:p1',
     identity: { terminalId: 'terminal', workspaceId: 'w1', tabId: 'w1:t1' },
@@ -49,12 +49,15 @@ test('pre-ft7 and ft7 version-1 snapshots load unchanged with optional recovery 
       kind: 'list', createdAt: 1, nonce: 'picker-nonce', entries: [{ paneId: 'w1:p1', bindingTopic: 'topic', generation: 'ft7-generation' }] }] };
   for (const snapshot of [legacy, ft7]) {
     await writeFile(store.file, JSON.stringify(snapshot));
+    await rm(store.file + '.v1.bak', { force: true });
     const restored = await new Store(store.file).load();
-    assert.deepEqual(restored.data, snapshot);
+    assert.deepEqual(JSON.parse(await readFile(store.file + '.v1.bak', 'utf8')), snapshot);
+    const migrated = { ...snapshot, version: 2, bindings: snapshot.bindings.map(b => ({ ...b, dormant: false, cli: null, cwd: null, sessionId: null })) };
+    assert.deepEqual(restored.data, migrated);
     assert.equal(restored.binding('oc_a', 'topic').retiredCardId, undefined);
     assert.equal(restored.binding('oc_a', 'topic').pendingCard.previousCardId, undefined);
     await restored.claim(['event:new']);
-    assert.deepEqual((await new Store(store.file).load()).list(), snapshot.bindings);
+    assert.deepEqual((await new Store(store.file).load()).list(), migrated.bindings);
     if (snapshot.actionCards) assert.deepEqual(restored.actionCard('picker'), snapshot.actionCards[0]);
   }
 });
@@ -70,7 +73,7 @@ test('concurrent claims are durable, bounded, and dedupe both event and message 
 test('corrupt state fails closed and audit never contains typed input', async t => {
   const { dir, store } = await fixture(t);
   await writeFile(store.file, '{broken'); await assert.rejects(new Store(store.file).load());
-  await writeFile(store.file, JSON.stringify({ version: 2, bindings: [], seen: [] }));
+  await writeFile(store.file, JSON.stringify({ version: 3, bindings: [], seen: [] }));
   await assert.rejects(new Store(store.file).load());
   const file = join(dir, 'audit.jsonl');
   const record = auditRecord({ openId: 'ou_a', topicId: 'm1', paneId: 'w1:p1', action: 'input', text: 'password-secret-中文' });
