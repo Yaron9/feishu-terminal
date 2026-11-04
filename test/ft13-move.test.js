@@ -119,16 +119,21 @@ test('recovered row retains only move with a fresh single-use nonce, including a
   await h.bridge.handle({ ...next, eventId: 'move-replay' }); assert.equal(sends(h).length, 1);
 });
 
-test('move enforces picker ACL, chat, nonce, expiry, binding generation and pane identity', async t => {
-  for (const mode of ['acl', 'chat', 'nonce', 'expired', 'generation', 'terminal', 'tab', 'missing']) {
+test('move enforces picker ACL, chat, nonce, binding generation and pane identity while unused rows have no age expiry', async t => {
+  for (const mode of ['acl', 'chat', 'nonce', 'delayed', 'generation', 'terminal', 'tab', 'missing']) {
     const h = await bound(t); await h.bridge.handle(message('/t ls', 'list'));
     const overrides = mode === 'acl' ? { openId: 'foreign' } : mode === 'chat' ? { chatId: 'foreign' } : mode === 'nonce' ? { nonce: 'foreign' } : {};
-    if (mode === 'expired') h.advance(600000);
+    if (mode === 'delayed') h.advance(86400000);
     if (mode === 'generation') await h.store.update('oc_test', 'm1', { generation: 'changed' });
     if (mode === 'terminal') h.fake.panes.get('w1:p1').terminal_id = 'changed';
     if (mode === 'tab') h.fake.panes.get('w1:p1').tab_id = 'changed';
     if (mode === 'missing') h.fake.panes.clear();
-    await click(h, 'move', overrides); assert.equal(sends(h).length, 0, mode);
+    await click(h, 'move', overrides);
+    if (mode === 'delayed') {
+      assert.equal(sends(h).length, 1, mode);
+      assert.notEqual(h.store.forPane('w1:p1').topicId, 'm1', mode); continue;
+    }
+    assert.equal(sends(h).length, 0, mode);
     assert.equal(h.store.forPane('w1:p1').topicId, 'm1', mode);
     if (['generation', 'terminal', 'tab', 'missing'].includes(mode)) assert.match(JSON.stringify(patched(h)), /终端已变化/);
   }

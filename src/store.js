@@ -49,7 +49,11 @@ export class Store {
   }
   prune(data) {
     data.seen = data.seen.slice(-this.dedupeLimit);
-    if (data.actionCards) data.actionCards = data.actionCards.slice(-512);
+    if (data.actionCards) {
+      const inTopic = card => !card.spent && (card.inTopic || data.bindings.some(b => b.chatId === card.chatId && b.topicId === card.topicId));
+      const management = new Set(data.actionCards.filter(card => !inTopic(card)).slice(-512));
+      data.actionCards = data.actionCards.filter(card => inTopic(card) || management.has(card));
+    }
     if (data.topicPointers) data.topicPointers = data.topicPointers.slice(-10000);
     if (data.createdTerminals) {
       // Forgetting old ownership only restores desktop-close confirmation.
@@ -83,9 +87,7 @@ export class Store {
     }
   }
   maintain(actionNow) {
-    return this.transaction(data => {
-      if (data.actionCards) data.actionCards = data.actionCards.filter(card => actionNow - card.createdAt < 600000);
-    });
+    return this.transaction(() => {});
   }
   async write(data) {
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -137,15 +139,15 @@ export class Store {
   actionCard(messageId) { return structuredClone(this.data.actionCards?.find(c => c.messageId === messageId)); }
   saveActionCard(card, now) {
     return this.transaction(data => {
-      data.actionCards = (data.actionCards ?? []).filter(c => c.messageId !== card.messageId && now - c.createdAt < 600000);
+      data.actionCards = (data.actionCards ?? []).filter(c => c.messageId !== card.messageId);
       data.actionCards.push(card);
     });
   }
   consumeActionCard(card) {
     return this.transaction(data => {
       const index = (data.actionCards ?? []).findIndex(c => c.messageId === card.messageId && c.nonce === card.nonce);
-      if (index < 0) return false;
-      data.actionCards.splice(index, 1); return true;
+      if (index < 0 || data.actionCards[index].spent) return false;
+      data.actionCards[index].spent = true; return true;
     });
   }
   unbind(chatId, topicId) {

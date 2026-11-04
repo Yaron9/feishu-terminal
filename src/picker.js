@@ -3,7 +3,6 @@ import { pickerCard, splitText } from './render.js';
 import { paneDetails } from './panes.js';
 
 const CHANGED = '终端已变化，请重新 /t ls';
-const EXPIRED = '卡片已过期，请重新 /t ls';
 
 // Management cards share the bridge ACL/callback path and the atomic Store.
 // One nonce covers all buttons on a card; an action invalidates every sibling.
@@ -27,11 +26,11 @@ export class PanePicker {
     const panes = await b.backend.list();
     const selected = binding ? panes.filter(p => p.pane_id === binding.paneId) : panes;
     if (binding && !selected.length) { await b.feishu.reply(event.topicId, CHANGED); return; }
-    const card = { kind: binding ? 'close' : 'list', chatId: event.chatId, topicId: event.topicId,
+    const card = { kind: binding ? 'close' : 'list', chatId: event.chatId, topicId: event.topicId, inTopic: Boolean(binding || event.isReply),
       entries: await Promise.all(selected.map(p => this.entry(p, event.chatId))), createdAt: b.now(), nonce: randomUUID() };
     try {
       card.messageId = await b.feishu.reply(event.topicId, pickerCard(card), 'interactive');
-      await b.rememberCard(card.messageId, pickerCard(card), 'picker');
+      await b.rememberCard(card.messageId, pickerCard(card), 'picker', card);
       await b.store.saveActionCard(card, b.now());
     } catch (error) {
       if (binding) throw error;
@@ -57,8 +56,31 @@ export class PanePicker {
   }
   async button(event) {
     const b = this.bridge, card = b.store.actionCard(event.messageId);
-    const stale = async () => b.feishu.reply(event.topicId || event.messageId, '卡片已失效或过期，请重新 /t ls');
-    if (!card || card.chatId !== event.chatId || card.topicId !== event.topicId || card.nonce !== event.nonce) { await stale(); return; }
+    const stale = async () => {
+      if (card && (card.chatId !== event.chatId || card.topicId !== event.topicId)) {
+        await b.feishu.reply(event.topicId || event.messageId, '卡片属于其他话题，请重新 /t ls'); return;
+      }
+      if (card && !card.spent) {
+        await b.patchCard(card.messageId, pickerCard(card), 'picker'); return;
+      }
+      if (!card) {
+        const metadata = b.store.data.cardSchemas?.[event.messageId];
+        if (metadata?.kind === 'picker' && metadata.chatId === event.chatId && metadata.topicId === event.topicId)
+          await b.patchCard(event.messageId, pickerCard({ entries: [], kind: 'list' }, '列表已变化，请重新 /t ls'), 'picker');
+        else await b.feishu.reply(event.topicId || event.messageId, '卡片已失效，请重新 /t ls');
+        return;
+      }
+      // Replace stale controls with today's rows. A replay never executes an
+      // action, and every refreshed version gets a new, unspent nonce.
+      const binding = b.store.binding(event.chatId, event.topicId);
+      const panes = await b.backend.list();
+      const next = { kind: binding ? 'close' : 'list', chatId: event.chatId, topicId: event.topicId,
+        inTopic: Boolean(binding || card?.inTopic), messageId: event.messageId, createdAt: b.now(), nonce: randomUUID(),
+        entries: await Promise.all(panes.filter(p => !binding || p.pane_id === binding.paneId).map(p => this.entry(p, event.chatId))) };
+      await b.patchCard(next.messageId, pickerCard(next), 'picker');
+      await b.store.saveActionCard(next, b.now());
+    };
+    if (!card || card.spent || card.chatId !== event.chatId || card.topicId !== event.topicId || card.nonce !== event.nonce) { await stale(); return; }
     const match = /^picker:(open|move|close|unbind|kill|cancel):(\d+)$/.exec(event.key);
     const allowed = card.kind === 'list' ? ['open', 'close', 'move'] : card.kind === 'recovered' ? ['move'] :
       card.kind === 'confirm' ? ['kill', 'cancel'] : ['unbind', 'kill', 'cancel'];
@@ -67,7 +89,6 @@ export class PanePicker {
       (card.kind === 'recovered' && Number(match[2]) !== card.result.index)) { await stale(); return; }
     if (!await b.store.consumeActionCard(card)) { await stale(); return; }
     const finish = result => b.patchCard(card.messageId, pickerCard({ ...card, kind: card.kind === 'recovered' ? 'list' : card.kind }, result), 'picker');
-    if (!Number.isFinite(card.createdAt) || b.now() - card.createdAt >= 600000 || b.now() < card.createdAt) { await finish(EXPIRED); return; }
     let pane;
     try { pane = await this.verify(entry); }
     catch { await finish(CHANGED); return; }

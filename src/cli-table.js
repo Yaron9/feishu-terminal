@@ -67,11 +67,16 @@ export function probePi(options) {
   });
 }
 
+// Explicit navigation chrome lets selection screens remain usable when a CLI
+// reports idle. Prose questions and ordinary input prompts never match this.
+const menuScreen = screen => /(?:Esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓].*(?:navigate|select))/i.test(screen) &&
+  /(?:resume session|select (?:a )?(?:model|session|option)|settings|configuration|allow this command|do you want to proceed|would you like to run)/i.test(screen);
 export const CLI_TABLE = Object.freeze([
   { cli: 'claude', agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
   { cli: 'codex', agents: ['codex'], resume: 'codex resume {id} --no-daemon', readyStates: ['idle', 'done'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
   { cli: 'pi', agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
 ]);
+for (const row of CLI_TABLE) row.menuScreen = menuScreen;
 export function lookupCli(terminal) {
   const fields = [terminal?.agent, terminal?.status?.app].filter(v => typeof v === 'string').map(v => v.toLowerCase());
   return CLI_TABLE.find(row => fields.some(field => row.agents.includes(field))) ?? null;

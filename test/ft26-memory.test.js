@@ -55,12 +55,12 @@ test('large persisted picker, pointer, ownership and dedupe histories are bounde
   assert.ok(store.data.createdTerminals.includes('old-active'));
 });
 
-test('idle bridge maintenance expires picker cards and removes runtime entries for unbound topics', async t => {
+test('idle bridge maintenance retains unused picker cards and removes runtime entries for unbound topics', async t => {
   const h = await harness(t);
   await h.store.saveActionCard({ messageId: 'expired', createdAt: 0 }, 0);
   h.bridge.runtime.set('unbound', { current: 'old screen' });
   h.advance(600000); await h.bridge.tick();
-  assert.equal(h.store.data.actionCards.length, 0); assert.equal(h.bridge.runtime.size, 0);
+  assert.equal(h.store.data.actionCards.length, 1); assert.equal(h.bridge.runtime.size, 0);
 });
 
 test('transcript caches stay bounded while evicted sessions rebuild background state from disk', async t => {

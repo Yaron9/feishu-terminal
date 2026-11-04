@@ -141,7 +141,7 @@ function menuPrompt(menu, menuUI, agent = 'Claude') {
 }
 
 export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, suppressMenu = false, tip = '' }) {
-  const menu = detectMenu(suppressMenu ? '' : screen || turn.text);
+  const menu = detectMenu(suppressMenu ? '' : screen, { status: turn.status, cli: turn.adapter });
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   const preview = stripChrome(turn.text);
   const elements = [markdown((turn.truncated || Array.from(preview).length > 1500 ? accent(CLIPPED) + '\n\n' : '') + prose(tail(preview, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
@@ -214,7 +214,7 @@ export function pickerCard(card, result) {
 }
 
 export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note, menuUI, suppressMenu = false }) {
-  const menu = detectMenu(suppressMenu ? '' : text);
+  const menu = detectMenu(suppressMenu ? '' : text, { status, cli: agent });
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.

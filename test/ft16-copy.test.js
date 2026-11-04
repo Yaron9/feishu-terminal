@@ -73,11 +73,11 @@ test('a separate permission menu card updates its prompt and option labels when 
   const records = [];
   const adapter = { locate: async () => 'copy.jsonl', read: async (_path, cursor) => ({ cursor: { offset: records.length }, items: cursor.atEnd ? [] : records.slice(cursor.offset) }) };
   const h = await harness(t, { adapters: { claude: adapter } });
-  const pane = h.fake.create(); Object.assign(pane, { agent: 'claude', agent_status: 'blocked', visible: '第一次确认？\n1. 执行' });
+  const pane = h.fake.create(); Object.assign(pane, { agent: 'claude', agent_status: 'blocked', visible: '第一次确认？\n❯ 1. 执行\nEsc to cancel' });
   await h.bridge.handle(message('/t open w1:p1', 'open'));
   records.push({ role: 'assistant', text: '请授权操作' }); await h.bridge.tick();
   const id = h.store.forPane(pane.pane_id).menuCardId;
-  pane.visible = '第二次确认？\n1. 继续检查\n2. 停止'; h.advance(2000);
+  pane.visible = '第二次确认？\n❯ 1. 继续检查\n2. 停止\nEsc to cancel'; h.advance(2000);
   h.bridge.state(h.store.forPane(pane.pane_id)).dirty = true; await h.bridge.tick();
   const card = h.feishu.calls.findLast(c => c.type === 'patch' && c.id === id).card;
   assert.match(JSON.stringify(card), /第二次确认？/);

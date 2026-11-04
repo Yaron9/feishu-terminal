@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from './ansi.js';
+import { lookupCli } from './cli-table.js';
 
 const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
 const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|permission|allow|confirm|proceed|do you|would you|选择|设置|恢复会话|是否|确认|允许)/i;
@@ -34,16 +35,32 @@ export function approvalContext(text = '') {
 
 // Use the visible screen, before preview/chrome removal. All offsets are text
 // columns in that snapshot, not tmux coordinates or transcript line numbers.
-export function detectMenu(text = '') {
+export function detectMenu(text = '', { status, cli } = {}) {
   const rawLines = String(text).replace(/\r/g, '').split('\n');
   const lines = rawLines.map(line => stripVTControlCharacters(line).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ''));
   const hintIndex = lines.findLastIndex(line => hint.test(line));
-  const numberRows = lines.map((line, index) => ({ match: numbered(line), index })).filter(row => row.match);
+  // A footer above a new prompt belongs to history. Only the bottom live
+  // control region can own choices; question punctuation is never evidence.
+  const last = lines.findLastIndex(line => !chrome(line.trim()));
+  const footer = hintIndex >= 0 && lines.slice(hintIndex + 1).every(line => chrome(line.trim()) || hint.test(line));
+  if (hintIndex >= 0 && !footer) return empty();
+  const tableMenu = lookupCli({ agent: cli })?.menuScreen?.(lines.join('\n')) ?? false;
+  if (status !== undefined && !['blocked', 'waiting'].includes(status) && !tableMenu) return empty();
+  const end = footer ? hintIndex : last + 1;
+  let bottom = end - 1;
+  while (bottom >= 0 && chrome(lines[bottom].trim())) bottom--;
+  const numberRows = [];
+  for (let i = bottom; i >= 0; i--) {
+    const match = numbered(lines[i]);
+    if (match) numberRows.unshift({ match, index: i });
+    else if (lines[i].trim()) break;
+  }
   if (numberRows.length && numberRows.every((row, i) => Number(row.match[1]) === i + 1)) {
     const titleIndex = lines.slice(0, numberRows[0].index).findLastIndex(line => !chrome(unbox(line).trim()));
     const title = titleIndex >= 0 ? unbox(lines[titleIndex]).trim() : '';
-    if (numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index])) || hintIndex > numberRows[0].index ||
-        /[?？]|permission|allow|confirm|proceed|是否|确认|允许/i.test(title)) {
+    const cursor = numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index]));
+    const approval = /permission|allow|confirm|proceed|do you want|would you like|是否|确认|允许/i.test(title);
+    if ((cursor || footer) && (approval || (cursor && titleHint.test(title)))) {
       return { kind: 'numbered', title, ...contextAbove(lines, titleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '' })),
         cursorIndex: numberRows.findIndex(row => /^\s*[❯›>]/u.test(lines[row.index])) };
     }
