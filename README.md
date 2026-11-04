@@ -181,3 +181,40 @@ node --test test/router.test.js
 `src/router.js` 解析命令，`src/backends/` 统一后端，`src/feishu*.js` 处理 API/长连接，`src/store.js` 保存状态和审计，`src/session-follow.js` 校验 Claude 进程，`src/bridge.js` 编排输入、话题与卡片，`src/transcripts/` 读取本机会话日志。
 
 需真实端到端检查时，可显式运行 `feishu-terminal selftest --herdr-socket /absolute/path/to/isolated.sock`。此命令面向 legacy herdr，需要已配置的真实应用/群，会发送 `[selftest]` 消息、操作本次创建的测试终端，不代表 hc 后端或真实入站消息/按钮投递已验收。同一应用多条长连接可能分摊事件，应选择无用户输入时段，最后从手机实际验证。
+
+## 作为库嵌入
+
+宿主独占飞书长连接时，可把事件交给同一个桥接核心；库不会连接飞书、加载 `.env`、读取配置文件或获取实例锁。
+
+```js
+import { createBridge, createConfigRegistry } from 'feishu-terminal';
+
+const registry = createConfigRegistry(config); // 也可注入自己的 get(chatId) / list()
+const bridge = createBridge({
+  config, transport, registry, backends,
+  storeFile: '/private/state/bridge.json',
+  auditFile: '/private/state/audit.jsonl',
+  log: code => console.error(code),
+  clock: Date.now,
+});
+await bridge.start();
+const used = await bridge.handle(rawEvent);
+// used === false 时，由宿主继续路由事件。
+await bridge.stop();
+```
+
+`backends` 使用现有后端接口，负责终端操作及订阅；`stop()` 会释放这些后端。`transport` 提供异步方法
+`send(chatId, content, uuid?)`、`reply(topicId, content, type?, uuid?)`、`patch(messageId, card)`、
+`getMessage(messageId)`，具体约定见 `src/transport.js`。其中 `send` 创建话题根消息，`reply` 在线程内回复，
+`patch` 同时负责卡片更新和旧卡片停用。宿主可通过 `transport.botOpenId` 提供机器人身份以移除自身 @ 标记。
+
+`handle(rawEvent)` 返回 `Promise<boolean>`，接收含 `header.event_type` / `event` 的原始事件，
+也接受 SDK 展平后的 `event_type` / `event_id` 字段；支持 `im.message.receive_v1` 和 `card.action.trigger`。
+未知群、非本桥接卡片、未知事件类型均返回 `false`，不写状态、不发消息。已接管的重复事件和无权限操作返回 `true`。
+卡片回调 `value.ft_bridge` 标记为 `feishu-terminal`，并核对本地卡片记录；升级前未标记的旧卡片需重新获取。
+独立运行入口使用 `accept(rawEvent)`，仅等待本地持久化去重，后台排队执行，以满足飞书回调时限。
+
+`registry.get(chatId)` 返回 `{chatId, project, cwd, machine, operatorOpenIds}` 或 `null`，`list()` 返回群条目数组。
+内置 registry 合并 `config.chatIds` 和可选的 `config.groups`；每群可配置 `project`、`cwd`、`machine`、
+`operatorOpenIds`，未配置的目录和权限继承全局值，显式空权限数组表示禁止控制。
+原有单群配置和 version 1 状态文件保持兼容，无需迁移。库不包含按需唤醒或空闲回收。
