@@ -37,10 +37,19 @@ export class Bridge {
   get queue() { return Promise.all([...this.queues.values()]); }
   enqueue(fn, key = 'control') {
     const result = (this.queues.get(key) ?? Promise.resolve()).then(fn);
-    const tail = result.catch(() => this.onError('bridge_operation_failed'));
+    const tail = result.catch(error => this.reportFailure('bridge_operation_failed', error));
     this.queues.set(key, tail);
     tail.then(() => { if (this.queues.get(key) === tail) this.queues.delete(key); });
     return result;
+  }
+  reportFailure(operation, error) {
+    // verify() has already proved closure and made the binding dormant.
+    if (error?.code === 'binding_dormant') return;
+    // Upstream messages/details/stacks can contain terminal text or credentials.
+    const code = String(error?.code ?? '');
+    const type = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'AggregateError']
+      .find(name => name === error?.name) ?? 'unknown';
+    this.onError(`${operation} ${/^[a-zA-Z0-9_.-]{1,64}$/.test(code) ? code : type}`);
   }
   state(binding) {
     if (!this.runtime.has(binding.topicId)) this.runtime.set(binding.topicId, {
@@ -59,7 +68,7 @@ export class Bridge {
       if (this.registry.get(b.chatId) && this.state(b).verified)
         await this.initializeTranscript(b).catch(() => this.onError('transcript_unavailable'));
       if (this.registry.get(b.chatId) && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
-        await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
+        await this.refreshCard(b).catch(error => this.reportFailure('card_refresh_failed', error));
     }
     this.starting = false;
     this.resubscribe();
@@ -852,9 +861,9 @@ export class Bridge {
         const state = this.state(binding);
         try {
           if (state.dirty || this.now() - state.lastRead >= 1000) await this.refresh(binding, false, false, true);
-        } catch { this.onError('output_refresh_failed'); }
-        try { await this.flush(binding); } catch { this.onError('output_flush_failed'); }
-        try { await this.refreshCard(binding); } catch { this.onError('card_refresh_failed'); }
+        } catch (error) { this.reportFailure('output_refresh_failed', error); }
+        try { await this.flush(binding); } catch (error) { this.reportFailure('output_flush_failed', error); }
+        try { await this.refreshCard(binding); } catch (error) { this.reportFailure('card_refresh_failed', error); }
       }, `output:${binding.topicId}`)
     ))).then(() => this.reap.tick()).finally(() => { this.tickPending = false; });
   }

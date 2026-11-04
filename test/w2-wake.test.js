@@ -88,6 +88,45 @@ test('finished and missing terminals become dormant silently and retain probed C
   }
 });
 
+for (const phase of ['refresh', 'publishCard']) {
+  test(`terminal finishing during ${phase} becomes dormant without failure logs`, async t => {
+    const h = await harness(t), original = h.bridge[phase].bind(h.bridge), causes = [];
+    h.bridge[phase] = async (...args) => {
+      h.old.state = 'finished';
+      try { return await original(...args); }
+      catch (error) { causes.push(error.code); throw error; }
+    };
+    h.bridge.state(h.binding()).cardPending = true;
+    const calls = h.feishu.calls.length;
+    h.advance(); await h.bridge.tick();
+    assert.deepEqual(causes, ['binding_dormant']);
+    assert.equal(h.binding().dormant, true);
+    assert.equal(h.binding().frozen, false);
+    assert.equal(h.feishu.calls.length, calls);
+    assert.deepEqual(h.errors, []);
+  });
+}
+
+test('queue and refresh failures retain short causes without upstream messages or payloads', async t => {
+  const h = await harness(t);
+  const failure = Object.assign(new Error('secret terminal text token=fixture-secret'), { code: 'fixture_error' });
+  await assert.rejects(h.bridge.enqueue(() => { throw failure; }), failure);
+  assert.deepEqual(h.errors.splice(0), ['bridge_operation_failed fixture_error']);
+  for (const [method, prefix] of [['refresh', 'output_refresh_failed'], ['flush', 'output_flush_failed'], ['refreshCard', 'card_refresh_failed']]) {
+    const original = h.bridge[method];
+    h.bridge[method] = async () => { throw failure; };
+    h.advance(); await h.bridge.tick();
+    h.bridge[method] = original;
+    assert.deepEqual(h.errors.splice(0), [`${prefix} fixture_error`]);
+  }
+  // Uncoded errors still identify the error class, without echoing data.
+  await assert.rejects(h.bridge.enqueue(() => { throw new TypeError('secret terminal text'); }), TypeError);
+  assert.deepEqual(h.errors.splice(0), ['bridge_operation_failed TypeError']);
+  const unsafe = Object.assign(new Error('secret'), { code: 'bad\nsecret=fixture-secret' });
+  await assert.rejects(h.bridge.enqueue(() => { throw unsafe; }), unsafe);
+  assert.deepEqual(h.errors, ['bridge_operation_failed Error']);
+});
+
 for (const [cli, ready, command] of [['pi', 'done', 'pi --session same'], ['codex', 'idle', 'codex resume same --no-daemon'], ['claude', 'idle', 'claude --resume same']]) {
   test(`${cli}: wake waits for ${ready}, changes generation, and submits queued text through input`, async t => {
     const h = await harness(t, { cli, ready }), before = h.binding(); await h.dormant();
