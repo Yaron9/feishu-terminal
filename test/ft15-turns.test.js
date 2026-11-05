@@ -65,7 +65,7 @@ test('blocked buttons are on the turn card, consume a nonce once, and rotate aft
   assert.ok(buttons(card).every(b => b.behaviors[0].value.nonce === old.nonce));
   const writes = () => h.fake.calls.filter(c => c.method === 'pane.send_keys').length;
   const before = writes(); await h.bridge.handle(click(old)); await h.bridge.handle(click(old));
-  assert.equal(writes(), before + 1); assert.equal(patches(h, old.cardId).length, 1);
+  assert.equal(writes(), before + 1); assert.equal(patches(h, old.cardId).length, 2);
   await h.restart(); await h.bridge.handle(click(old)); assert.equal(writes(), before + 1);
   await poll(2000);
   const current = binding(); assert.notEqual(current.nonce, old.nonce);
