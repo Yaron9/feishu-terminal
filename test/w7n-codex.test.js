@@ -72,3 +72,11 @@ test('full screen startup and two prompts use one clean turn card per prompt', a
   assert.match(startup, /工作中/); assert.match(startup, /Starting Codex/); assert.doesNotMatch(startup, /```|╭/);
   assert.match(JSON.stringify(screenCard({ agent: null, text: '$ hello' })), /```text/);
 });
+
+test('filters internal Codex prompts and injected hints and projects custom calls', () => {
+  for (const text of ['You are a session reflection assistant', '[nightly-reflect] private', 'previous session summary']) assert.deepEqual(codexItems(msg('user', text)), []);
+  assert.equal(codexItems(msg('user', 'hello\nSystem hints (internal, do not mention to user): secret'))[0].text, 'hello');
+  assert.equal(codexItems(msg('user', 'hello\n[Relevant facts: private]'))[0].text, 'hello');
+  assert.equal(codexItems(rec('response_item', { type: 'message', role: 'assistant', content: 'plain answer' }))[0].text, 'plain answer');
+  assert.match(codexItems(rec('response_item', { type: 'custom_tool_call', tool_name: 'patch', input: 'change file', call_id: 'c' }))[0].text, /patch: change file/);
+});

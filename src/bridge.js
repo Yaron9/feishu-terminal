@@ -516,7 +516,7 @@ export class Bridge {
     await (method === 'text' ? this.backend.sendText(binding.paneId, params.text) : this.backend.sendKeys(binding.paneId, params.keys));
     if (!wasChecking) await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
   }
-  agentName(agent) { return String(agent).toLowerCase() === 'claude' ? 'Claude' : String(agent).toLowerCase() === 'codex' ? 'Codex' : String(agent); }
+  agentName(agent) { return ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' })[String(agent).toLowerCase()] ?? String(agent); }
   inputHash(text) { return inputHash(text); }
   async rememberInput(binding, text) {
     const id = randomUUID(), now = this.now(), normalized = normalizeInput(text);
@@ -544,7 +544,7 @@ export class Bridge {
       // Legacy bindings and resumed sessions start at EOF: never replay history.
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
-        const cursor = key === 'codex' && adapter.sessions?.get(path)?.fresh
+        const cursor = ['codex', 'pi'].includes(key) && adapter.sessions?.get(path)?.fresh
           ? null : (await this.readVerified(binding, () => adapter.read(path, { atEnd: true }))).cursor;
         const patch = { transcript: { adapter: key, path, cursor, lastRecordAt: this.now() } };
         if (!current.turn && cursor?.background?.running?.length) {
@@ -557,7 +557,7 @@ export class Bridge {
         await this.updateGeneration(binding, { transcript: { ...current.transcript, lastRecordAt: this.now() } });
       state.transcriptSource = { key, path, adapter };
       const session = adapter.sessions?.get(path);
-      if (key === 'codex' && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
+      if (['codex', 'pi'].includes(key) && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
         await this.updateGeneration(binding, { sessionId: session.sessionId, sessionSource: 'verified', sessionVerified: true });
       if (key === 'claude' && session?.sessionId && current.claudeSessionId !== session.sessionId)
         await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionId: session.sessionId, sessionHandoff: null });
@@ -1461,7 +1461,7 @@ export class Bridge {
             }
           }
         }
-        if (['claude', 'codex'].includes(binding.turn.adapter)) binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
+        if (['claude', 'codex', 'pi'].includes(binding.turn.adapter)) binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
         if (turnSignature(binding.turn) !== previousTurnSignature && !await this.updateGeneration(binding, { turn: binding.turn })) return;
         state.nextSignature = turnSignature(binding.turn);
         state.cardPending = state.forceTurnCard || binding.cardTurnId !== binding.turn.id ||
