@@ -4,7 +4,7 @@ import { backgroundView, screenActivity, refreshBackgroundTails } from './transc
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard, withSessionHeader } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, withSessionHeader } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
@@ -763,6 +763,11 @@ export class Bridge {
       }
       state.initialized = true;
     }
+    if (!state.transcriptSource) {
+      const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId));
+      state.previous = clean(read.text); state.current = state.previous; state.cardPending = true;
+      await this.updateGeneration(binding, { lastTranscript: state.previous, screenCardFresh: true, screenInteraction: randomUUID() });
+    }
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
     const inputId = await this.rememberInput(binding, text);
@@ -1149,7 +1154,8 @@ export class Bridge {
     if ((binding.menuConfirm || binding.menuPage) && (!sameMenu(binding.cardMenu, menu) ||
         (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, visible.text)))
       await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-    const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature).digest('hex');
+    const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature +
+      (state.transcriptSource ? '' : '\0' + content + '\0' + (binding.lastTranscript ?? ''))).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     if (state.transcriptSource && ((state.status === 'blocked' && state.visible !== visible.text) ||
         ((menu.kind || state.menu?.kind) && menuSignature !== state.menuSignature))) state.forceTurnCard = true;
@@ -1184,11 +1190,26 @@ export class Bridge {
         uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible), tipPatch: tip.patch,
         card: this.sessionCard(turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
     }
-    return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
+    const raw = newOutput(binding.lastTranscript ?? '', state.current);
+    const output = stripChrome(raw);
+    let end = Array.from(raw).length, overflow = false;
+    const fits = text => Array.from(text).length <= 3000 && text.split('\n').length <= 60;
+    if (!fits(output)) {
+      const chars = Array.from(raw); let low = 0, high = chars.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (fits(stripChrome(chars.slice(0, mid).join('')))) low = mid; else high = mid - 1;
+      }
+      end = low; overflow = true;
+    }
+    const part = stripChrome(Array.from(raw).slice(0, end).join(''));
+    const anchor = overflow ? state.current.slice(0, state.current.length - raw.length) + Array.from(raw).slice(0, end).join('') : null;
+    return { nonce, createdAt: this.now(), targetId: resume || binding.screenCardFresh ? null : binding.cardId ?? null,
+      screenPublication: true, screenInteraction: binding.screenInteraction ?? null, ...(overflow ? { screenAnchor: anchor } : {}),
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
       uuid: randomUUID(), signature: state.nextSignature, session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible),
       card: this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
+        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output: part, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);
@@ -1396,6 +1417,10 @@ export class Bridge {
           if (this.sameGeneration(binding, b) && b.pendingCard?.nonce === pending.nonce) {
             Object.assign(b, { cardId, nonce: pending.staleNonce ? randomUUID() : pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null,
               cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce, cardScreenHash: pending.screenHash ?? null });
+            if (pending.screenPublication && (b.screenInteraction ?? null) === pending.screenInteraction) {
+              b.screenCardFresh = Boolean(pending.screenAnchor != null);
+              if (pending.screenAnchor != null) b.lastTranscript = pending.screenAnchor;
+            }
             if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
             if (pending.previousCardId && pending.previousCardId !== cardId) {
               b.retiredCardKind = pending.previousCardKind; b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt; delete b.retiredCardAttempts;
@@ -1413,7 +1438,8 @@ export class Bridge {
       // A retry must keep its fixed payload/UUID, then catch up with identity
       // changes observed while that payload was pending (also pre-W6 cards).
       state.forceTurnCard = JSON.stringify(pending.session) !== JSON.stringify(this.sessionIdentity(binding));
-      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce);
+      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce) || pending.screenAnchor != null ||
+        Boolean(this.store.binding(binding.chatId, binding.topicId)?.screenCardFresh);
     }
   }
   async flush(binding) {
@@ -1444,9 +1470,8 @@ export class Bridge {
         if (!state.pending && !state.settle) return;
         if (state.agent && !['idle', 'done'].includes(state.status)) return;
         if (!state.settle && this.now() - state.lastChange < 1500) return;
-        batch = { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks: [] };
-        const output = stripChrome(newOutput(state.previous, state.current));
-        if (output.trim()) batch.chunks.push({ card: state.agent ? assistantCard(output, [], this.agentName(state.agent)) : outputCard(output), uuid: randomUUID() });
+        state.pending = false; state.settle = false;
+        return;
       }
       const prepared = batch;
       if (!await this.store.transaction(data => {
@@ -1481,9 +1506,12 @@ export class Bridge {
       batch.next++;
       if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
     }
-    if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null,
+    const keepScreenAnchor = !batch.transcript && !state.transcriptSource &&
+      this.store.binding(binding.chatId, binding.topicId)?.screenInteraction;
+    if (!await this.updateGeneration(binding, { ...(keepScreenAnchor ? {} : { lastTranscript: batch.checkpoint }), outputBatch: null,
       ...(batch.transcript ? { transcript: batch.transcript } : {}) })) return;
-    state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
+    if (!keepScreenAnchor) state.previous = batch.checkpoint;
+    state.pending = state.current !== batch.checkpoint; state.settle = false;
   }
   async publishTurn(binding, turn) {
     let current = this.store.binding(binding.chatId, binding.topicId);

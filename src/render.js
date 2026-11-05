@@ -213,15 +213,15 @@ export function pickerCard(card, result) {
     header: { template: result ? 'grey' : card.kind === 'confirm' ? 'red' : card.kind === 'close' ? 'orange' : 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? `终端列表（共 ${card.entries.length} 个）` : '关闭终端' } }, elements };
 }
 
-export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note, menuUI, suppressMenu = false }) {
+export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, output, note, menuUI, suppressMenu = false }) {
   const menu = detectMenu(suppressMenu ? '' : text, { status, cli: agent });
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
   const lines = stripChrome(text).split('\n').filter(line => line.trim());
   const preview = lines.slice(-10).join('\n');
-  const clipped = lines.length > 10 || lines.some(line => Array.from(line).length > 120);
-  const elements = [markdown(codeBlock(screenText(preview, 10)))];
+  const clipped = !output && (lines.length > 10 || lines.some(line => Array.from(line).length > 120));
+  const elements = [markdown(codeBlock(output || screenText(preview, 10)))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     elements.push(blockedPrompt(text));
