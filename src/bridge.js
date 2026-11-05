@@ -928,7 +928,8 @@ export class Bridge {
       const prepared = await this.prepareCard(current);
       const card = renderSchema(prepared.card, '2.0');
       card.body.elements.push({ tag: 'markdown', content: `已选择：${selected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
-      await this.patchCard(event.messageId, card, 'menu');
+      try { await this.patchCard(event.messageId, card, 'menu'); }
+      catch (error) { this.reportFailure('menu_selection_patch_failed', error); }
     } else await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
     try { await this.writeInput(binding, 'keys', { keys }); }
     catch (error) {
@@ -1546,7 +1547,7 @@ export class Bridge {
       await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
-        pending = await this.prepareCard(binding);
+        pending = await this.prepareCard(binding, false, state.forceCurrentCard && binding.nonce === binding.cardNonce ? binding.nonce : undefined);
         if (!await this.updateGeneration(binding, { pendingCard: pending, ...pending.tipPatch })) return;
       }
       try {
@@ -1574,7 +1575,7 @@ export class Bridge {
           await this.rememberCard(cardId, pending.card, pending.turnId ? 'turn' : 'status');
         }
         // The old nonce stays valid until publication succeeds. A pending
-        // version always has a fresh nonce; consumed versions are never reused.
+        // version preserves an unconsumed nonce only for a stale-card refresh.
         await this.store.transaction(data => {
           const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
           if (this.sameGeneration(binding, b) && b.pendingCard?.nonce === pending.nonce) {

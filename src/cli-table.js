@@ -78,9 +78,9 @@ const menuScreen = screen => {
     lines.slice(footer + 1).every(line => !line.trim() || /[↑↓].*(?:browse|navigate)/i.test(line));
 };
 export const CLI_TABLE = Object.freeze([
-  { cli: 'claude', agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
-  { cli: 'codex', agents: ['codex'], resume: 'codex resume {id} --no-daemon', readyStates: ['idle', 'done'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
-  { cli: 'pi', agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
+  { cli: 'claude', agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
+  { cli: 'codex', agents: ['codex'], resume: 'codex resume {id} --no-daemon', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
+  { cli: 'pi', agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
 ]);
 for (const row of CLI_TABLE) row.menuScreen = menuScreen;
 export function lookupCli(terminal) {

@@ -61,7 +61,7 @@ test('blocked buttons are on the turn card, consume a nonce once, and rotate aft
   pane.agent_status = 'blocked'; await poll(2000);
   const old = binding(), card = patches(h, old.cardId).at(-1).card;
   assert.equal(card.header.title.content, '🤖 Claude · 等待你确认');
-  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 5);
+  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 3);
   assert.ok(buttons(card).every(b => b.behaviors[0].value.nonce === old.nonce));
   const writes = () => h.fake.calls.filter(c => c.method === 'pane.send_keys').length;
   const before = writes(); await h.bridge.handle(click(old)); await h.bridge.handle(click(old));
@@ -282,7 +282,7 @@ test('turn text, tools and worst-case escaped blocked cards stay bounded and ret
     assert.ok(Array.from(turn.tools).length <= 1500); assert.equal(turn.truncated, true);
     const card = turnCard({ turn, topicId: 'topic', nonce: 'nonce' });
     assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000, char);
-    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 5);
+    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 3);
     assert.equal(JSON.stringify(card).includes('\ufffd'), false);
   }
 });

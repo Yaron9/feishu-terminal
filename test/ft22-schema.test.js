@@ -93,7 +93,7 @@ test('persisted v2 payloads with old value fields are normalized on patch', asyn
 
 test('v2 turn keys and menu containers use behaviors and normalize to the existing callback envelope', () => {
   const buttons = controls(samples.turn);
-  assert.deepEqual(buttons.map(b => b.behaviors[0].value.key), ['esc', '1', '2', '3', 'y', 'n', 'ctrl+c', 'refresh']);
+  assert.deepEqual(buttons.map(b => b.behaviors[0].value.key), ['esc', '1', '2', '3', 'ctrl+c', 'refresh']);
   const menu = controls(samples.menu);
   assert.ok(menu.some(c => c.tag === 'interactive_container'));
   assert.ok(menu.some(c => c.tag === 'button'));

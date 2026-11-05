@@ -507,62 +507,6 @@
                   "tag": "button",
                   "text": {
                     "tag": "plain_text",
-                    "content": "y 同意"
-                  },
-                  "type": "default",
-                  "behaviors": [
-                    {
-                      "type": "callback",
-                      "value": {
-                        "topic_id": "topic",
-                        "nonce": "nonce",
-                        "key": "y"
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "tag": "column_set",
-          "flex_mode": "none",
-          "columns": [
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "n 拒绝"
-                  },
-                  "type": "default",
-                  "behaviors": [
-                    {
-                      "type": "callback",
-                      "value": {
-                        "topic_id": "topic",
-                        "nonce": "nonce",
-                        "key": "n"
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
                     "content": "Ctrl-C 中断"
                   },
                   "type": "default",
@@ -578,7 +522,13 @@
                   ]
                 }
               ]
-            },
+            }
+          ]
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
             {
               "tag": "column",
               "width": "weighted",

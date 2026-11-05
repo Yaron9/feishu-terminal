@@ -31,6 +31,7 @@ async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1',
         if (h.listDown) throw Object.assign(new Error('offline'), { code: 'unavailable' });
         return { terminals: [...terminals.values()] };
       }
+      if (method === 'terminal.run') return create({ labels: params.labels, status: { app: cli, state: 'idle' } });
       const term = terminals.get(params.terminal);
       if (!term) throw Object.assign(new Error('gone'), { code: 'not_found' });
       if (method === 'terminal.get') { await h.onGet(term); return term; }
@@ -59,7 +60,8 @@ async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1',
   const follow = new SessionFollow({ home: root, procRoot: join(root, 'absent') });
   const bridge = new Bridge({ backend, feishu, store, config, now, sessionFollow: follow, adapters: {},
     audit: async () => {}, onError: code => errors.push(code),
-    reapOptions: { waitMs: 200, sleep: async ms => { time += ms; } } });
+    reapOptions: { waitMs: 200, sleep: async ms => { time += ms; } },
+    wakeOptions: { timeoutMs: 1000, sleep: async ms => { time += ms; } } });
   const identity = backend.identity(await backend.get('hc:t1'));
   if (!unbound) await store.bind({ chatId: 'oc_test', topicId: 'topic', paneId: 'hc:t1', identity,
     cli, cwd: root, sessionId: 'same', dormant: false });
@@ -299,4 +301,20 @@ test('a saved child resumed before its parent still holds the parent open withou
   child.status.state = 'done'; await h.bridge.reap.tick(); h.advance(59999); await h.bridge.reap.tick();
   assert.equal(h.keys().length, 0); h.advance(1); await h.bridge.reap.tick();
   assert.deepEqual(h.keys().map(call => call.params.terminal), ['t1']);
+});
+
+for (const cli of ['claude', 'codex', 'pi']) test(`${cli}: ft-created error terminal settles, reaps and resumes on input; working stays live`, async t => {
+  const h = await harness(t, { cli, labels: {} });
+  await h.store.transaction(data => { data.createdTerminals = [h.binding().identity.terminalId]; });
+  h.terminal.status.state = 'error';
+  const working = h.create({ cwd: 'other-project', foreground: { pid: 9999, name: 'cmd.exe', cwd: 'other-project' }, labels: {}, status: { app: cli, state: 'working' } });
+  const workingIdentity = (await h.backend.get(`hc:${working.address}`)).terminal_id;
+  await h.store.transaction(data => { data.createdTerminals.push(workingIdentity); });
+  await h.tick(); h.advance(599999); await h.tick(); assert.equal(h.removes().length, 0);
+  h.advance(1); await h.tick();
+  assert.equal(h.binding().dormant, true); assert.equal(h.removes().length, 1); assert.equal(working.state, 'live');
+  await h.bridge.handle(message('resume input', 'resume-error', 'topic'));
+  assert.equal(h.binding().dormant, false);
+  assert.ok(h.calls.some(c => c.method === 'terminal.run'));
+  assert.ok(h.calls.some(c => c.method === 'terminal.send' && c.params.text === 'resume input'));
 });

@@ -70,3 +70,13 @@ test('menu choice followed by a new transcript turn stays on the card until the 
   records.push({ role: 'user', text: 'real prompt' }, { role: 'assistant', text: 'new answer' }); await tick(h, 3000);
   assert.notEqual(b(h).cardId, id); assert.equal(replies(h).length, count + 1);
 });
+
+test('selection keys are sent even when the selected-card patch fails', async t => {
+  const { h, pane } = await setup(t);
+  h.fake.status('w1:p1', 'blocked', 'codex'); pane.visible = menu; await tick(h);
+  const patch = h.feishu.patch.bind(h.feishu); let failures = 0;
+  h.feishu.patch = async (...args) => { if (!failures++) throw new Error('temporary'); return patch(...args); };
+  const before = keys(h).length; await click(h);
+  assert.equal(failures, 1); assert.deepEqual(keys(h).slice(before).map(call => call.params.keys), [['down', 'enter']]);
+  assert.ok(h.errors.some(line => line.startsWith('menu_selection_patch_failed ')));
+});
