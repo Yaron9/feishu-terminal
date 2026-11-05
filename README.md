@@ -250,6 +250,8 @@ await bridge.stop();
 卡片回调按群路由，并核对本地卡片记录、nonce 和操作权限；升级前未标记的旧卡片也可使用。
 独立运行入口使用 `accept(rawEvent)`，仅等待本地持久化去重，后台排队执行，以满足飞书回调时限。
 
+Registry groups may provide `isOperator(openId) => boolean` to decide operator access for messages and card actions. When present, this synchronous predicate overrides `operatorOpenIds`; otherwise the existing group/global list fallback applies.
+
 `registry.get(chatId)` 返回 `{chatId, project, cwd, machine, operatorOpenIds}` 或 `null`，`list()` 返回群条目数组。
 内置 registry 合并 `config.chatIds` 和可选的 `config.groups`；每群可配置 `project`、`cwd`、`machine`、
 `operatorOpenIds`，未配置的目录和权限继承全局值，显式空权限数组表示禁止控制。

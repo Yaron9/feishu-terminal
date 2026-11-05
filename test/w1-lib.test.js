@@ -93,6 +93,38 @@ test('public bridge isolates two groups, topics, group cwd, picker actions and o
   assert.equal((await readFile(h.auditFile, 'utf8')).includes('first_input'), true);
 });
 
+test('registry predicate overrides operator list for messages and cards', async t => {
+  const h = await fixture(t);
+  const original = h.registry.get;
+  h.registry.get = chatId => {
+    const group = original(chatId);
+    return group && chatId === 'oc_test1' ? { ...group, isOperator: id => id === 'ou_allowed' } : group;
+  };
+  await h.bridge.handle(message('denied', 'oc_test1', 'ou_test', 'om_pred_denied'));
+  assert.equal(h.fake.calls.length, 0);
+  await h.bridge.handle(message('allowed', 'oc_test1', 'ou_allowed', 'om_pred_allowed'));
+  assert.ok(h.fake.calls.some(c => c.method === 'workspace.create'));
+  await h.bridge.handle(message('/t ls', 'oc_test1', 'ou_allowed', 'om_pred_list'));
+  const card = (await h.state()).data.actionCards[0];
+  const action = structuredClone(fixtures.action);
+  action.event.context = { open_chat_id: 'oc_test1', open_message_id: card.messageId };
+  action.event.action.value = callbacks(h.transport.calls.find(c => c.id === card.messageId).content)[0];
+  action.event.operator.open_id = 'ou_other';
+  const before = h.transport.calls.length;
+  await h.bridge.handle(action);
+  assert.ok(h.transport.calls.length > before);
+  assert.match(h.transport.calls.at(-1).content, /\u63a7\u5236\u6743\u9650/);
+});
+
+test('config registry preserves predicate and copies list data', () => {
+  const isOperator = id => id === 'ou_allowed';
+  const registry = createConfigRegistry({ chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], groups: { oc_test: { isOperator } } });
+  assert.equal(registry.get('oc_test').isOperator('ou_allowed'), true);
+  assert.equal(registry.list()[0].isOperator('ou_test'), false);
+  registry.list()[0].operatorOpenIds.push('ou_mutated');
+  assert.deepEqual(registry.get('oc_test').operatorOpenIds, ['ou_test']);
+});
+
 test('backend factory is available from the public package', () => {
   assert.equal(typeof createBackends, 'function');
 });

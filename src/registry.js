@@ -5,6 +5,7 @@
  * @property {string} [cwd]
  * @property {string} [machine]
  * @property {string[]} operatorOpenIds
+ * @property {(openId: string) => boolean} [isOperator] Overrides the operator list when present.
  * @typedef {Object} GroupRegistry
  * @property {(chatId: string) => Group | null} get Synchronous lookup; null means host-owned routing.
  * @property {() => Group[]} list
@@ -14,5 +15,10 @@ export function createConfigRegistry(config) {
   const entries = ids.map(chatId => ({ chatId, cwd: config.defaultCwd,
     ...config.groups?.[chatId], operatorOpenIds: config.groups?.[chatId]?.operatorOpenIds ?? config.operatorOpenIds ?? [] }));
   const groups = new Map(entries.map(entry => [entry.chatId, entry]));
-  return { get: chatId => structuredClone(groups.get(chatId) ?? null), list: () => structuredClone(entries) };
+  const copy = entry => {
+    if (!entry) return null;
+    const { isOperator, ...data } = entry;
+    return { ...structuredClone(data), ...(isOperator === undefined ? {} : { isOperator }) };
+  };
+  return { get: chatId => copy(groups.get(chatId)), list: () => entries.map(copy) };
 }

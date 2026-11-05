@@ -171,7 +171,7 @@ export class Bridge {
     if (event.kind === 'message' && event.senderType !== 'user') return; // never loop on bot output
     const group = this.registry.get(event.chatId);
     if (!group) return;
-    if (!(group.operatorOpenIds ?? this.config.operatorOpenIds ?? []).includes(event.openId)) {
+    if (!(group.isOperator ? group.isOperator(event.openId) : (group.operatorOpenIds ?? this.config.operatorOpenIds ?? []).includes(event.openId))) {
       await this.refuse(event); return;
     }
     let binding = this.store.binding(event.chatId, event.topicId);
