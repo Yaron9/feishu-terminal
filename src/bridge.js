@@ -523,7 +523,7 @@ export class Bridge {
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
       if (!this.sameGeneration(binding, b)) throw new Error('Binding changed');
-      if (/^\s*(?:codex|pi)(?:\s|$)/i.test(text)) b.cliCommand = text.trim();
+      if (/^\s*(?:codex|pi)(?:\s|$)/i.test(text)) { b.cliCommand = text.trim(); b.cliCommandSentAt = now; }
       b.sentInputs = [...(b.sentInputs ?? []).filter(item => item.expires > now),
         { id, hash: this.inputHash(text), prefix: normalized.slice(0, 64), length: normalized.length,
           sentAt: now, terminalId: binding.identity.terminalId, expires: now + 600000 }].slice(-100);
@@ -536,7 +536,7 @@ export class Bridge {
       if (!pane) pane = await this.readVerified(binding, () => this.backend.get(binding.paneId));
       const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adapters[key];
       if (!adapter) { state.transcriptSource = null; return; }
-      const path = await this.readVerified(binding, () => adapter.locate(pane));
+      const path = await this.readVerified(binding, () => adapter.locate(pane, this.store.binding(binding.chatId, binding.topicId), this.store.list()));
       if (!path) { state.transcriptSource = null; return; }
       if (state.failedTranscript === path && this.now() < state.transcriptRetryAt) { state.transcriptSource = null; return; }
       const current = this.store.binding(binding.chatId, binding.topicId);
@@ -544,9 +544,10 @@ export class Bridge {
       // Legacy bindings and resumed sessions start at EOF: never replay history.
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
-        const { cursor } = await this.readVerified(binding, () => adapter.read(path, { atEnd: true }));
+        const cursor = key === 'codex' && adapter.sessions?.get(path)?.fresh
+          ? null : (await this.readVerified(binding, () => adapter.read(path, { atEnd: true }))).cursor;
         const patch = { transcript: { adapter: key, path, cursor, lastRecordAt: this.now() } };
-        if (!current.turn && cursor.background?.running?.length) {
+        if (!current.turn && cursor?.background?.running?.length) {
           patch.turn = freshTurn({ key, path }, this.agentName(key), state.status);
           if (['idle', 'done'].includes(state.status)) { patch.turn.settled = true; patch.turn.status = 'idle'; }
         }
@@ -556,6 +557,8 @@ export class Bridge {
         await this.updateGeneration(binding, { transcript: { ...current.transcript, lastRecordAt: this.now() } });
       state.transcriptSource = { key, path, adapter };
       const session = adapter.sessions?.get(path);
+      if (key === 'codex' && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
+        await this.updateGeneration(binding, { sessionId: session.sessionId, sessionSource: 'verified', sessionVerified: true });
       if (key === 'claude' && session?.sessionId && current.claudeSessionId !== session.sessionId)
         await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionId: session.sessionId, sessionHandoff: null });
     } catch (error) {
@@ -580,7 +583,7 @@ export class Bridge {
     }
     return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs, checkedInputs,
       transcript: { adapter: source.key, path: source.path, cursor,
-        lastRecordAt: cursor.offset !== checkpoint.cursor.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
+        lastRecordAt: cursor.offset !== checkpoint.cursor?.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
   }
   async createPane(chatId) {
     return this.enqueue(() => this.createPaneSerial(chatId), 'pane-create');
@@ -1458,7 +1461,7 @@ export class Bridge {
             }
           }
         }
-        if (binding.turn.adapter === 'claude') binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
+        if (['claude', 'codex'].includes(binding.turn.adapter)) binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
         if (turnSignature(binding.turn) !== previousTurnSignature && !await this.updateGeneration(binding, { turn: binding.turn })) return;
         state.nextSignature = turnSignature(binding.turn);
         state.cardPending = state.forceTurnCard || binding.cardTurnId !== binding.turn.id ||

@@ -1,3 +1,4 @@
+import { lookupCli } from './cli-table.js';
 import { stripVTControlCharacters } from './ansi.js';
 import { detectMenu, menuControls } from './menus.js';
 import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
@@ -221,7 +222,8 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
   const lines = stripChrome(text).split('\n').filter(line => line.trim());
   const preview = lines.slice(-10).join('\n');
   const clipped = !output && (lines.length > 10 || lines.some(line => Array.from(line).length > 120));
-  const elements = [markdown(codeBlock(output || screenText(preview, 10)))];
+  const display = output || screenText(preview, 10);
+  const elements = [markdown(lookupCli({ agent }) ? prose(stripChrome(display)) : codeBlock(display))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     elements.push(blockedPrompt(text));
