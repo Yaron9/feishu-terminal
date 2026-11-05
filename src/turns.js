@@ -37,7 +37,7 @@ export function turnChunks(items, previous, source, agent, status, inputs, input
           input.echoChecked = true; checkedInputs.push(input.id);
         }
       }
-      turn = freshTurn(source, agent, status); dirty = true;
+      turn = freshTurn(source, agent, status); turn.userPrompt = true; dirty = true;
     } else if (['assistant', 'tool'].includes(item.role)) {
       if (!turn || turn.settled || turn.path !== source.path || turn.adapter !== source.key) {
         finish(); turn = freshTurn(source, agent, status);

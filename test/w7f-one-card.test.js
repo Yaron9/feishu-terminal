@@ -48,17 +48,17 @@ test('restart retains the interaction card and anchor', async t => {
   assert.equal(binding(h).cardId, id); assert.equal(replies(h).length, 1); assert.match(body(card(h, id)), /one.*two/);
 });
 
-test('menu is separate and output resumes on the same card', async t => {
+test('menu shares the interaction card and output resumes on it', async t => {
   const h = await setup(t); await screen(h, '$ first\nbefore'); const id = binding(h).cardId;
   h.fake.status('w1:p1', 'blocked', 'codex');
   const pane = h.fake.panes.get('w1:p1'); pane.visible = 'Select model\n❯ First model\n  Second model\nEsc to cancel';
   h.advance(2000); await h.bridge.tick(); const menuId = binding(h).menuCardId;
-  assert.ok(menuId && menuId !== id); assert.match(body(card(h, id)), /before/);
+  assert.ok(menuId && menuId === id); assert.match(body(card(h, id)), /before/);
   await h.bridge.handle({ kind: 'button', eventId: 'menu-click', chatId: 'oc_test', openId: 'ou_test', topicId: 'm1',
     messageId: menuId, nonce: binding(h).menuNonce, key: 'menu:select:1' });
   h.fake.status('w1:p1', 'idle', 'codex');
   await screen(h, '$ first\nbefore\nafter');
-  assert.equal(replies(h).length, 2); assert.equal(binding(h).cardId, id); assert.match(body(card(h, id)), /before.*after/);
+  assert.equal(replies(h).length, 1); assert.equal(binding(h).cardId, id); assert.match(body(card(h, id)), /before.*after/);
 });
 
 test('Claude transcript still creates and patches a turn card', async t => {

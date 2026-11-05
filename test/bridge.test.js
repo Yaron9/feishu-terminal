@@ -4,7 +4,7 @@ import { legacyHarness as harness, message, pickerEvent, outputReplies } from '.
 
 const writes = fake => fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
 const records = outputReplies;
-const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive') && !(c.card ?? c.content)?.schema);
+const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive'));
 
 test('legacy-root fixture creates workspace/pane and sends first shell input in order', async t => {
   const h = await harness(t);
@@ -46,7 +46,7 @@ test('recognized agent uses agent.prompt; blocked prompt displays one live card 
   await h.bridge.handle(message('do next', 'm3', 'm1'));
   assert.equal(writes(h.fake).at(-1).method, 'agent.prompt');
   const card = cards(h.feishu).at(-1).content;
-  assert.equal(card.header.template, 'orange'); assert.equal(card.elements.flatMap(e => e.actions ?? []).length, 5);
+  assert.equal(card.header.template, 'orange'); assert.equal(card.body.elements.filter(e => e.tag === 'button').length, 5);
   assert.ok(!records(h.feishu).some(c => String(c.content).includes('fixture error')));
 });
 
@@ -131,7 +131,7 @@ test('Refresh consumes nonce and schedules an unchanged blocked card after the t
   assert.equal(cards(h.feishu).length, 1); assert.notEqual(h.store.binding('oc_test', 'm1').nonce, before.nonce);
   h.advance(900); await h.bridge.tick(); assert.equal(cards(h.feishu).length, 2);
   const card = cards(h.feishu).at(-1).card;
-  assert.equal(card.elements.find(e => e.actions).actions[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
+  assert.equal(card.body.elements.find(e => e.tag === 'button').behaviors[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
 });
 
 test('/t open binds desktop pane with a fresh topic; picker includes agent status; close offers unbind and --kill destroys', async t => {

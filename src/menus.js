@@ -145,8 +145,8 @@ const warningLabel = warnings => warnings?.length ? `⚠️ 已在 ${Array.from(
 
 // Conservative serialized row budget includes escaped Markdown, callback metadata
 // and layout. Reduce the whole page, never a session title.
-export function menuPageSize(menu, warnings = {}) {
-  const budget = Math.max(1000, 20000 - Buffer.byteLength(JSON.stringify(menu.context ?? '').replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
+export function menuPageSize(menu, warnings = {}, cardBudget = 20000) {
+  const budget = Math.max(1000, Math.min(20000, cardBudget) - Buffer.byteLength(JSON.stringify(menu.context ?? '').replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
   const costs = menu.items.map((item, index) => 900 + Buffer.byteLength(JSON.stringify(
     [item.label, item.sublabel, warnings[index] ?? []]).replace(/[&<>\\`*_\[\]~!]/g, 'xxxxxx')));
   for (let size = 10; size > 1; size--) {

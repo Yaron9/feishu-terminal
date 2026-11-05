@@ -79,14 +79,16 @@ test('a failed obsolete menu patch cannot block transcript output in the next ti
   h.advance(250); await h.bridge.tick();
   assert.equal(bound(h).turn.text, 'Recovered transcript output');
   assert.ok(bound(h).cardId);
-  assert.equal(bound(h).outputBatch, null);
+  assert.ok(bound(h).outputBatch);
   offline = false;
   h.bridge.state(bound(h)).menuRetryAt = 0;
-  h.advance(250); await h.bridge.tick();
+  h.advance(3000); await h.bridge.tick();
+  h.advance(3000); await h.bridge.tick();
+  assert.equal(bound(h).outputBatch, null);
   assert.equal(bound(h).pendingMenuCard, null);
   assert.equal(bound(h).menuCardId, null);
   assert.equal(bound(h).generation, original.generation);
-  assert.ok(h.feishu.calls.some(c => c.type === 'patch' && c.id === original.menuCardId && /菜单已关闭/.test(JSON.stringify(c.card))));
+  assert.ok(h.feishu.calls.some(c => c.type === 'patch' && c.id === original.menuCardId && /Recovered transcript output/.test(JSON.stringify(c.card))));
 });
 
 test('a recovered transport retires a pending menu within one tick without waiting for its old retry timer', async t => {

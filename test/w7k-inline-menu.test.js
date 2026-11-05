@@ -55,3 +55,18 @@ test('pending menu patch survives restart without duplicate reply', async t => {
 });
 
 
+
+test('menu choice followed by a new transcript turn stays on the card until the next prompt', async t => {
+  const { h, pane, records } = await setup(t, true);
+  records.push({ role: 'turn_end' }); await tick(h);
+  const id = b(h).cardId, count = replies(h).length;
+  h.fake.status('w1:p1', 'blocked', 'claude'); pane.visible = menu; await tick(h);
+  await click(h);
+  h.fake.status('w1:p1', 'working', 'claude'); pane.visible = 'working';
+  records.push({ role: 'assistant', text: 'after menu choice' }); await tick(h, 3000);
+  assert.equal(b(h).cardId, id); assert.equal(replies(h).length, count);
+  assert.match(JSON.stringify(last(h, id).card), /after menu choice/);
+  await h.bridge.handle(message('real prompt', 'new-prompt', b(h).topicId));
+  records.push({ role: 'user', text: 'real prompt' }, { role: 'assistant', text: 'new answer' }); await tick(h, 3000);
+  assert.notEqual(b(h).cardId, id); assert.equal(replies(h).length, count + 1);
+});

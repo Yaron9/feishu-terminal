@@ -196,13 +196,13 @@ test('restart reconciles an uncertain card patch by publishing the same pending 
   h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
   const old = h.store.binding('oc_test', 'm1'); let visibleNonce;
   h.feishu.patch = async (id, card) => {
-    visibleNonce = card.elements.find(e => e.actions).actions[0].value.nonce;
+    visibleNonce = card.body.elements.find(e => e.tag === 'button').behaviors[0].value.nonce;
     throw Object.assign(new Error('response lost after server applied patch'), { code: 'network_error' });
   };
   h.fake.output('w1:p1', 'Changed approval'); h.advance(1000); await h.bridge.tick();
   const pendingNonce = visibleNonce;
   assert.equal(h.store.binding('oc_test', 'm1').nonce, old.nonce);
-  h.feishu.patch = async (id, card) => { assert.equal(card.elements.find(e => e.actions).actions[0].value.nonce, pendingNonce); };
+  h.feishu.patch = async (id, card) => { assert.equal(card.body.elements.find(e => e.tag === 'button').behaviors[0].value.nonce, pendingNonce); };
   const restored = await h.restart();
   assert.equal(restored.binding('oc_test', 'm1').nonce, pendingNonce);
   assert.equal(restored.binding('oc_test', 'm1').pendingCard, null);

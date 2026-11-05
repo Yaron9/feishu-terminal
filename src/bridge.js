@@ -20,10 +20,9 @@ import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
 import { lookupCli } from './cli-table.js';
 
-function screenBody(binding, pane, current, visible) {
+function screenBody(binding, pane, current, visible, limit = 20000) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
     stripChrome(newOutput(binding.lastTranscript ?? '', current));
-  const limit = 20000;
   if (Buffer.byteLength(body, 'utf8') <= limit) return body;
   const chars = Array.from(body);
   let start = chars.length, bytes = 0;
@@ -788,6 +787,7 @@ export class Bridge {
     }
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
+    await this.updateGeneration(binding, { menuTurnContinuation: false });
     const inputId = await this.rememberInput(binding, text);
     await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
     try {
@@ -911,7 +911,8 @@ export class Bridge {
     const selected = selection ? menu.items[Number(selection[2])]?.label :
       menu.kind === 'numbered' && /^[1-9]$/.test(event.key) ? menu.items[Number(event.key) - 1]?.label :
       event.key === 'enter' ? menu.items[menu.cursorIndex]?.label : null;
-    await this.updateGeneration(binding, { menuSelected: selected ?? null });
+    await this.updateGeneration(binding, { menuSelected: selected ?? null,
+      ...(selected && this.turnMode(binding) ? { menuTurnContinuation: true } : {}) });
   }
   screenHash(text) { return createHash('sha256').update(clean(text)).digest('hex'); }
   async liveMenu(binding, text) {
@@ -1198,7 +1199,7 @@ export class Bridge {
     if (this.turnMode(binding) && binding.turn) return this.sessionCard(turnCard({
       turn: binding.turn, tip, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible,
       suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding);
-    const output = screenBody(binding, pane, state.current, state.visible);
+    const output = screenBody(binding, pane, state.current, state.menu?.kind ? state.current : state.visible, state.menu?.kind ? 3000 : 20000);
     return renderSchema(this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
       agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true,
       ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
@@ -1210,7 +1211,7 @@ export class Bridge {
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     if (this.turnMode(binding) && binding.turn) {
-      const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id;
+      const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id && !binding.menuTurnContinuation;
       const eligible = !['blocked', 'error', 'failed', 'frozen'].includes(turn.status) &&
         !turn.truncated && !turn.toolsTruncated && Array.from(stripChrome(turn.text)).length <= 1500;
       const tip = planTurnTip(binding, turn, this.now(), eligible);
@@ -1288,12 +1289,12 @@ export class Bridge {
     if (!menu.kind && !binding.pendingMenuCard) return;
     const panes = await this.backend.list();
     const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
-    const pageSize = menuPageSize(menu, warnings);
     let pending = binding.pendingMenuCard;
     if (!pending) {
       const nonce = sameMenu(binding.cardMenu, menu) && binding.menuNonce && binding.menuNonce === binding.menuPublishedNonce ? binding.menuNonce : randomUUID();
       const prepared = await this.prepareCard(binding, false, nonce);
       const card = renderSchema(prepared.card, '2.0');
+      const pageSize = menuPageSize(menu, warnings, Math.max(1000, 26000 - Buffer.byteLength(JSON.stringify(card))));
       card.body.elements.push(...menuElements({ menu, topicId: binding.topicId, nonce,
         agent: this.agentName(state.agent ?? binding.cli ?? '终端'),
         menuUI: { page: binding.menuPage ?? 0, pageSize, warnings,
@@ -1329,6 +1330,7 @@ export class Bridge {
       await this.updateGeneration(binding, { pendingMenuCard: null, cardId: id, cardNonce: pending.nonce,
         nonce: pending.nonce, cardCreatedAt: pending.createdAt, cardTurnId: pending.turnId ?? null,
         cardSignature: pending.cardSignature, screenCardFresh: false,
+        ...(!pending.turnId && this.turnMode(binding) ? { menuTurnContinuation: true } : {}),
         menuCardId: id, menuNonce: pending.nonce, menuPublishedNonce: pending.nonce, menuCreatedAt: pending.createdAt,
         menuSignature: pending.signature, menuPageSize: pending.pageSize, cardMenu: pending.menu,
         cardMenuScreenHash: pending.screenHash });
@@ -1466,7 +1468,7 @@ export class Bridge {
     // interval. Fallback status cards keep 1 Hz; recovery sends a new reply.
     const turnPublication = this.turnMode(binding) && binding.turn;
     const targetId = binding.pendingCard ? binding.pendingCard.targetId :
-      turnPublication && binding.cardTurnId !== binding.turn?.id ? null : binding.cardId;
+      turnPublication && binding.cardTurnId !== binding.turn?.id && !binding.menuTurnContinuation ? null : binding.cardId;
     const turnThrottled = turnPublication && targetId && binding.cardAttemptId === targetId &&
       now - binding.cardAttemptAt < 2000;
     const ready = turnPublication ? !turnThrottled && now >= (state.cardRetryAt ?? 0) :
@@ -1627,6 +1629,10 @@ export class Bridge {
         current = this.store.binding(binding.chatId, binding.topicId);
         if (current.pendingCard || current.cardSignature !== turnSignature(old)) return false;
       }
+    }
+    if (turn.userPrompt && current.turn?.id !== turn.id && current.menuTurnContinuation) {
+      await this.updateGeneration(binding, { menuTurnContinuation: false });
+      current = this.store.binding(binding.chatId, binding.topicId);
     }
     const signature = turnSignature(turn);
     if (current.turn?.id !== turn.id || turnSignature(current.turn) !== signature) {

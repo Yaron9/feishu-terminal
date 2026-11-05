@@ -38,7 +38,7 @@ test('picker recovery replies in the existing topic, commits a new screen nonce,
   assert.match(JSON.stringify(screen.content), /current approval/);
   const retired = h.feishu.calls.find(c => c.type === 'patch' && c.id === old.cardId);
   assert.match(JSON.stringify(retired.card), /已移至下方新卡片/);
-  assert.ok(!retired.card.elements.some(e => e.actions));
+  assert.ok(!JSON.stringify(retired.card).includes('behaviors'));
   const result = h.feishu.calls.find(c => c.type === 'patch' && c.id === picker.messageId).card;
   assert.match(result.elements[0].text.content, /^已在话题「.*」\(\d{2}:\d{2}\)，已置顶；看不到可点 \[移到新话题\]$/);
   assert.equal(result.elements.length, 4); // Preserve the other pane's row, grey id and the move escape.
@@ -160,8 +160,8 @@ test('recovery reconciles an older pending ft7 patch before posting a new reply'
   h.feishu.patch = patch;
   await h.bridge.handle(message('/t open w1:p1', 'recover'));
   const active = h.store.binding('oc_test', 'm1');
-  const reconciled = h.feishu.calls.find(c => c.type === 'patch' && c.id === old.cardId && c.card.elements.some(e => e.actions));
-  assert.equal(reconciled.card.elements.find(e => e.actions).actions[0].value.nonce, pending.nonce);
+  const reconciled = h.feishu.calls.find(c => c.type === 'patch' && c.id === old.cardId && c.card.body?.elements.some(e => e.tag === 'button'));
+  assert.equal(reconciled.card.body.elements.find(e => e.tag === 'button').behaviors[0].value.nonce, pending.nonce);
   assert.notEqual(active.nonce, pending.nonce); assert.notEqual(active.cardId, old.cardId);
   assert.equal(active.pendingCard, null); assert.equal(h.store.list().length, 1);
 });
