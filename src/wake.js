@@ -23,11 +23,26 @@ export class Wake {
     const facts = await b.sessionFollow.describe(terminal);
     const current = b.store.binding(binding.chatId, binding.topicId);
     if (!b.sameGeneration(binding, current)) return;
-    const changed = facts.cli !== current.cli || facts.cwd !== current.cwd;
-    const sessionId = facts.sessionId ?? (changed ? null : current.sessionId) ?? current.claudeSessionId ?? null;
-    if (changed || sessionId !== current.sessionId) {
-      if (await b.updateGeneration(binding, { ...facts, sessionId })) state.cardPending = state.forceTurnCard = true;
-    }
+    await b.store.transaction(data => {
+      const item = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
+      if (!b.sameGeneration(binding, item)) return;
+      const changed = facts.cli !== item.cli || facts.cwd !== item.cwd;
+      let id = changed ? null : item.sessionId, source = changed ? null : item.sessionSource;
+      if (facts.cli === 'claude') {
+        id = (facts.sessionVerified ? facts.sessionId : null) ?? (changed ? null : item.sessionId) ?? item.claudeSessionId ?? null;
+        source = facts.sessionVerified ? 'verified' : source;
+      } else if (facts.sessionVerified) { id = facts.sessionId; source = 'verified'; }
+      else if (facts.sessionId && Number.isFinite(facts.sessionStartedAt) &&
+        (item.sentInputs ?? []).some(input => input.terminalId === item.identity?.terminalId && input.sentAt <= facts.sessionStartedAt &&
+          /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')) &&
+        !data.bindings.some(other => other !== item && other.sessionId === facts.sessionId)) {
+        id = facts.sessionId; source = 'probe';
+      }
+      if (changed || id !== item.sessionId || source !== item.sessionSource) {
+        Object.assign(item, { cli: facts.cli, cwd: facts.cwd, sessionId: id, sessionSource: source, sessionVerified: source === 'verified' });
+        state.cardPending = state.forceTurnCard = true;
+      }
+    });
   }
   async dormant(binding) {
     const b = this.bridge;
@@ -57,14 +72,20 @@ export class Wake {
     binding = b.store.binding(binding.chatId, binding.topicId);
     if (!binding || binding.frozen) return;
     const row = CLI_TABLE.find(row => row.cli === binding.cli);
-    if (!row || !binding.cwd || !/^[a-zA-Z0-9_-]+$/.test(binding.sessionId ?? '')) {
+    if (['codex', 'pi'].includes(binding.cli) && binding.sessionId &&
+      (!['verified', 'probe'].includes(binding.sessionSource) || b.store.list().some(x => x.topicId !== binding.topicId && x.sessionId === binding.sessionId))) {
+      await b.updateGeneration(binding, { sessionId: null, sessionSource: null, sessionVerified: false, sessionHandoff: null, sessionReplay: true });
+      binding = b.store.binding(binding.chatId, binding.topicId);
+    }
+    const replay = ['codex', 'pi'].includes(binding.cli) && !binding.sessionId && binding.sessionReplay;
+    if (!row || !binding.cwd || (!replay && !/^[a-zA-Z0-9_-]+$/.test(binding.sessionId ?? ''))) {
       if (!binding.unknownSessionNotified) {
         await b.updateGeneration(binding, { unknownSessionNotified: true });
         await b.feishu.reply(binding.topicId, '无法唤醒：没有可靠的会话编号，请从 /t ls 重新打开终端。消息已保留。');
       }
       return;
     }
-    const key = binding.sessionId;
+    const key = binding.sessionId ?? `topic:${binding.topicId}`;
     const previous = this.sessions.get(key) ?? Promise.resolve();
     const task = previous.catch(() => {}).then(() => this.run(binding, row, wait));
     this.sessions.set(key, task);
@@ -98,7 +119,7 @@ export class Wake {
     if (!terminal) {
       // Include unbound terminals and optional Linux SSH processes. A backend
       // list failure aborts this attempt rather than authorizing another run.
-      const candidates = await b.sessionFollow.candidates(binding.sessionId);
+      const candidates = binding.sessionId ? await b.sessionFollow.candidates(binding.sessionId) : [];
       const terminals = await b.backend.backends.get('hc')?.list();
       if (!terminals) throw Object.assign(new Error('hc unavailable'), { code: 'backend_unavailable' });
       if (candidates.length) {
@@ -110,7 +131,7 @@ export class Wake {
       } else {
         for (const live of terminals) {
           const facts = await b.sessionFollow.describe(live);
-          if (facts.cli === row.cli && sameCwd(facts.cwd, binding.cwd) && !facts.sessionId) return;
+          if (facts.cli === row.cli && sameCwd(facts.cwd, binding.cwd) && !facts.sessionVerified) return;
         }
         // A lost run response may still create a process. Keep its intent and
         // discover it by labels on future ticks; never retry that mutation.
@@ -126,8 +147,8 @@ export class Wake {
           } catch (error) { if (!ended(error)) throw error; }
         }
         await b.updateGeneration(binding, { wakeAttempt: { phase: 'launching', at: b.now() } });
-        terminal = await b.backend.backends.get('hc').create(row.resume.replace('{id}', binding.sessionId), binding.cwd,
-          { labels: { 'ft.woken': '1', session: binding.sessionId }, ...(parentId ? { parent: parentId } : {}) });
+        terminal = await b.backend.backends.get('hc').create(binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : (binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli), binding.cwd,
+          { labels: { 'ft.woken': '1', ...(binding.sessionId ? { session: binding.sessionId } : {}) }, ...(parentId ? { parent: parentId } : {}) });
         await b.store.transaction(data => { (data.createdTerminals ??= []).push(terminal.terminal_id); });
       }
       await b.updateGeneration(binding, { wakeTarget: { paneId: terminal.pane_id, identity: b.backend.identity(terminal) },

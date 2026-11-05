@@ -13,14 +13,15 @@ export class SessionFollow {
   }
   async describe(terminal) {
     const row = lookupCli(terminal), cwd = terminal.foreground?.cwd ?? terminal.foreground_cwd ?? terminal.cwd;
-    if (!row || !cwd || /^hc:[^/]+\//.test(terminal.pane_id)) return { cli: row?.cli ?? null, cwd: cwd ?? null, sessionId: null };
+    if (!row || !cwd || /^hc:[^/]+\//.test(terminal.pane_id)) return { cli: row?.cli ?? null, cwd: cwd ?? null, sessionId: null, sessionVerified: false };
     const valid = id => typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id) ? id : null;
     // Labels are written with the resume command before the process starts.
     let sessionId = valid(terminal.labels?.session);
     if (!sessionId) sessionId = resumeSessionId(row, terminal.foreground?.argv) ?? resumeSessionId(row, terminal.argv);
     if (!sessionId && row.cli === 'claude') sessionId = await this.sessionIdOf(terminal.foreground?.pid ?? terminal.foreground_pid);
-    if (!sessionId) sessionId = (await row.probe({ home: this.home, cwd, startedAfterMs: terminal.created_ms ?? 0 }))?.sessionId ?? null;
-    return { cli: row.cli, cwd, sessionId };
+    const sessionVerified = Boolean(sessionId);
+    const probe = sessionId ? null : await row.probe({ home: this.home, cwd, startedAfterMs: terminal.created_ms ?? 0 });
+    return { cli: row.cli, cwd, sessionId: sessionId ?? probe?.sessionId ?? null, sessionVerified, sessionStartedAt: probe?.startedAt ?? null };
   }
   async hcCandidates(sessionId) {
     if (!this.backend?.backends?.has('hc')) return [];
@@ -29,7 +30,7 @@ export class SessionFollow {
     for (const terminal of terminals) {
       if (/^hc:[^/]+\//.test(terminal.pane_id)) continue;
       const facts = await this.describe(terminal);
-      if (facts.sessionId !== sessionId && terminal.labels?.session !== sessionId) continue;
+      if (!facts.sessionVerified || facts.sessionId !== sessionId) continue;
       result.push({ pid: this.backend.processOf(terminal), start: terminal.created_ms,
         terminalId: terminal.pane_id, sessionId, cli: facts.cli, hcIdentity: this.backend.identity(terminal) });
     }

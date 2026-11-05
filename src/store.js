@@ -30,6 +30,14 @@ export class Store {
         }
         await this.write(data);
       }
+      const counts = new Map();
+      for (const b of data.bindings) if (b.sessionId) counts.set(b.sessionId, (counts.get(b.sessionId) ?? 0) + 1);
+      let sanitized = false;
+      for (const b of data.bindings) if (['codex', 'pi'].includes(b.cli) && b.sessionId &&
+        (counts.get(b.sessionId) > 1 || !['verified', 'probe'].includes(b.sessionSource))) {
+        b.sessionId = null; b.sessionSource = null; b.sessionVerified = false; b.sessionHandoff = null; b.sessionReplay = true; sanitized = true;
+      }
+      if (sanitized) await this.write(data);
       this.data = data;
       this.prune(this.data);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }

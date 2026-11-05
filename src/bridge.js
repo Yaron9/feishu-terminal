@@ -329,9 +329,9 @@ export class Bridge {
   }
   async newRoot(pane, fallback, known = {}) {
     const title = topicTitle(pane, fallback), facts = await this.sessionFollow.describe(pane);
-    const sessionId = facts.sessionId ?? known.sessionId ?? null;
+    const sessionId = (facts.sessionVerified ? facts.sessionId : null) ?? known.sessionId ?? null;
     const card = this.tree.root(pane, title, sessionId, known), publishedTitle = card.header.title.content;
-    return { card, session: { ...facts, sessionId, sessionTitle: title },
+    return { card, session: { ...facts, sessionId, sessionSource: facts.sessionVerified ? 'verified' : known.sessionSource ?? null, sessionTitle: title },
       metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: publishedTitle, publishedTitle, publishedSessionId: sessionId,
       publishedTreeHeader: JSON.stringify(this.tree.view({ ...known, sessionTitle: title }, pane)),
       createdAt: this.now(), lastAttemptAt: null, stopped: false } };
@@ -523,6 +523,7 @@ export class Bridge {
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
       if (!this.sameGeneration(binding, b)) throw new Error('Binding changed');
+      if (/^\s*(?:codex|pi)(?:\s|$)/i.test(text)) b.cliCommand = text.trim();
       b.sentInputs = [...(b.sentInputs ?? []).filter(item => item.expires > now),
         { id, hash: this.inputHash(text), prefix: normalized.slice(0, 64), length: normalized.length,
           sentAt: now, terminalId: binding.identity.terminalId, expires: now + 600000 }].slice(-100);
@@ -1067,7 +1068,7 @@ export class Bridge {
           }
         }
         const followedSession = binding.sessionId ?? binding.claudeSessionId;
-        if (!followedSession) return;
+        if (!followedSession || (['codex', 'pi'].includes(binding.cli) && binding.sessionSource !== 'verified')) return;
         const candidates = await this.sessionFollow.candidates(followedSession);
         if (!candidates.length) return;
         const winner = candidates[0], terminals = await this.backend.list();

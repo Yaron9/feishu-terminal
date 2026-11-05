@@ -48,7 +48,7 @@ async function probeFiles(root, depth, options, parse) {
       const file = join(dir, entry.name);
       if (remaining > 0 && entry.isDirectory()) await walk(file, remaining - 1);
       else if (remaining === 0 && entry.isFile() && entry.name.endsWith('.jsonl') && await recent(file, options.startedAfterMs ?? 0)) {
-        try { const id = parse(await firstLine(file), entry.name, options.cwd); if (id) matches.push({ sessionId: id, source: file }); } catch { /* incomplete or invalid session */ }
+        try { const line = await firstLine(file), id = parse(line, entry.name, options.cwd); if (id) { const startedAt = Date.parse(line.timestamp ?? line.payload?.timestamp ?? ''); matches.push({ sessionId: id, source: file, ...(Number.isFinite(startedAt) ? { startedAt } : {}) }); } } catch { /* incomplete or invalid session */ }
       }
     }
   }
