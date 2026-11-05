@@ -1217,6 +1217,9 @@ export class Bridge {
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
     let menu = detectMenu(visible.text, { status: state.status, cli: agent?.agent ?? binding.cli });
+    if (!menu.kind && (binding.selectedMenu != null || binding.selectedMenuAt != null)) {
+      if (!await this.updateGeneration(binding, { selectedMenu: null, selectedMenuAt: null })) return;
+    }
     if (binding.menuSelected && selectedMenuSignature(menu) === binding.selectedMenu && now - binding.selectedMenuAt < 5000) menu = detectMenu('');
     const warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
     if (!menu.kind && state.menu?.kind) {

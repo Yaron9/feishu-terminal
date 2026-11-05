@@ -90,6 +90,23 @@ test('selected menu is suppressed for five seconds but a different menu appears 
   assert.ok(h.bridge.state(binding()).menu.kind);
 });
 
+test('selected menu returns immediately after leaving the screen', async t => {
+  const h = await legacyHarness(t, { adapters: {} }), pane = h.fake.create();
+  const picker = 'Select model\n> Model A\n  Model B\nEsc to cancel';
+  Object.assign(pane, { agent: 'pi', agent_status: 'idle', visible: picker });
+  await h.bridge.handle(message('/t open w1:p1', 'open')); h.advance(2000); await h.bridge.tick();
+  const binding = () => h.bridge.store.forPane('w1:p1'), b = binding();
+  await h.bridge.handle({ kind: 'button', eventId: 'select-return', chatId: b.chatId, topicId: b.topicId, openId: 'ou_test', messageId: b.cardId, nonce: b.menuNonce, key: 'menu:select:0' });
+  pane.visible = 'Ready'; h.advance(1000); h.bridge.state(binding()).dirty = true; await h.bridge.tick();
+  assert.equal(binding().selectedMenu, null); assert.equal(binding().selectedMenuAt, null);
+  await h.restart();
+  assert.equal(binding().selectedMenu, null); assert.equal(binding().selectedMenuAt, null);
+  const before = h.feishu.calls.length;
+  pane.visible = picker; h.advance(1000); h.bridge.state(binding()).dirty = true; await h.bridge.tick();
+  assert.ok(h.bridge.state(binding()).menu.kind);
+  assert.ok(h.feishu.calls.slice(before).some(c => ['patch', 'reply'].includes(c.type) && JSON.stringify(c).includes('menu:select:0')));
+});
+
 test('failed key send shows failure and restores picker choices', async t => {
   const h = await legacyHarness(t, { adapters: {} }), pane = h.fake.create();
   Object.assign(pane, { agent:'codex', agent_status:'idle', visible: await readFile(new URL('./fixtures/w7r/codex-model.txt', import.meta.url), 'utf8') });

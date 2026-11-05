@@ -94,7 +94,7 @@ test('ft17 nonce is single-use across new event IDs and restart; ACL and topic/c
   await h.restart();
   await click(h, 'menu:select:1', replay);
   assert.equal(keys(h).length, 1);
-  h.advance(600000); await click(h, 'menu:select:1');
+  h.advance(600000); await h.bridge.tick(); await click(h, 'menu:select:1');
   assert.equal(keys(h).length, 2);
 });
 
