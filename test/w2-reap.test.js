@@ -10,7 +10,7 @@ import { HcBackend } from '../src/backends/hc.js';
 import { CLI_TABLE } from '../src/cli-table.js';
 import { mockFeishu, message } from './helpers.js';
 
-async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1', session: 'same' }, unbound = false } = {}) {
+async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1', session: 'same' }, unbound = false, reapCreated = true } = {}) {
   const root = await mkdtemp(new URL('../.test-w2-reap-', import.meta.url));
   let time = Date.now(), sequence = 0;
   const now = () => time, calls = [], terminals = new Map(), errors = [];
@@ -61,7 +61,7 @@ async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1',
   const follow = new SessionFollow({ home: root, procRoot: join(root, 'absent') });
   const bridge = new Bridge({ backend, feishu, store, config, now, sessionFollow: follow, adapters: {},
     audit: async () => {}, onError: code => errors.push(code),
-    reapOptions: { waitMs: 200, sleep: async ms => { time += ms; } },
+    reapOptions: { reapCreated, waitMs: 200, sleep: async ms => { time += ms; } },
     wakeOptions: { timeoutMs: 1000, sleep: async ms => { time += ms; } } });
   const identity = backend.identity(await backend.get('hc:t1'));
   if (!unbound) await store.bind({ chatId: 'oc_test', topicId: 'topic', paneId: 'hc:t1', identity,
@@ -352,4 +352,35 @@ test('shell with a running foreground child is not closed after CLI exit', async
   await h.bridge.reap.tick(); h.advance(); await h.bridge.reap.tick();
   assert.equal(h.calls.filter(c => c.method === 'terminal.kill').length, 0);
   assert.equal(h.removes().length, 0); assert.equal(h.terminal.state, 'live');
+});
+
+
+test('running background work vetoes reap and resets the idle clock', async t => {
+  const h = await harness(t, { idleMinutes: 1 });
+  await h.tick(); h.advance(59000);
+  await h.store.update('oc_test', 'topic', { turn: { background: { running: [{ id: 'bg1' }] } } });
+  await h.bridge.reap.tick(); h.advance(60000); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 0);
+  await h.store.update('oc_test', 'topic', { turn: { background: { running: [] } } });
+  await h.bridge.reap.tick(); h.advance(59999); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 0); h.advance(1); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 1);
+});
+
+test('Codex background screen vetoes reap and restarts the idle clock', async t => {
+  const h = await harness(t, { cli: 'codex', idleMinutes: 1 });
+  await h.bridge.reap.tick(); h.advance(); h.terminal.output = '2 background terminals running';
+  await h.bridge.reap.tick(); assert.equal(h.keys().length, 0);
+  h.terminal.output = '0 background terminals running'; await h.bridge.reap.tick();
+  h.advance(59999); await h.bridge.reap.tick(); assert.equal(h.keys().length, 0);
+  h.advance(1); await h.bridge.reap.tick(); assert.equal(h.keys().length, 2);
+});
+
+test('reapCreated false preserves created terminals and reaps woken terminals', async t => {
+  const h = await harness(t, { idleMinutes: 1, labels: {}, reapCreated: false });
+  await h.store.transaction(data => { data.createdTerminals = [h.binding().identity.terminalId]; });
+  await h.bridge.reap.tick(); h.advance(); await h.bridge.reap.tick();
+  assert.equal(h.keys().length, 0); assert.equal(h.terminal.state, 'live');
+  h.terminal.labels['ft.woken'] = '1';
+  await h.bridge.reap.tick(); assert.equal(h.keys().length, 1);
 });

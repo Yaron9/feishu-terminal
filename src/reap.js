@@ -5,11 +5,11 @@ const missing = error => ['not_found', 'pane_not_found'].includes(error.code);
 const local = id => /^hc:t[a-zA-Z0-9]+$/.test(id);
 
 export class Reap {
-  constructor(bridge, { sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), waitMs = 1000 } = {}) {
+  constructor(bridge, { sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), waitMs = 1000, reapCreated = true } = {}) {
     const idleMinutes = bridge.config.idleMinutes === undefined ? 10 : bridge.config.idleMinutes;
     if (typeof idleMinutes !== 'number' || !Number.isFinite(idleMinutes) || idleMinutes <= 0)
       throw new TypeError('idleMinutes must be a positive finite number');
-    Object.assign(this, { bridge, sleep, waitMs, idleMs: idleMinutes * 60000 });
+    Object.assign(this, { bridge, sleep, waitMs, reapCreated, idleMs: idleMinutes * 60000 });
     this.ready = new Map();
   }
   input(topicId) {
@@ -27,16 +27,24 @@ export class Reap {
       binding.queuedInputs?.length || b.pendingInputs.has(binding.topicId) ||
       (binding.sessionHandoff && !binding.sessionHandoff.done));
   }
+  screenVeto(terminal, text) {
+    return Boolean(detectMenu(text).kind || lookupCli(terminal)?.backgroundScreen?.test(text));
+  }
+  owned(terminal) {
+    return terminal.labels?.['ft.woken'] === '1' ||
+      (this.reapCreated && this.bridge.store.data.createdTerminals?.includes(terminal.terminal_id));
+  }
   idle(terminal) {
     const b = this.bridge, row = lookupCli(terminal), binding = b.store.forPane(terminal.pane_id);
     return local(terminal.pane_id) && terminal.state === 'live' && !terminal.waiting_for_person &&
       !Object.keys(terminal.labels ?? {}).some(key => key.startsWith('herdr.')) &&
       Boolean(row?.readyStates.includes(terminal.status?.state)) && !this.pending(binding) &&
+      !binding?.turn?.background?.running?.length &&
       (!binding || Boolean(b.registry.get(binding.chatId) && b.identitiesMatch(binding, terminal)));
   }
   eligible(terminal) {
     const b = this.bridge, binding = b.store.forPane(terminal.pane_id);
-    if (!this.idle(terminal) || (terminal.labels?.['ft.woken'] !== '1' && !b.store.data.createdTerminals?.includes(terminal.terminal_id))) return false;
+    if (!this.idle(terminal) || !this.owned(terminal)) return false;
     // A different host/bridge's label alone does not establish our ownership.
     if (binding) return Boolean(b.registry.get(binding.chatId) && b.identitiesMatch(binding, terminal));
     return b.store.data.createdTerminals?.includes(terminal.terminal_id) ?? false;
@@ -71,7 +79,7 @@ export class Reap {
       const fresh = await hc.inspect(child.pane_id);
       if (!this.settled(fresh)) { this.ready.delete(child.pane_id); return false; }
       const { read } = await hc.read(child.pane_id, { source: 'visible' });
-      if (detectMenu(read.text).kind) { this.ready.delete(child.pane_id); return false; }
+      if (this.screenVeto(fresh, read.text)) { this.ready.delete(child.pane_id); return false; }
     }
     // Catch a new child, a changed status or admitted input while reads awaited.
     const terminals = await hc.list(), current = terminals.find(item => item.pane_id === terminal.pane_id);
@@ -105,7 +113,7 @@ export class Reap {
         const fresh = await hc.inspect(terminal.pane_id);
         if (!this.eligible(fresh) || this.fingerprint(fresh) !== fingerprint) { this.ready.delete(terminal.pane_id); return; }
         const { read } = await hc.read(terminal.pane_id, { source: 'visible' });
-        if (detectMenu(read.text).kind) { this.ready.delete(terminal.pane_id); return; }
+        if (this.screenVeto(fresh, read.text)) { this.ready.delete(terminal.pane_id); return; }
         const binding = b.store.forPane(terminal.pane_id);
         const record = { paneId: terminal.pane_id, terminalId: terminal.terminal_id,
           cli: lookupCli(fresh).cli, sessionId: binding?.sessionId, sessionSource: binding?.sessionSource,
@@ -145,11 +153,12 @@ export class Reap {
       try { terminal = await hc.inspect(record.paneId); }
       catch (error) { if (missing(error)) { await this.complete(record); return; } throw error; }
       if (terminal.terminal_id !== record.terminalId) { await this.forget(record); return; }
-      if ((terminal.labels?.['ft.woken'] !== '1' && !b.store.data.createdTerminals?.includes(terminal.terminal_id)) ||
+      if (!this.owned(terminal) ||
           Object.keys(terminal.labels ?? {}).some(key => key.startsWith('herdr.'))) {
         await this.forget(record); return;
       }
       const binding = b.store.forPane(record.paneId);
+      if (binding?.turn?.background?.running?.length) { await this.forget(record); return; }
       if (terminal.waiting_for_person) return;
       if (binding && (!b.registry.get(binding.chatId) || b.pendingInputs.has(binding.topicId) ||
         binding.queuedInputs?.length || binding.needs_check || binding.wakePending)) return;
@@ -166,7 +175,7 @@ export class Reap {
       if (!this.eligible(terminal) || this.fingerprint(terminal) !== record.fingerprint) { await this.forget(record); return; }
       if (record.phase === 'signalling' || record.attempts >= row.exit.maxAttempts) return;
       const { read } = await hc.read(record.paneId, { source: 'visible' });
-      if (detectMenu(read.text).kind) { await this.forget(record); return; }
+      if (this.screenVeto(terminal, read.text)) { await this.forget(record); return; }
       if (!await this.familyReady(terminal, hc)) { await this.forget(record); return; }
       record = { ...record, attempts: record.attempts + 1, phase: 'signalling' };
       await this.save(record); // Claim before keys: never replay an uncertain exit.

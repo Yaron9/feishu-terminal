@@ -47,7 +47,8 @@ async function main() {
   await backend.list(); // Safe startup probe; one backend may be unavailable.
   const credentials = { appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET };
   transport = new Feishu({ ...credentials, ws: new FeishuWSClient(credentials) });
-  bridge = createBridge({ config, transport, registry: createConfigRegistry(config), backends: backend,
+  // The standalone host may run long-lived commander sessions.
+  bridge = createBridge({ reapOptions: { reapCreated: false }, config, transport, registry: createConfigRegistry(config), backends: backend,
     storeFile: config.stateFile, auditFile: config.auditFile, log: code => console.error(code) });
   await bridge.start();
   await transport.start(raw => bridge.accept(raw), code => console.error(code), { rawEvents: true });
