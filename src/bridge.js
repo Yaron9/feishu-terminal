@@ -4,7 +4,7 @@ import { backgroundView, screenActivity, refreshBackgroundTails } from './transc
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, withSessionHeader } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, menuElements, withSessionHeader } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
@@ -954,6 +954,9 @@ export class Bridge {
     if (event.messageId === current.menuCardId && state.menu?.kind) {
       await this.updateGeneration(current, { menuAttemptAt: null });
       await this.publishMenuCard(this.store.binding(current.chatId, current.topicId));
+    } else if (event.messageId === current.cardId && event.messageId === current.menuCardId) {
+      await this.publishMenuCard(current);
+      await this.publishCard(this.store.binding(current.chatId, current.topicId), true);
     } else {
       await this.verify(current);
       await this.patchCard(event.messageId, this.sessionCard(outputCard(state.visible, { full: true }), current),
@@ -1190,8 +1193,18 @@ export class Bridge {
     return Boolean(this.state(binding).transcriptSource || binding.pendingCard?.turnId ||
       binding.outputBatch?.chunks[binding.outputBatch.next]?.turn);
   }
-  async prepareCard(binding, resume = false) {
-    const state = this.state(binding), nonce = randomUUID();
+  interactionCard(binding, pane, nonce, resume, tip = '') {
+    const state = this.state(binding);
+    if (this.turnMode(binding) && binding.turn) return this.sessionCard(turnCard({
+      turn: binding.turn, tip, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible,
+      suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding);
+    const output = screenBody(binding, pane, state.current, state.visible);
+    return renderSchema(this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
+      agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true,
+      ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
+  }
+  async prepareCard(binding, resume = false, nonce = randomUUID()) {
+    const state = this.state(binding);
     await this.verify(binding);
     const panes = await this.readVerified(binding, () => this.backend.backend(binding.paneId).list());
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
@@ -1207,15 +1220,13 @@ export class Bridge {
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
         uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible), tipPatch: tip.patch,
-        card: this.sessionCard(turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
+        card: this.interactionCard(binding, pane, nonce, resume, tip.text) };
     }
-    const output = screenBody(binding, pane, state.current, state.visible);
     return { nonce, createdAt: this.now(), targetId: resume || binding.screenCardFresh ? null : binding.cardId ?? null,
       screenPublication: true, screenInteraction: binding.screenInteraction ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
       uuid: randomUUID(), signature: state.nextSignature, session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible),
-      card: this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
+      card: this.interactionCard(binding, pane, nonce, resume) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);
@@ -1252,6 +1263,84 @@ export class Bridge {
     });
   }
   async publishMenuCard(binding) {
+    const state = this.state(binding), menu = state.menu ?? detectMenu(state.visible);
+    if (binding.pendingCard) return;
+    // Old separate menu cards must be retired using their original state machine.
+    const legacy = binding.menuCardId && binding.menuCardId !== binding.cardId;
+    if (legacy && !binding.pendingMenuCard) {
+      const saved = state.menu; state.menu = detectMenu('');
+      try { await this.publishMenuCardLegacy(binding); }
+      finally { state.menu = saved; }
+      binding = this.store.binding(binding.chatId, binding.topicId);
+      if (binding.menuCardId) return;
+    }
+    if (!menu.kind && binding.menuCardId && binding.menuCardId === binding.cardId && !binding.pendingMenuCard) {
+      await this.updateGeneration(binding, { menuCardId: null, menuNonce: null, menuPublishedNonce: null,
+        menuSignature: null, cardMenu: null, cardMenuScreenHash: null, menuSelected: null, menuConfirm: null, menuPage: 0, menuAttemptAt: null });
+      state.cardPending = true; state.forceTurnCard = true;
+      return;
+    }
+    if (binding.pendingMenuCard && !binding.pendingMenuCard.inline) {
+      await this.publishMenuCardLegacy(binding);
+      binding = this.store.binding(binding.chatId, binding.topicId);
+      if (binding.pendingMenuCard || binding.menuCardId && binding.menuCardId !== binding.cardId) return;
+    }
+    if (!menu.kind && !binding.pendingMenuCard) return;
+    const panes = await this.backend.list();
+    const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
+    const pageSize = menuPageSize(menu, warnings);
+    let pending = binding.pendingMenuCard;
+    if (!pending) {
+      const nonce = sameMenu(binding.cardMenu, menu) && binding.menuNonce && binding.menuNonce === binding.menuPublishedNonce ? binding.menuNonce : randomUUID();
+      const prepared = await this.prepareCard(binding, false, nonce);
+      const card = renderSchema(prepared.card, '2.0');
+      card.body.elements.push(...menuElements({ menu, topicId: binding.topicId, nonce,
+        agent: this.agentName(state.agent ?? binding.cli ?? '终端'),
+        menuUI: { page: binding.menuPage ?? 0, pageSize, warnings,
+          confirm: sameMenu(binding.menuConfirm?.menu, menu) ? binding.menuConfirm : null } }));
+      const signature = JSON.stringify({ menu, warnings, session: this.sessionIdentity(binding), page: binding.menuPage ?? 0,
+        confirm: binding.menuConfirm, selected: binding.menuSelected, hash: menuScreenHash(menu, state.visible), body: prepared.card });
+      if (signature === binding.menuSignature && binding.menuNonce === binding.menuPublishedNonce) return;
+      if (this.now() < (state.menuRetryAt ?? 0) || binding.menuCardId && this.now() - (binding.menuAttemptAt ?? -Infinity) < 1000) return;
+      const schema = this.store.data.cardSchemas?.[binding.cardId]?.schemaVersion;
+      pending = { inline: true, nonce, uuid: randomUUID(), targetId: schema === '1.0' ? null : binding.cardId ?? null,
+        createdAt: this.now(), signature, menu, pageSize, screenHash: menuScreenHash(menu, state.visible), card,
+        turnId: prepared.turnId, cardSignature: prepared.signature };
+      if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
+    }
+    try {
+      await this.verify(binding);
+      if (!await this.updateGeneration(binding, { menuAttemptAt: this.now() })) return;
+      let id = pending.targetId;
+      if (id) {
+        try { await this.patchCard(id, pending.card, 'menu'); }
+        catch (error) {
+          if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
+          id = null; pending.targetId = null;
+          if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
+        }
+      }
+      if (!id) {
+        if (this.now() - pending.createdAt >= 55 * 60 * 1000) throw new Error('Menu retry window expired');
+        await this.verify(binding);
+        id = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
+        await this.rememberCard(id, pending.card, 'menu');
+      }
+      await this.updateGeneration(binding, { pendingMenuCard: null, cardId: id, cardNonce: pending.nonce,
+        nonce: pending.nonce, cardCreatedAt: pending.createdAt, cardTurnId: pending.turnId ?? null,
+        cardSignature: pending.cardSignature, screenCardFresh: false,
+        menuCardId: id, menuNonce: pending.nonce, menuPublishedNonce: pending.nonce, menuCreatedAt: pending.createdAt,
+        menuSignature: pending.signature, menuPageSize: pending.pageSize, cardMenu: pending.menu,
+        cardMenuScreenHash: pending.screenHash });
+      state.menuRetryAt = 0; state.menuFailures = 0;
+      if (!menu.kind) await this.publishMenuCard(this.store.binding(binding.chatId, binding.topicId));
+    } catch (error) {
+      state.menuRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.menuFailures ?? 0));
+      state.menuFailures = (state.menuFailures ?? 0) + 1;
+      throw error;
+    }
+  }
+  async publishMenuCardLegacy(binding) {
     const state = this.state(binding), menu = state.menu ?? detectMenu(state.visible);
     if (!menu.kind && !binding.menuCardId && !binding.pendingMenuCard) return;
     if (!menu.kind && binding.pendingMenuCard?.targetId) {
@@ -1330,8 +1419,8 @@ export class Bridge {
       this.reportFailure('menu_card_refresh_failed', error);
     }
     binding = this.store.binding(binding.chatId, binding.topicId);
-    // Menus own a reply and never change the existing turn/status card.
-    if (state.menu?.kind) return;
+    // The inline menu publication already includes the interaction body.
+    if (state.menu?.kind && binding.menuCardId === binding.cardId && !binding.pendingCard) return;
     await this.retireCard(binding);
     if (this.turnMode(binding)) {
       // Transcript cards require an observed turn; menus publish independently.

@@ -248,6 +248,13 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
 export function menuCard({ menu, topicId, nonce, menuUI = {}, result, agent = 'Claude' }) {
   if (result !== undefined) return roleCard('菜单', result ? 'green' : 'grey',
     [markdown(result ? "<font color='green'>已选择：" + literal(result) + '</font>' : accent('菜单已关闭'))]);
+  const elements = menuElements({ menu, topicId, nonce, menuUI, agent });
+  const card = roleCard(`${short(agent, 40)} · 等待菜单选择`, 'orange', elements);
+  if (Buffer.byteLength(JSON.stringify(card)) >= 28000) throw new Error('Menu item exceeds card size limit');
+  return card;
+}
+
+export function menuElements({ menu, topicId, nonce, menuUI = {}, agent = 'Claude' }) {
   const controls = menu.kind === 'list' ? menuControls(menu, menuUI) :
     [...menu.items.map((item, i) => [item.label, String(i + 1)]), ['Esc 取消', 'esc'], ['刷新', 'refresh']];
   const value = key => ({ topic_id: topicId, nonce, key });
@@ -271,7 +278,5 @@ export function menuCard({ menu, topicId, nonce, menuUI = {}, result, agent = 'C
     elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(label, 60) },
       type: 'default', behaviors: [{ type: 'callback', value: value(key) }] });
   }
-  const card = roleCard(`${short(agent, 40)} · 等待菜单选择`, 'orange', elements);
-  if (Buffer.byteLength(JSON.stringify(card)) >= 28000) throw new Error('Menu item exceeds card size limit');
-  return card;
+  return elements;
 }
