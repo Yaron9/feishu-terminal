@@ -12,5 +12,5 @@
     "test:live": "node scripts/live-herdr.js"
   },
   "optionalDependencies": { "@larksuiteoapi/node-sdk": "1.76.0" },
-  "exports": "./src/lib.js"
+  "exports": { ".": "./src/lib.js", "./package.json": "./package.json" }
 }
