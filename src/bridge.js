@@ -23,8 +23,18 @@ import { lookupCli } from './cli-table.js';
 function screenBody(binding, pane, current, visible) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
     stripChrome(newOutput(binding.lastTranscript ?? '', current));
+  const limit = 20000;
+  if (Buffer.byteLength(body, 'utf8') <= limit) return body;
   const chars = Array.from(body);
-  return chars.length > 25000 ? `… 前面 ${chars.length - 25000} 字已折叠，发送 /t screen 查看\n${chars.slice(-25000).join('')}` : body;
+  let start = chars.length, bytes = 0;
+  while (start > 0) {
+    const nextBytes = Buffer.byteLength(chars[start - 1], 'utf8');
+    const note = `… 前面 ${start - 1} 字已折叠，发送 /t screen 查看\n`;
+    if (bytes + nextBytes + Buffer.byteLength(note, 'utf8') > limit) break;
+    bytes += nextBytes;
+    start--;
+  }
+  return `… 前面 ${start} 字已折叠，发送 /t screen 查看\n${chars.slice(start).join('')}`;
 }
 
 const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.length ?

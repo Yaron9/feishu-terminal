@@ -79,10 +79,21 @@ test('large output keeps the tail on one card with a folding note and safe code 
   await screen(h, '$ first\n' + output); await screen(h, '$ first\n' + output);
   assert.equal(replies(h).length, 1);
   const rendered = body(card(h, binding(h).cardId));
-  assert.ok(rendered.includes('前面 5017 字已折叠，发送 /t screen 查看'));
-  assert.equal((rendered.match(/界/g) ?? []).length, 24989);
+  const note = rendered.match(/前面 (\d+) 字已折叠，发送 \/t screen 查看/);
+  assert.ok(note);
+  const retained = (rendered.match(/界/g) ?? []).length;
+  assert.ok(retained > 6600 && retained < 6667);
+  assert.equal(Number(note[1]) + retained, 30006);
   assert.match(rendered, /&lt;tag&gt;/);
   assert.ok(rendered.includes('\u200b'));
+});
+
+test('pure Chinese output fits in one serialized card', async t => {
+  const h = await setup(t);
+  await screen(h, '界'.repeat(30000));
+  assert.equal(replies(h).length, 1);
+  const sent = card(h, binding(h).cardId);
+  assert.ok(Buffer.byteLength(JSON.stringify(sent.card ?? sent.content), 'utf8') < 25600);
 });
 
 test('a saved pending publication retries after restart without a duplicate', async t => {
