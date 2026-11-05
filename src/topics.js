@@ -24,3 +24,8 @@ export function topicCard(pane, title = topicTitle(pane), home = homedir(), sess
     header: { title: { tag: 'plain_text', content: title } },
     body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${escape(`${agent} · ${dir} · ${pane.pane_id}`)}</font>` }] } }, { title: sessionTitle, sessionId });
 }
+
+export function sessionTitle(title) {
+  const value = String(title ?? '').trim();
+  return /\.exe$/i.test(value) || /^(?:管理员|administrator)\s*[:：]\s*(?:[a-z]:[\\/]|\\\\|\/)/i.test(value) ? '命令行' : value;
+}

@@ -117,6 +117,11 @@ export function splitText(text, maxBytes = 12000) {
   return parts;
 }
 
+export function yesNoPrompt(text = '') {
+  const line = clean(text).split('\n').findLast(line => line.trim()) ?? '';
+  return /(?:\(\s*y(?:es)?\s*\/\s*n(?:o)?\s*\)|\[\s*y(?:es)?\s*\/\s*n(?:o)?\s*\]|\byes\s*\/\s*no)\s*[:：?？]?\s*$/i.test(line);
+}
+
 export function screenControls(text = '') {
   const lines = clean(text).split('\n');
   const options = lines.flatMap(line => {
@@ -124,8 +129,7 @@ export function screenControls(text = '') {
     return match ? [[`${match[1]} ${short(match[2], 60)}`, match[1]]] : [];
   }).filter((item, i, all) => all.findIndex(other => other[1] === item[1]) === i);
   const enter = !options.length && /(?:press\s+(?:the\s+)?enter|enter\s+to\s+(?:confirm|continue|proceed|submit)|按\s*(?:下\s*)?(?:Enter|回车)|↵)/i.test(text);
-  const bottom = lines.slice(-10).join('\n');
-  const yesNo = /(?:\(\s*y(?:es)?\s*\/\s*n(?:o)?\s*\)|\[\s*y(?:es)?\s*\/\s*n(?:o)?\s*\]|\byes\s*\/\s*no\b)/i.test(bottom);
+  const yesNo = yesNoPrompt(text);
   return [...(enter ? [['Enter 继续', 'enter']] : []), ['Esc 取消', 'esc'], ...options,
     ...(yesNo ? [['y 同意', 'y'], ['n 拒绝', 'n']] : []), ['Ctrl-C 中断', 'ctrl+c'], ['刷新', 'refresh']];
 }

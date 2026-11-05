@@ -14,7 +14,7 @@ import { Wake } from './wake.js';
 import { Reap } from './reap.js';
 import { TerminalTree } from './terminal-tree.js';
 import { auditRecord, appendAudit } from './store.js';
-import { topicTitle } from './topics.js';
+import { topicTitle, sessionTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
@@ -38,6 +38,8 @@ function screenBody(binding, pane, current, visible, limit = 20000) {
 
 const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.length ?
   createHash('sha256').update(clean(text)).digest('hex') : null;
+const selectedMenuSignature = menu => JSON.stringify([menu.kind, menu.title, menu.context ?? '',
+  menu.items.map(item => item.label.replace(/^\d+\s*(?:s|m|h|d|seconds?|minutes?|hours?|days?)\s+ago\b/i, '<age>'))]);
 
 export class Bridge {
   constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry, wakeOptions, reapOptions }) {
@@ -320,7 +322,7 @@ export class Bridge {
   }
   sessionIdentity(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
-    return { title: current.sessionTitle || current.topicRoot?.publishedTitle || current.topicRoot?.text || '终端',
+    return { title: sessionTitle(current.sessionTitle || current.topicRoot?.publishedTitle || current.topicRoot?.text || '终端'),
       sessionId: current.sessionId ?? current.claudeSessionId ?? null };
   }
   sessionCard(card, binding) {
@@ -867,7 +869,7 @@ export class Bridge {
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
     if (event.key !== 'refresh') {
       if (binding.cardMenu?.kind) {
-        await this.menuButton(event, binding);
+        if (await this.menuButton(event, binding) === false) { state.dirty = true; return; }
       } else {
         const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
         const panes = await this.backend.backend(binding.paneId).list(), pane = panes.find(p => p.pane_id === binding.paneId);
@@ -879,7 +881,7 @@ export class Bridge {
         if ((await this.liveMenu(binding, fresh.read.text)).kind || this.approvalHash(fresh.read.text) !== this.approvalHash(read.text)) {
           await this.changedCard(binding, event); return;
         }
-        await this.writeInput(binding, 'keys', { keys: [event.key] });
+        await this.writeInput(binding, 'keys', { keys: ['y', 'n'].includes(event.key) && !lookupCli(pane) ? [event.key, 'enter'] : [event.key] });
       }
     }
     state.dirty = true; await this.refresh(this.store.binding(binding.chatId, binding.topicId), true);
@@ -919,17 +921,19 @@ export class Bridge {
     const selected = selection ? menu.items[Number(selection[2])]?.label :
       menu.kind === 'numbered' && /^[1-9]$/.test(event.key) ? menu.items[Number(event.key) - 1]?.label :
       event.key === 'enter' ? menu.items[menu.cursorIndex]?.label : null;
+    let selectionPatchFailed = false;
     if (selected) {
       const interaction = binding.inputInteraction ?? randomUUID();
       await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0, menuSelected: selected,
-        menuTurnContinuation: true, lastInputAt: this.now(), inputScreen: stripChrome(read.text).split('\n').filter(line => line.trim()).join('\n'),
+        menuTurnContinuation: true, lastInputAt: this.now(), selectedMenu: selectedMenuSignature(menu), selectedMenuAt: this.now(),
         inputInteraction: interaction, cardInteraction: interaction, inputTranscriptSeen: false });
+      this.state(binding).menu = detectMenu('');
       const current = this.store.binding(binding.chatId, binding.topicId);
       const prepared = await this.prepareCard(current);
       const card = renderSchema(prepared.card, '2.0');
       card.body.elements.push({ tag: 'markdown', content: `已选择：${selected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
-      try { await this.patchCard(event.messageId, card, 'menu'); }
-      catch (error) { this.reportFailure('menu_selection_patch_failed', error); }
+      try { await this.enqueue(() => this.patchCard(event.messageId, card, 'menu'), `card:${binding.topicId}`); }
+      catch (error) { selectionPatchFailed = true; this.reportFailure('menu_selection_patch_failed', error); }
     } else await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
     try { await this.writeInput(binding, 'keys', { keys }); }
     catch (error) {
@@ -945,6 +949,7 @@ export class Bridge {
       }
       throw error;
     }
+    if (selectionPatchFailed) return false;
   }
   screenHash(text) { return createHash('sha256').update(clean(text)).digest('hex'); }
   async liveMenu(binding, text) {
@@ -1211,7 +1216,8 @@ export class Bridge {
     }
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
-    const menu = detectMenu(visible.text, { status: state.status, cli: agent?.agent ?? binding.cli });
+    let menu = detectMenu(visible.text, { status: state.status, cli: agent?.agent ?? binding.cli });
+    if (binding.menuSelected && selectedMenuSignature(menu) === binding.selectedMenu && now - binding.selectedMenuAt < 5000) menu = detectMenu('');
     const warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
     if (!menu.kind && state.menu?.kind) {
       // A vanished menu must not leave output behind its publication backoff.
@@ -1254,6 +1260,15 @@ export class Bridge {
     if (this.turnMode(binding) && binding.turn && !this.screenFallback(binding) && !(state.menu?.kind && !binding.inputTranscriptSeen && binding.inputInteraction)) return this.sessionCard(turnCard({
       turn: binding.turn, tip, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible,
       suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding);
+    if (this.screenFallback(binding) && binding.turn) {
+      const row = lookupCli(pane), lines = stripChrome(state.visible).split('\n').filter(line => line.trim() && !(row?.footerPatterns ?? []).some(pattern => pattern.test(line)));
+      const counts = new Map();
+      for (const line of (binding.inputScreen ?? '').split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+      const diff = lines.filter(line => { const n = counts.get(line) ?? 0; if (!n) return true; counts.set(line, n - 1); return false; });
+      const card = renderSchema(this.sessionCard(turnCard({ turn: { ...binding.turn, text: (diff.length ? diff : lines).join('\n') }, topicId: binding.topicId, nonce, screen: state.visible, suppressMenu: true, tip, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
+      if (binding.menuSelected && !binding.inputTranscriptSeen) card.body.elements.unshift({ tag: 'markdown', content: `已选择：${binding.menuSelected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
+      return card;
+    }
     const output = screenBody(binding, pane, state.current, state.menu?.kind ? state.current : state.visible, state.menu?.kind ? 3000 : 20000);
     const card = renderSchema(this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
       agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true,
@@ -1369,6 +1384,11 @@ export class Bridge {
     }
     try {
       await this.verify(binding);
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      if (current?.menuSelected && selectedMenuSignature(pending.menu) === current.selectedMenu && this.now() - current.selectedMenuAt < 5000) {
+        await this.updateGeneration(current, { pendingMenuCard: null });
+        return;
+      }
       if (!await this.updateGeneration(binding, { menuAttemptAt: this.now() })) return;
       let id = pending.targetId;
       if (id) {

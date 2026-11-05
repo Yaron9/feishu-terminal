@@ -9,6 +9,7 @@ import { SessionFollow } from '../src/session-follow.js';
 import { Backends } from '../src/backends/index.js';
 import { HcBackend } from '../src/backends/hc.js';
 import { screenControls } from '../src/render.js';
+import { sessionTitle } from '../src/topics.js';
 
 test('settled turn picker selection immediately patches and shows screen-only result', async t => {
   const records = [];
@@ -51,6 +52,42 @@ test('model errors are not confirmations and yes/no controls require a live prom
   assert.ok(!screenControls(screen).some(([, key]) => key === 'y' || key === 'n'));
   assert.deepEqual(screenControls('Continue? (y/n)').filter(([, key]) => ['y', 'n'].includes(key)).map(([, key]) => key), ['y', 'n']);
   assert.ok(!screenControls('Continue? (y/n)\n' + 'old\n'.repeat(11) + '? ').some(([, key]) => key === 'y'));
+  assert.equal(backend.status({ agent: 'powershell' }, 'Read-Host (y/n)\nPS C:\\>'), 'unknown');
+  assert.equal(backend.status({ agent: 'powershell' }, 'continue (y/n):'), 'blocked');
+  assert.equal(backend.status({ reported: true, status: { state: 'done' } }, 'continue (y/n):'), 'idle');
+  assert.equal(sessionTitle('C:\\Windows\\powershell.exe'), '命令行');
+  assert.equal(sessionTitle('管理员: C:\\Windows\\shell'), '命令行');
+  assert.equal(sessionTitle('My session'), 'My session');
+});
+
+test('turn screen fallback uses a multiset diff, removes footers and keeps the turn title', async t => {
+  const h = await legacyHarness(t, { adapters: {} }), pane = h.fake.create();
+  Object.assign(pane, { agent: 'codex', agent_status: 'idle', visible: 'same\nsame\nold' });
+  await h.bridge.handle(message('/t open w1:p1', 'open'));
+  const b = h.bridge.store.forPane('w1:p1'), state = h.bridge.state(b);
+  Object.assign(b, { inputInteraction: 'i', cardInteraction: 'i', cardId: 'c', lastInputAt: h.now() - 4000, inputScreen: 'same\nold', inputTranscriptSeen: false, turn: { agent: 'Codex', text: 'old', settled: true, status: 'idle' } });
+  Object.assign(state, { transcriptSource: 'fixture', visible: 'same\nsame\nold\nnew\n? for shortcuts', menu: {} });
+  let card = h.bridge.interactionCard(b, pane, 'nonce', false), text = JSON.stringify(card);
+  assert.match(text, /same\\nnew/); assert.doesNotMatch(text, /shortcuts/); assert.match(text, /Codex · 已完成/);
+  state.visible = 'same\nold\n? for shortcuts';
+  card = h.bridge.interactionCard(b, pane, 'nonce', false); text = JSON.stringify(card);
+  assert.match(text, /same\\nold/); assert.doesNotMatch(text, /shortcuts/);
+});
+
+test('selected menu is suppressed for five seconds but a different menu appears immediately', async t => {
+  const h = await legacyHarness(t, { adapters: {} }), pane = h.fake.create();
+  const picker = 'Select model\n> 9s ago Model A\n  2m ago Model B\nEsc to cancel';
+  Object.assign(pane, { agent: 'pi', agent_status: 'idle', visible: picker });
+  await h.bridge.handle(message('/t open w1:p1', 'open')); h.advance(2000); await h.bridge.tick();
+  const binding = () => h.bridge.store.forPane('w1:p1'), b = binding();
+  await h.bridge.handle({ kind: 'button', eventId: 'select', chatId: b.chatId, topicId: b.topicId, openId: 'ou_test', messageId: b.cardId, nonce: b.menuNonce, key: 'menu:select:0' });
+  assert.equal(h.bridge.state(binding()).menu.kind, null);
+  pane.visible = picker.replace('9s ago', '10s ago'); h.advance(1000); h.bridge.state(binding()).dirty = true; await h.bridge.tick();
+  assert.equal(h.bridge.state(binding()).menu.kind, null);
+  pane.visible = picker.replace('Model B', 'Model C'); h.bridge.state(binding()).dirty = true; await h.bridge.tick();
+  assert.ok(h.bridge.state(binding()).menu.kind);
+  pane.visible = picker; h.advance(4000); h.bridge.state(binding()).dirty = true; await h.bridge.tick();
+  assert.ok(h.bridge.state(binding()).menu.kind);
 });
 
 test('failed key send shows failure and restores picker choices', async t => {
@@ -153,5 +190,16 @@ test('created idle terminal reaps after ten minutes while attached and open pick
   const attached = await harness(t, { labels: {} }); await attached.tick(); attached.advance(600000); await attached.tick(); assert.equal(attached.keys().length, 0);
   const picker = await harness(t, { labels: {} }); await picker.store.transaction(data => { data.createdTerminals = [picker.binding().identity.terminalId]; });
   await picker.tick(); picker.terminal.output = 'Do you want to proceed?\n> 1. Yes\n  2. No\nEsc to cancel'; picker.advance(600000); await picker.tick(); assert.equal(picker.keys().length, 0);
+});
+
+test('shell confirmation sends the chosen key and enter', async t => {
+  const h = await harness(t, { cli: null });
+  await h.store.update('oc_test', 'topic', { sessionTitle: '管理员: C:\\Windows\\powershell.exe' });
+  assert.equal(h.bridge.sessionIdentity(h.binding()).title, '命令行');
+  Object.assign(h.terminal, { reported: false, status: null, output: 'Continue (y/n):' });
+  await h.tick();
+  const b = h.binding();
+  await h.bridge.handle({ kind: 'button', eventId: 'shell-yes', chatId: b.chatId, topicId: b.topicId, openId: 'ou_test', messageId: b.cardId, nonce: b.cardNonce, key: 'y' });
+  assert.deepEqual(h.keys().at(-1)?.params.keys, ['y', 'enter']);
 });
 

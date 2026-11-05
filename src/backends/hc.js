@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { HerdrClient, HerdrError } from '../herdr-client.js';
 import { detectMenu } from '../menus.js';
 import { screenActivity } from '../transcripts/background.js';
+import { yesNoPrompt } from '../render.js';
 import { lookupCli } from '../cli-table.js';
 
 const required = ['terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'events.subscribe', 'server.status'];
@@ -207,6 +208,7 @@ export class HcBackend {
       (['working', 'blocked', 'idle'].includes(t.status?.state) ? t.status.state : 'unknown');
     // A shell/SSH wrapper cannot report the remote CLI's readiness. Its screen
     // may contain a prompt or spinner belonging to a different process.
+    if (yesNoPrompt(screen)) return 'blocked';
     if (t.agent && !lookupCli(t) && !t.status) return 'unknown';
     if (detectMenu(screen).kind) return 'blocked';
     if (screenActivity(screen).spinner) return 'working';
