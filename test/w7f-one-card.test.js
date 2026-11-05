@@ -28,12 +28,18 @@ test('settles patch one interaction card; the next input creates an independent 
   assert.equal(body(card(h, first)), old); assert.match(body(card(h, binding(h).cardId)), /four/);
 });
 
-test('overflow continues in a second card with all lines', async t => {
-  const h = await setup(t), lines = Array.from({ length: 100 }, (_, i) => `line-${String(i).padStart(3, '0')}`);
-  await screen(h, '$ first\n' + lines.join('\n')); await screen(h, '$ first\n' + lines.join('\n'));
-  assert.equal(replies(h).length, 2);
-  const all = replies(h).map(c => body(card(h, c.id))).join('\n');
-  for (const line of lines) assert.ok(all.includes(line), line);
+test('full-screen redraws use one card and ignore blank and chrome-only changes', async t => {
+  const h = await setup(t);
+  h.fake.status('w1:p1', 'working', 'codex');
+  const start = ['heading', ...Array(118).fill(''), 'first'].join('\n');
+  await screen(h, start); const id = binding(h).cardId;
+  await screen(h, start + '\nsecond');
+  await screen(h, 'heading\n\nfirst\nsecond\nThinking now');
+  const count = h.feishu.calls.filter(c => c.type === 'patch' && c.id === id).length;
+  await screen(h, 'heading\nfirst\n\nsecond\nBrewing now');
+  assert.equal(replies(h).length, 1);
+  assert.equal(h.feishu.calls.filter(c => c.type === 'patch' && c.id === id).length, count);
+  assert.match(body(card(h, id)), /heading.*first.*second/);
 });
 
 test('restart retains the interaction card and anchor', async t => {
@@ -48,9 +54,11 @@ test('menu is separate and output resumes on the same card', async t => {
   const pane = h.fake.panes.get('w1:p1'); pane.visible = 'Select model\n❯ First model\n  Second model\nEsc to cancel';
   h.advance(2000); await h.bridge.tick(); const menuId = binding(h).menuCardId;
   assert.ok(menuId && menuId !== id); assert.match(body(card(h, id)), /before/);
+  await h.bridge.handle({ kind: 'button', eventId: 'menu-click', chatId: 'oc_test', openId: 'ou_test', topicId: 'm1',
+    messageId: menuId, nonce: binding(h).menuNonce, key: 'menu:select:1' });
   h.fake.status('w1:p1', 'idle', 'codex');
   await screen(h, '$ first\nbefore\nafter');
-  assert.equal(binding(h).cardId, id); assert.match(body(card(h, id)), /before.*after/);
+  assert.equal(replies(h).length, 2); assert.equal(binding(h).cardId, id); assert.match(body(card(h, id)), /before.*after/);
 });
 
 test('Claude transcript still creates and patches a turn card', async t => {
@@ -66,12 +74,15 @@ test('Claude transcript still creates and patches a turn card', async t => {
   assert.equal(binding(h).cardId, id); assert.match(body(card(h, id)), /second answer/);
 });
 
-test('character overflow preserves long Unicode lines across cards', async t => {
-  const h = await setup(t), output = '界'.repeat(3500);
+test('large output keeps the tail on one card with a folding note and safe code fence', async t => {
+  const h = await setup(t), output = '界'.repeat(30000) + '<tag>```end';
   await screen(h, '$ first\n' + output); await screen(h, '$ first\n' + output);
-  const cards = replies(h).map(c => body(card(h, c.id)));
-  assert.equal(cards.length, 2);
-  assert.equal(cards.map(c => (c.match(/界/g) ?? []).length).reduce((a, b) => a + b, 0), 3500);
+  assert.equal(replies(h).length, 1);
+  const rendered = body(card(h, binding(h).cardId));
+  assert.ok(rendered.includes('前面 5017 字已折叠，发送 /t screen 查看'));
+  assert.equal((rendered.match(/界/g) ?? []).length, 24989);
+  assert.match(rendered, /&lt;tag&gt;/);
+  assert.ok(rendered.includes('\u200b'));
 });
 
 test('a saved pending publication retries after restart without a duplicate', async t => {
@@ -82,9 +93,12 @@ test('a saved pending publication retries after restart without a duplicate', as
   };
   await screen(h, '$ first\nretry');
   assert.ok(binding(h).pendingCard); assert.equal(replies(h).length, 0);
+  const b = binding(h); await h.bridge.store.update(b.chatId, b.topicId, { screenCardFresh: true, pendingCard: { ...b.pendingCard, screenAnchor: 'legacy overflow anchor' } });
   await h.restart(); h.advance(2000); await h.bridge.tick();
   assert.equal(replies(h).length, 1); assert.equal(binding(h).pendingCard, null);
   assert.match(body(card(h, binding(h).cardId)), /retry/);
+  await screen(h, '$ first\nretry\ncontinued'); assert.equal(replies(h).length, 1);
+  assert.match(body(card(h, binding(h).cardId)), /continued/);
 });
 
 test('a pre-upgrade output batch still drains without changing the new anchor', async t => {

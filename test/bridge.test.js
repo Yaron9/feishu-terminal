@@ -77,7 +77,8 @@ test('fallback agent output waits through working and flushes working -> done as
   assert.equal(records(h.feishu).length, 0);
   const publications = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive');
   assert.ok(publications.some(c => JSON.stringify(c.card ?? c.content).includes('\u4e2d\u6587\ud83d\ude42')));
-  assert.ok(publications.every(c => Buffer.byteLength(JSON.stringify(c.card ?? c.content)) < 28000));
+  assert.equal(publications.filter(c => c.msgType === 'interactive').length, 1);
+  assert.ok(publications.filter(c => c.type === 'patch').every(c => c.id === publications[0].id));
   for (let i = 0; i < 12; i++) { h.advance(2000); await h.bridge.tick(); }
   const count = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive').length;
   h.advance(2000); await h.bridge.tick();

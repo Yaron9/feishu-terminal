@@ -18,6 +18,14 @@ import { topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
+import { lookupCli } from './cli-table.js';
+
+function screenBody(binding, pane, current, visible) {
+  const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
+    stripChrome(newOutput(binding.lastTranscript ?? '', current));
+  const chars = Array.from(body);
+  return chars.length > 25000 ? `… 前面 ${chars.length - 25000} 字已折叠，发送 /t screen 查看\n${chars.slice(-25000).join('')}` : body;
+}
 
 const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.length ?
   createHash('sha256').update(clean(text)).digest('hex') : null;
@@ -1154,8 +1162,9 @@ export class Bridge {
     if ((binding.menuConfirm || binding.menuPage) && (!sameMenu(binding.cardMenu, menu) ||
         (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, visible.text)))
       await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-    const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature +
-      (state.transcriptSource ? '' : '\0' + content + '\0' + (binding.lastTranscript ?? ''))).digest('hex');
+    const screen = state.transcriptSource ? visible.text :
+      screenBody(binding, pane, content, visible.text) || stripChrome(visible.text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
+    const signature = createHash('sha256').update(screen + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     if (state.transcriptSource && ((state.status === 'blocked' && state.visible !== visible.text) ||
         ((menu.kind || state.menu?.kind) && menuSignature !== state.menuSignature))) state.forceTurnCard = true;
@@ -1190,26 +1199,13 @@ export class Bridge {
         uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible), tipPatch: tip.patch,
         card: this.sessionCard(turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
     }
-    const raw = newOutput(binding.lastTranscript ?? '', state.current);
-    const output = stripChrome(raw);
-    let end = Array.from(raw).length, overflow = false;
-    const fits = text => Array.from(text).length <= 3000 && text.split('\n').length <= 60;
-    if (!fits(output)) {
-      const chars = Array.from(raw); let low = 0, high = chars.length;
-      while (low < high) {
-        const mid = Math.ceil((low + high) / 2);
-        if (fits(stripChrome(chars.slice(0, mid).join('')))) low = mid; else high = mid - 1;
-      }
-      end = low; overflow = true;
-    }
-    const part = stripChrome(Array.from(raw).slice(0, end).join(''));
-    const anchor = overflow ? state.current.slice(0, state.current.length - raw.length) + Array.from(raw).slice(0, end).join('') : null;
+    const output = screenBody(binding, pane, state.current, state.visible);
     return { nonce, createdAt: this.now(), targetId: resume || binding.screenCardFresh ? null : binding.cardId ?? null,
-      screenPublication: true, screenInteraction: binding.screenInteraction ?? null, ...(overflow ? { screenAnchor: anchor } : {}),
+      screenPublication: true, screenInteraction: binding.screenInteraction ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
       uuid: randomUUID(), signature: state.nextSignature, session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible),
       card: this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output: part, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
+        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);
@@ -1418,8 +1414,7 @@ export class Bridge {
             Object.assign(b, { cardId, nonce: pending.staleNonce ? randomUUID() : pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null,
               cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce, cardScreenHash: pending.screenHash ?? null });
             if (pending.screenPublication && (b.screenInteraction ?? null) === pending.screenInteraction) {
-              b.screenCardFresh = Boolean(pending.screenAnchor != null);
-              if (pending.screenAnchor != null) b.lastTranscript = pending.screenAnchor;
+              b.screenCardFresh = false;
             }
             if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
             if (pending.previousCardId && pending.previousCardId !== cardId) {
@@ -1438,7 +1433,7 @@ export class Bridge {
       // A retry must keep its fixed payload/UUID, then catch up with identity
       // changes observed while that payload was pending (also pre-W6 cards).
       state.forceTurnCard = JSON.stringify(pending.session) !== JSON.stringify(this.sessionIdentity(binding));
-      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce) || pending.screenAnchor != null ||
+      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce) ||
         Boolean(this.store.binding(binding.chatId, binding.topicId)?.screenCardFresh);
     }
   }
