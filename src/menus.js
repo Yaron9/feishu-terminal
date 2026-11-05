@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from './ansi.js';
 import { lookupCli } from './cli-table.js';
 
-const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
+const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|enter\s+continue\s*·\s*esc\s+skip|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
 const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|permission|allow|confirm|proceed|do you|would you|选择|设置|恢复会话|是否|确认|允许)/i;
 const chrome = value => !value || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]+$/u.test(value) || /[⌕🔍]|search…|search\.\.\./i.test(value);
 const numbered = line => /^\s*(?:[❯›>│┃║]\s*)?([1-9])[.)、．）]\s*(\S.*)$/u.exec(line);
@@ -44,7 +44,9 @@ export function detectMenu(text = '', { status, cli } = {}) {
   const last = lines.findLastIndex(line => !chrome(line.trim()));
   const footer = hintIndex >= 0 && lines.slice(hintIndex + 1).every(line => chrome(line.trim()) || hint.test(line));
   if (hintIndex >= 0 && !footer) return empty();
-  const tableMenu = lookupCli({ agent: cli })?.menuScreen?.(lines.join('\n')) ?? false;
+  const updateMenu = footer && /enter\s+continue\s*·\s*esc\s+skip/i.test(lines[hintIndex]) &&
+    lines.some(line => /^\s*Update available\s*·/i.test(line));
+  const tableMenu = updateMenu || (lookupCli({ agent: cli })?.menuScreen?.(lines.join('\n')) ?? false);
   if (status !== undefined && !['blocked', 'waiting'].includes(status) && !tableMenu) return empty();
   const end = footer ? hintIndex : last + 1;
   let bottom = end - 1;
@@ -60,7 +62,7 @@ export function detectMenu(text = '', { status, cli } = {}) {
     const title = titleIndex >= 0 ? unbox(lines[titleIndex]).trim() : '';
     const cursor = numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index]));
     const approval = /permission|allow|confirm|proceed|do you want|would you like|是否|确认|允许/i.test(title);
-    if ((cursor || footer) && (approval || (cursor && titleHint.test(title)))) {
+    if ((cursor || footer) && (approval || (cursor && titleHint.test(title)) || (cursor && updateMenu))) {
       return { kind: 'numbered', title, ...contextAbove(lines, titleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '' })),
         cursorIndex: numberRows.findIndex(row => /^\s*[❯›>]/u.test(lines[row.index])) };
     }
