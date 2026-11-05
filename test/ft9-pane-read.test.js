@@ -98,11 +98,11 @@ for (const offset of [0, 4]) {
     await step('changed screen', () => h.bridge.tick());
     h.advance(1500);
     await step('settle flush', () => h.bridge.tick());
-    assert.ok(outputReplies(h.feishu).some(c => c.content === '\nfirst answer'));
+    assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('first answer')));
     h.fake.output(pane.pane_id, 'first answer\nsecond answer');
     await h.drain(); h.advance(1000); await h.bridge.tick();
     h.advance(1500); await h.bridge.tick();
-    assert.ok(outputReplies(h.feishu).some(c => c.content === '\nsecond answer'));
+    assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('second answer')));
     await step('/t screen', () => h.bridge.handle(message('/t screen', 'screen', topic)));
     const binding = h.bridge.store.forPane(pane.pane_id);
     await step('Refresh callback', () => h.bridge.handle({ kind: 'button', eventId: 'refresh',

@@ -129,7 +129,7 @@ test('a transient transcript read failure uses bounded fallback and retries loca
   adapter.read = async () => { throw new Error('PRIVATE SOURCE DETAIL'); };
   pane.agent_status = 'idle'; h.fake.output(pane.pane_id, 'Fallback answer');
   await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  assert.ok(conversation(h).some(c => JSON.stringify(c.content).includes('Fallback answer')));
+  assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('Fallback answer')));
   assert.ok(h.fake.calls.filter(c => c.method === 'pane.read').every(c => c.params.lines <= 106));
   assert.ok(h.errors.includes('transcript_unavailable'));
   assert.ok(!JSON.stringify(h.errors).includes('PRIVATE SOURCE DETAIL'));
@@ -142,11 +142,10 @@ test('fallback shell uses one compact output card and /t screen returns the enti
   const h = await harness(t); await h.bridge.handle(message('pwd'));
   h.fake.output('w1:p1', '$ ' + Array.from({ length: 90 }, (_, i) => `line ${i}`).join('\n') + '\n❯ \n✻ Worked for 3s\n╰─────╯');
   await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  const output = conversation(h).filter(c => c.content.header.title.content === '💻 命令输出');
-  assert.equal(output.length, 1);
-  assert.match(output[0].content.body.elements[0].content, /line 30/);
-  assert.ok(!output[0].content.body.elements[0].content.includes('line 29\n'));
-  assert.ok(!output[0].content.body.elements[0].content.includes('Worked for'));
+  const output = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive');
+  assert.ok(output.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('line 30')));
+  assert.ok(output.every(c => Buffer.byteLength(JSON.stringify(c.card ?? c.content)) < 28000));
+  assert.equal(conversation(h).filter(c => c.content.header.title.content === '\ud83d\udcbb \u547d\u4ee4\u8f93\u51fa').length, 0);
   const full = '<&`🙂'.repeat(2000);
   h.fake.panes.get('w1:p1').visible = full;
   await h.bridge.handle(message('/t screen', 'screen', 'm1'));

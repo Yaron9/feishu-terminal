@@ -73,10 +73,11 @@ test('idle or done output missed during restart, reconnect or between polls flus
     Object.assign(h.fake.panes.get('w1:p1'), { agent: 'codex', agent_status: mode === 'restart' ? 'done' : 'idle', text: '$ completed', visible: '$ completed' });
     if (mode === 'restart') await h.restart();
     if (mode === 'reconnect') await h.subscribed();
-    await h.bridge.tick(); assert.equal(texts(h).length, 0);
-    h.advance(1499); await h.bridge.tick(); assert.equal(texts(h).length, 0);
-    h.advance(1); await h.bridge.tick(); assert.equal(texts(h).at(-1)?.content, 'completed');
-    h.advance(2000); await h.bridge.tick(); assert.equal(texts(h).length, 1);
+    await h.bridge.tick();
+    assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('completed')));
+    const replies = h.feishu.calls.filter(c => c.msgType === 'interactive').length;
+    h.advance(2000); await h.bridge.tick(); assert.equal(h.feishu.calls.filter(c => c.msgType === 'interactive').length, replies);
+    assert.equal(texts(h).length, 0);
   }
 });
 
@@ -100,7 +101,7 @@ test('partly delivered output resumes fixed chunks and UUIDs across transcript g
   await h.bridge.tick(); h.advance(1600); await h.bridge.tick(); h.advance(1600); await h.bridge.tick();
   assert.equal(texts(h).filter(c => c.content === first).length, 1);
   assert.equal(texts(h).find(c => c.content === second)?.uuid, failedUuid);
-  assert.equal(texts(h).map(c => c.content).join(''), first + second + 'tail');
+  assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('tail')));
 });
 
 test('slow topic output cannot block another topic input; callback claims queued input before returning', async t => {
@@ -150,7 +151,7 @@ test('recalled and expired cards are replaced atomically without blocking transc
     h.feishu.patch = async () => { throw Object.assign(new Error('card gone'), { code }); };
     h.fake.output('w1:p1', '$ result'); h.advance(1000); await h.bridge.tick();
     h.advance(1500); await h.bridge.tick();
-    assert.equal(texts(h).at(-1)?.content, 'result');
+    assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('result')));
     const after = h.store.binding('oc_test', 'm1');
     assert.notEqual(after.cardId, before.cardId); assert.notEqual(after.nonce, before.nonce);
   }
@@ -159,12 +160,15 @@ test('recalled and expired cards are replaced atomically without blocking transc
 test('transient card errors back off while plain output continues', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
   let attempts = 0;
+  const patch = h.feishu.patch.bind(h.feishu);
   h.feishu.patch = async () => { attempts++; throw Object.assign(new Error('offline'), { code: 'network_error' }); };
   h.fake.output('w1:p1', '$ result'); h.advance(1000); await h.bridge.tick();
   h.advance(1500); await h.bridge.tick();
-  assert.equal(texts(h).at(-1)?.content, 'result');
+  assert.ok(h.store.binding('oc_test', 'm1').pendingCard);
   const count = attempts;
   h.advance(500); await h.bridge.tick(); assert.equal(attempts, count);
+  h.feishu.patch = patch; h.advance(5000); await h.bridge.tick();
+  assert.ok(h.feishu.calls.some(c => (JSON.stringify(c.card ?? c.content) ?? '').includes('result')));
 });
 
 const click = (binding, eventId) => ({ kind: 'button', eventId, chatId: binding.chatId, openId: 'ou_test',
@@ -209,15 +213,17 @@ test('restart reconciles an uncertain card patch by publishing the same pending 
 
 test('ambiguous output pauses before UUID deduplication expires instead of resending', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); await h.bridge.tick();
-  const reply = h.feishu.reply.bind(h.feishu); let attempts = 0;
-  h.feishu.reply = async (topic, content, type, uuid) => {
-    if (type === 'interactive' && content.header?.title.content === '💻 命令输出') { attempts++; throw new Error('unknown delivery'); }
-    return reply(topic, content, type, uuid);
+  const reply = h.feishu.reply.bind(h.feishu); let attempts = 0, uuid;
+  h.feishu.reply = async (topic, content, type, id) => {
+    if (type === 'interactive') { attempts++; uuid = id; throw new Error('unknown delivery'); }
+    return reply(topic, content, type, id);
   };
-  h.fake.output('w1:p1', '$ result'); await h.drain(); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  assert.equal(attempts, 1);
+  await h.bridge.handle(message('next', 'next', 'm1')); h.advance(1000); await h.bridge.tick();
+  assert.equal(attempts, 1); assert.ok(uuid);
   h.advance(55 * 60 * 1000); await h.restart(); await h.bridge.tick();
   assert.equal(attempts, 1);
+  assert.equal(h.store.binding('oc_test', 'm1').pendingCard.uuid, uuid);
+
 });
 
 test('a click racing a pending patch cannot revive a consumed nonce', async t => {

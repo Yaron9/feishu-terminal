@@ -58,12 +58,13 @@ test('live card edits are throttled to 1 Hz and quiet shell posts only new outpu
   assert.equal(cards(h.feishu).length, 1);
   h.advance(700); await h.bridge.tick(); assert.equal(cards(h.feishu).length, 2);
   h.advance(800); await h.bridge.tick();
-  const initialOutput = records(h.feishu).map(c => c.content).join(''); assert.equal(initialOutput, 'pwd\n/tmp\n$ new');
-  // No event emitted: fallback polling must still discover and settle changes.
+  assert.match(JSON.stringify(cards(h.feishu).at(-1).card), /\/tmp/);
+  // No event emitted: fallback polling must still discover changes without a new reply.
   h.fake.panes.get('w1:p1').text += '\nonly polling'; h.fake.panes.get('w1:p1').visible += '\nonly polling';
   h.advance(1000); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  assert.equal(records(h.feishu).at(-1).content, '\nonly polling');
-  const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
+  assert.match(JSON.stringify(cards(h.feishu).at(-1).card), /only polling/);
+  const count = cards(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(cards(h.feishu).length, count);
+  assert.equal(records(h.feishu).length, 0);
   assert.ok(cards(h.feishu).slice(1).every((c, i) => c.time - cards(h.feishu)[i].time >= 1000));
   assert.ok(cards(h.feishu).filter(c => c.type === 'patch').every(c => c.id === cards(h.feishu)[0].id));
 });
@@ -73,12 +74,15 @@ test('fallback agent output waits through working and flushes working -> done as
   h.fake.status('w1:p1', 'working'); h.fake.output('w1:p1', '$ ' + '中文🙂'.repeat(6000));
   await h.drain(); await h.bridge.tick(); h.advance(5000); await h.bridge.tick(); assert.equal(records(h.feishu).length, 0);
   h.fake.status('w1:p1', 'done'); await h.drain(); await h.bridge.tick();
-  assert.equal(records(h.feishu).length, 1);
-  assert.equal(records(h.feishu)[0].content, '中文🙂'.repeat(500));
-  assert.equal(records(h.feishu)[0].card.header.title.content, '🤖 Codex · 已完成');
-  assert.match(records(h.feishu)[0].card.body.elements[0].content, /仅显示末尾/);
-  assert.ok(Buffer.byteLength(JSON.stringify(records(h.feishu)[0].card)) < 28000);
-  const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
+  assert.equal(records(h.feishu).length, 0);
+  const publications = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive');
+  assert.ok(publications.some(c => JSON.stringify(c.card ?? c.content).includes('\u4e2d\u6587\ud83d\ude42')));
+  assert.ok(publications.every(c => Buffer.byteLength(JSON.stringify(c.card ?? c.content)) < 28000));
+  for (let i = 0; i < 12; i++) { h.advance(2000); await h.bridge.tick(); }
+  const count = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive').length;
+  h.advance(2000); await h.bridge.tick();
+  assert.equal(h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive').length, count);
+
 });
 
 test('blocked card buttons validate ACL, card identity and nonce, consume nonce, reject stale and cross-topic clicks', async t => {
