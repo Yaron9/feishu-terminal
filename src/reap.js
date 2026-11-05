@@ -36,7 +36,7 @@ export class Reap {
   }
   eligible(terminal) {
     const b = this.bridge, binding = b.store.forPane(terminal.pane_id);
-    if (!this.idle(terminal) || terminal.labels?.['ft.woken'] !== '1') return false;
+    if (!this.idle(terminal) || (terminal.labels?.['ft.woken'] !== '1' && !b.store.data.createdTerminals?.includes(terminal.terminal_id))) return false;
     // A different host/bridge's label alone does not establish our ownership.
     if (binding) return Boolean(b.registry.get(binding.chatId) && b.identitiesMatch(binding, terminal));
     return b.store.data.createdTerminals?.includes(terminal.terminal_id) ?? false;
@@ -142,7 +142,8 @@ export class Reap {
       try { terminal = await hc.inspect(record.paneId); }
       catch (error) { if (missing(error)) { await this.complete(record); return; } throw error; }
       if (terminal.terminal_id !== record.terminalId) { await this.forget(record); return; }
-      if (terminal.labels?.['ft.woken'] !== '1' || Object.keys(terminal.labels).some(key => key.startsWith('herdr.'))) {
+      if ((terminal.labels?.['ft.woken'] !== '1' && !b.store.data.createdTerminals?.includes(terminal.terminal_id)) ||
+          Object.keys(terminal.labels ?? {}).some(key => key.startsWith('herdr.'))) {
         await this.forget(record); return;
       }
       const binding = b.store.forPane(record.paneId);

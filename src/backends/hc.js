@@ -203,7 +203,7 @@ export class HcBackend {
   identity(t) { return { terminalId: t.terminal_id }; }
   processOf(t) { return t.foreground?.pid ?? t.pid ?? null; }
   status(t, screen = '') {
-    if (t.reported) return ({ done: 'idle', error: 'blocked' })[t.status?.state] ??
+    if (t.reported) return ({ done: 'idle', error: 'error' })[t.status?.state] ??
       (['working', 'blocked', 'idle'].includes(t.status?.state) ? t.status.state : 'unknown');
     // A shell/SSH wrapper cannot report the remote CLI's readiness. Its screen
     // may contain a prompt or spinner belonging to a different process.
