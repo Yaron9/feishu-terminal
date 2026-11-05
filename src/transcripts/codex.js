@@ -43,14 +43,14 @@ export function codexItems(record, offset = 0) {
 
 export class CodexTranscript {
   constructor({ home = homedir() } = {}) { this.home = home; this.transcriptTurns = true; this.sessions = new Map(); }
-  async locate(pane, binding = {}, bindings = []) {
+  async locate(pane, binding = {}, bindings = [], now) {
     return locateSession(pane, binding, bindings, this.sessions, {
       key: 'codex', root: join(this.home, '.codex', 'sessions'), depth: 3,
       directory: name => /^\d+$/.test(name), file: name => /^rollout-.*\.jsonl$/.test(name),
       matchesId: (name, id) => name.endsWith(`-${id}.jsonl`),
       meta: r => r.type === 'session_meta' ? { id: r.payload?.session_id ?? r.payload?.id, cwd: r.payload?.cwd, timestamp: r.timestamp ?? r.payload?.timestamp } : null,
       items: codexItems,
-    });
+    }, now);
   }
   async read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, codexItems, { end: Boolean(cursor?.atEnd) }); }
 }

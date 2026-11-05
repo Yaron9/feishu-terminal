@@ -536,7 +536,7 @@ export class Bridge {
       if (!pane) pane = await this.readVerified(binding, () => this.backend.get(binding.paneId));
       const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adapters[key];
       if (!adapter) { state.transcriptSource = null; return; }
-      const path = await this.readVerified(binding, () => adapter.locate(pane, this.store.binding(binding.chatId, binding.topicId), this.store.list()));
+      const path = await this.readVerified(binding, () => adapter.locate(pane, this.store.binding(binding.chatId, binding.topicId), this.store.list(), this.now()));
       if (!path) { state.transcriptSource = null; return; }
       if (state.failedTranscript === path && this.now() < state.transcriptRetryAt) { state.transcriptSource = null; return; }
       const current = this.store.binding(binding.chatId, binding.topicId);
@@ -544,8 +544,9 @@ export class Bridge {
       // Legacy bindings and resumed sessions start at EOF: never replay history.
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
-        const cursor = ['codex', 'pi'].includes(key) && adapter.sessions?.get(path)?.fresh
-          ? null : (await this.readVerified(binding, () => adapter.read(path, { atEnd: true }))).cursor;
+        const session = adapter.sessions?.get(path);
+        const cursor = session?.cursor ?? (['codex', 'pi'].includes(key) && session?.fresh
+          ? null : (await this.readVerified(binding, () => adapter.read(path, { atEnd: true }))).cursor);
         const patch = { transcript: { adapter: key, path, cursor, lastRecordAt: this.now() } };
         if (!current.turn && cursor?.background?.running?.length) {
           patch.turn = freshTurn({ key, path }, this.agentName(key), state.status);
@@ -557,7 +558,7 @@ export class Bridge {
         await this.updateGeneration(binding, { transcript: { ...current.transcript, lastRecordAt: this.now() } });
       state.transcriptSource = { key, path, adapter };
       const session = adapter.sessions?.get(path);
-      if (['codex', 'pi'].includes(key) && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
+      if (!current.outputBatch?.transcript && ['codex', 'pi'].includes(key) && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
         await this.updateGeneration(binding, { sessionId: session.sessionId, sessionSource: 'verified', sessionVerified: true });
       if (key === 'claude' && session?.sessionId && current.claudeSessionId !== session.sessionId)
         await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionId: session.sessionId, sessionHandoff: null });

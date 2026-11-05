@@ -4,6 +4,16 @@ import { createHash } from 'node:crypto';
 const WINDOW = 1024 * 1024;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
+export async function cursorAt(path, offset) {
+  const file = await open(path, 'r');
+  try {
+    const stat = await file.stat();
+    const bytes = Buffer.alloc(Math.min(64, offset));
+    await file.read(bytes, 0, bytes.length, offset - bytes.length);
+    return { identity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`, offset, skip: false, anchor: digest(bytes) };
+  } finally { await file.close(); }
+}
+
 // No retained transcript text in a cursor. Partial lines (including split UTF-8)
 // are reread next poll; oversized records are skipped with bounded memory.
 export async function readJsonl(path, cursor, project, { end = false, onReset = () => {} } = {}) {

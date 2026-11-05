@@ -69,8 +69,14 @@ export function probePi(options) {
 
 // Explicit navigation chrome lets selection screens remain usable when a CLI
 // reports idle. Prose questions and ordinary input prompts never match this.
-const menuScreen = screen => /(?:Esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓].*(?:navigate|select))/i.test(screen) &&
-  /(?:resume session|select (?:a )?(?:model|session|option)|settings|configuration|allow this command|do you want to proceed|would you like to run)/i.test(screen);
+const menuScreen = screen => {
+  if (/(?:Esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓].*(?:navigate|select))/i.test(screen) &&
+      /(?:resume session|select (?:a )?(?:model|session|option)|settings|configuration|allow this command|do you want to proceed|would you like to run)/i.test(screen)) return true;
+  const lines = screen.split('\n');
+  const footer = lines.findLastIndex(line => /(?:\benter\s+(?:to\s+)?\w+.*\besc(?:ape)?\s+(?:to\s+)?\w+|[↑↓].*(?:browse|navigate))/i.test(line));
+  return footer >= 0 && lines.slice(0, footer).some(line => /^\s*[❯›>→]\s+\S/u.test(line)) &&
+    lines.slice(footer + 1).every(line => !line.trim() || /[↑↓].*(?:browse|navigate)/i.test(line));
+};
 export const CLI_TABLE = Object.freeze([
   { cli: 'claude', agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
   { cli: 'codex', agents: ['codex'], resume: 'codex resume {id} --no-daemon', readyStates: ['idle', 'done'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },

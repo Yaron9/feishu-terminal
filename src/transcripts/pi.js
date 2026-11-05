@@ -22,14 +22,14 @@ export function piItems(record, offset = 0) {
 
 export class PiTranscript {
   constructor({ home = homedir() } = {}) { this.home = home; this.transcriptTurns = true; this.sessions = new Map(); }
-  async locate(pane, binding = {}, bindings = []) {
+  async locate(pane, binding = {}, bindings = [], now) {
     return locateSession(pane, binding, bindings, this.sessions, {
       key: 'pi', root: join(this.home, '.pi', 'agent', 'sessions'), depth: 1,
       directory: () => true, file: name => name.endsWith('.jsonl'),
       matchesId: (name, id) => name.endsWith(`_${id}.jsonl`),
       meta: r => r.type === 'session' ? { id: r.id, cwd: r.cwd, timestamp: r.timestamp } : null,
       items: piItems,
-    });
+    }, now);
   }
   // Appended records are the current branch; tail reading needs no active-path walk.
   async read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, piItems, { end: Boolean(cursor?.atEnd) }); }

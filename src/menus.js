@@ -1,9 +1,9 @@
 import { stripVTControlCharacters } from './ansi.js';
 import { lookupCli } from './cli-table.js';
 
-const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|enter\s+continue\s*·\s*esc\s+skip|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
+const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:\/|\s)*[↑↓]|[↑↓].*\bbrowse\b|(?:enter|↵)\s+to\s+(?:select|confirm|choose)|\benter\s+(?:to\s+)?\w+.*\besc(?:ape)?\s+(?:to\s+)?\w+|to\s+navigate|arrow keys|方向键|上下键|按.*Esc.*取消)/i;
 const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|permission|allow|confirm|proceed|do you|would you|选择|设置|恢复会话|是否|确认|允许)/i;
-const chrome = value => !value || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-]+$/u.test(value) || /[⌕🔍]|search…|search\.\.\./i.test(value);
+const chrome = value => !value || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-↑↓]+$/u.test(value) || /[⌕🔍]|search…|search\.\.\./i.test(value);
 const numbered = line => /^\s*(?:[❯›>│┃║]\s*)?([1-9])[.)、．）]\s*(\S.*)$/u.exec(line);
 const empty = () => ({ kind: null, title: '', items: [], cursorIndex: -1 });
 const unbox = line => line.replace(/^\s*[│┃║]\s?|\s*[│┃║]\s*$/gu, '').trimEnd();
@@ -36,6 +36,17 @@ export function approvalContext(text = '') {
 // Use the visible screen, before preview/chrome removal. All offsets are text
 // columns in that snapshot, not tmux coordinates or transcript line numbers.
 export function detectMenu(text = '', { status, cli } = {}) {
+  // Pi draws the picker between horizontal rules, above its persistent status.
+  if (cli === 'pi') {
+    const parts = String(text).replace(/\r/g, '').split('\n');
+    const rules = parts.flatMap((line, i) => /^─{10,}\s*$/u.test(line.trim()) ? [i] : []);
+    if (rules.length >= 2) {
+      const live = parts.slice(rules.at(-2) + 1, rules.at(-1));
+      if (live.some(line => /^Resume Session \(/.test(line)) && live.some(line => /^›\s+\S/.test(line))) live.push('enter select · esc exit');
+      if (live.some(line => /Enter to select.*Escape\/Ctrl\+C to cancel/i.test(line))) live.push('enter select · esc exit');
+      if (live.some(line => hint.test(line))) text = live.join('\n');
+    }
+  }
   const rawLines = String(text).replace(/\r/g, '').split('\n');
   const lines = rawLines.map(line => stripVTControlCharacters(line).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ''));
   const hintIndex = lines.findLastIndex(line => hint.test(line));
@@ -48,7 +59,8 @@ export function detectMenu(text = '', { status, cli } = {}) {
     lines.some(line => /^\s*Update available\s*·/i.test(line));
   const tableMenu = updateMenu || (lookupCli({ agent: cli })?.menuScreen?.(lines.join('\n')) ?? false);
   if (status !== undefined && !['blocked', 'waiting'].includes(status) && !tableMenu) return empty();
-  const end = footer ? hintIndex : last + 1;
+  let end = footer ? hintIndex : last + 1;
+  while (end > 0 && hint.test(lines[end - 1])) end--;
   let bottom = end - 1;
   while (bottom >= 0 && chrome(lines[bottom].trim())) bottom--;
   const numberRows = [];
@@ -62,15 +74,16 @@ export function detectMenu(text = '', { status, cli } = {}) {
     const title = titleIndex >= 0 ? unbox(lines[titleIndex]).trim() : '';
     const cursor = numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index]));
     const approval = /permission|allow|confirm|proceed|do you want|would you like|是否|确认|允许/i.test(title);
-    if ((cursor || footer) && (approval || (cursor && titleHint.test(title)) || (cursor && updateMenu))) {
+    const pickerTitle = lines.slice(0, numberRows[0].index).findLastIndex(line => titleHint.test(line) && !hint.test(line));
+    if ((cursor || footer) && (approval || (cursor && pickerTitle >= 0) || (cursor && updateMenu))) {
       return { kind: 'numbered', title, ...contextAbove(lines, titleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '' })),
         cursorIndex: numberRows.findIndex(row => /^\s*[❯›>]/u.test(lines[row.index])) };
     }
   }
   if (hintIndex < 0) return empty();
   const cursors = lines.slice(0, hintIndex).flatMap((line, index) => {
-    const match = /^(\s*)[❯›>] (\S.*)$/u.exec(line);
-    return match ? [{ index, column: match[1].length + 2, label: match[2].trim() }] : [];
+    const match = /^(\s*)[❯›>→] (\S.*)$/u.exec(line);
+    return match ? [{ index, column: match[1].length + (line.trimStart().startsWith('→') ? 4 : 2), label: match[2].replace(/^✓\s*/, '').trim() }] : [];
   });
   const cursor = cursors.at(-1);
   const titleIndex = lines.slice(0, cursor?.index ?? hintIndex).findLastIndex(line => titleHint.test(line) &&
@@ -86,12 +99,13 @@ export function detectMenu(text = '', { status, cli } = {}) {
     start--;
   }
   const title = namedTitle?.trim() ?? lines.slice(0, start).filter(line => !chrome(line.trim()) && !hint.test(line)).at(-1)?.trim() ?? '';
-  const resume = /resume\s+session|恢复会话/i.test(title);
+  const resume = /resume\s+session|恢复会话/i.test(title) && !/Resume a previous session/i.test(title) && cli !== 'pi';
   const items = []; let cursorIndex = -1, reliable = !namedTitle || cursors.filter(row => row.index > titleIndex).length === 1;
-  for (let i = start; i < hintIndex; i++) {
+  for (let i = start; i < end; i++) {
     const line = lines[i], value = line.trim();
     if (!value) continue;
     if (chrome(value)) continue;
+    if (/^\(\d+\/\d+\)$|^Model Name:|^Model catalogs refreshed\./i.test(value)) break;
     const selected = i === cursor.index;
     const indent = line.search(/\S/u);
     if (!selected && indent < column) break;
