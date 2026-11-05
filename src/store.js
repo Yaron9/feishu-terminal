@@ -30,11 +30,12 @@ export class Store {
         }
         await this.write(data);
       }
-      const counts = new Map();
-      for (const b of data.bindings) if (b.sessionId) counts.set(b.sessionId, (counts.get(b.sessionId) ?? 0) + 1);
       let sanitized = false;
+      const unsafe = new Set(data.bindings.filter(b => ['codex', 'pi'].includes(b.cli) && b.sessionId && b.sessionSource !== 'verified' &&
+        data.bindings.some(other => other !== b && ['codex', 'pi'].includes(other.cli) && other.sessionId === b.sessionId && other.sessionSource !== 'verified') &&
+        !data.bindings.some(other => other.sessionId === b.sessionId && other.sessionSource === 'verified')).map(b => b.sessionId));
       for (const b of data.bindings) if (['codex', 'pi'].includes(b.cli) && b.sessionId &&
-        (counts.get(b.sessionId) > 1 || !['verified', 'probe'].includes(b.sessionSource))) {
+        unsafe.has(b.sessionId)) {
         b.sessionId = null; b.sessionSource = null; b.sessionVerified = false; b.sessionHandoff = null; b.sessionReplay = true; sanitized = true;
       }
       if (sanitized) await this.write(data);

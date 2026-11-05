@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CLI_TABLE, sameCwd } from './cli-table.js';
+import { CLI_TABLE, lookupCli, sameCwd } from './cli-table.js';
 import { screenCard } from './render.js';
 import { topicTitle } from './topics.js';
 
@@ -21,6 +21,13 @@ export class Wake {
     if (b.now() - (state.lastSessionProbe ?? -Infinity) < 1000) return;
     state.lastSessionProbe = b.now();
     const facts = await b.sessionFollow.describe(terminal);
+    let soleTerminal = false;
+    if (facts.sessionId && !facts.sessionVerified) {
+      const terminals = await b.backend.backends.get(terminal.pane_id.startsWith('hc:') ? 'hc' : 'herdr').list();
+      const matching = terminals.filter(term => lookupCli(term)?.cli === facts.cli &&
+        sameCwd(term.foreground?.cwd ?? term.foreground_cwd ?? term.cwd, facts.cwd));
+      soleTerminal = matching.length === 1 && matching[0].pane_id === terminal.pane_id;
+    }
     const current = b.store.binding(binding.chatId, binding.topicId);
     if (!b.sameGeneration(binding, current)) return;
     await b.store.transaction(data => {
@@ -32,9 +39,9 @@ export class Wake {
         id = (facts.sessionVerified ? facts.sessionId : null) ?? (changed ? null : item.sessionId) ?? item.claudeSessionId ?? null;
         source = facts.sessionVerified ? 'verified' : source;
       } else if (facts.sessionVerified) { id = facts.sessionId; source = 'verified'; }
-      else if (facts.sessionId && Number.isFinite(facts.sessionStartedAt) &&
+      else if (facts.sessionId && (soleTerminal || (Number.isFinite(facts.sessionStartedAt) &&
         (item.sentInputs ?? []).some(input => input.terminalId === item.identity?.terminalId && input.sentAt <= facts.sessionStartedAt &&
-          /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')) &&
+          /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')))) &&
         !data.bindings.some(other => other !== item && other.sessionId === facts.sessionId)) {
         id = facts.sessionId; source = 'probe';
       }
@@ -72,11 +79,6 @@ export class Wake {
     binding = b.store.binding(binding.chatId, binding.topicId);
     if (!binding || binding.frozen) return;
     const row = CLI_TABLE.find(row => row.cli === binding.cli);
-    if (['codex', 'pi'].includes(binding.cli) && binding.sessionId &&
-      (!['verified', 'probe'].includes(binding.sessionSource) || b.store.list().some(x => x.topicId !== binding.topicId && x.sessionId === binding.sessionId))) {
-      await b.updateGeneration(binding, { sessionId: null, sessionSource: null, sessionVerified: false, sessionHandoff: null, sessionReplay: true });
-      binding = b.store.binding(binding.chatId, binding.topicId);
-    }
     const replay = ['codex', 'pi'].includes(binding.cli) && !binding.sessionId && binding.sessionReplay;
     if (!row || !binding.cwd || (!replay && !/^[a-zA-Z0-9_-]+$/.test(binding.sessionId ?? ''))) {
       if (!binding.unknownSessionNotified) {

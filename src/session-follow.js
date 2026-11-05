@@ -30,7 +30,7 @@ export class SessionFollow {
     for (const terminal of terminals) {
       if (/^hc:[^/]+\//.test(terminal.pane_id)) continue;
       const facts = await this.describe(terminal);
-      if (!facts.sessionVerified || facts.sessionId !== sessionId) continue;
+      if ((!facts.sessionVerified || facts.sessionId !== sessionId) && terminal.labels?.session !== sessionId) continue;
       result.push({ pid: this.backend.processOf(terminal), start: terminal.created_ms,
         terminalId: terminal.pane_id, sessionId, cli: facts.cli, hcIdentity: this.backend.identity(terminal) });
     }

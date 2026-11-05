@@ -1070,6 +1070,16 @@ export class Bridge {
             }
           }
         }
+        if (['codex', 'pi'].includes(binding.cli) && binding.sessionSource !== 'verified' && !binding.dormant && !binding.frozen) {
+          const term = await this.backend.get(binding.paneId).catch(() => null);
+          if (term && this.identitiesMatch(binding, term)) {
+            const facts = await this.sessionFollow.describe(term);
+            if (facts.sessionVerified && facts.sessionId === binding.sessionId) {
+              await this.updateGeneration(binding, { sessionSource: 'verified', sessionVerified: true });
+              binding = this.store.binding(binding.chatId, binding.topicId);
+            }
+          }
+        }
         const followedSession = binding.sessionId ?? binding.claudeSessionId;
         if (!followedSession || (['codex', 'pi'].includes(binding.cli) && binding.sessionSource !== 'verified')) return;
         const candidates = await this.sessionFollow.candidates(followedSession);

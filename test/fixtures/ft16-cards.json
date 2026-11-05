@@ -842,7 +842,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n等待下一条消息。\n```"
+        "content": "等待下一条消息。"
       },
       {
         "tag": "note",
@@ -870,7 +870,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n任务已完成。\n```"
+        "content": "任务已完成。"
       },
       {
         "tag": "note",
@@ -898,7 +898,7 @@
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n错误：连接已断开。\n```"
+        "content": "<font color='red'>错误：连接已断开。</font>"
       },
       {
         "tag": "markdown",
