@@ -43,6 +43,7 @@ async function harness(t, { cli = 'pi', idleMinutes, labels = { 'ft.woken': '1',
         return { turn: term.turn };
       }
       if (method === 'terminal.send') { term.turn++; term.status_ms = time; return { turn: term.turn }; }
+      if (method === 'terminal.kill') { term.state = 'finished'; return {}; }
       if (method === 'terminal.rm') {
         assert.equal(term.state, 'finished', 'never remove a live terminal');
         if (h.failRemove) { h.failRemove = false; throw Object.assign(new Error('offline'), { code: 'unavailable' }); }
@@ -317,4 +318,38 @@ for (const cli of ['claude', 'codex', 'pi']) test(`${cli}: ft-created error term
   assert.equal(h.binding().dormant, false);
   assert.ok(h.calls.some(c => c.method === 'terminal.run'));
   assert.ok(h.calls.some(c => c.method === 'terminal.send' && c.params.text === 'resume input'));
+});
+
+
+test('shell-wrapped CLI is closed after exit and its session resumes despite observation races', async t => {
+  const h = await harness(t, { idleMinutes: 1 });
+  await h.store.update('oc_test', 'topic', { sessionSource: 'verified' });
+  h.exitAfter = Infinity;
+  h.terminal.foreground = { pid: h.terminal.pid + 1, name: 'pi', cwd: h.root };
+  h.onKeys = async term => {
+    term.status = null; term.foreground = { pid: term.pid, name: 'pwsh', cwd: h.root };
+    await h.bridge.wake.observe(h.binding(), await h.backend.get('hc:t1'));
+    assert.equal(h.binding().sessionId, 'same');
+    assert.equal(h.binding().cli, 'pi');
+    // Simulate a concurrent update that already lost the saved facts.
+    await h.store.update('oc_test', 'topic', { cli: null, sessionId: null, sessionSource: null, cwd: null });
+  };
+  await h.bridge.reap.tick(); h.advance(); await h.bridge.reap.tick();
+  assert.equal(h.calls.filter(c => c.method === 'terminal.kill').length, 1);
+  assert.equal(h.removes().length, 1); assert.equal(h.terminals.size, 0);
+  assert.equal(h.binding().dormant, true); assert.equal(h.binding().cli, 'pi');
+  assert.equal(h.binding().sessionId, 'same'); assert.equal(h.binding().sessionSource, 'verified');
+  assert.equal(h.binding().cwd, h.root);
+  await h.bridge.handle(message('resume input', 'shell-resume', 'topic'));
+  assert.equal(h.binding().dormant, false);
+  assert.ok(h.calls.some(c => c.method === 'terminal.run' && c.params.line.includes('same')));
+  assert.ok(h.calls.some(c => c.method === 'terminal.send' && c.params.text === 'resume input'));
+});
+
+test('shell with a running foreground child is not closed after CLI exit', async t => {
+  const h = await harness(t, { idleMinutes: 1 }); h.exitAfter = Infinity;
+  h.onKeys = term => { term.status = null; term.foreground = { pid: term.pid + 1, name: 'child', cwd: h.root }; };
+  await h.bridge.reap.tick(); h.advance(); await h.bridge.reap.tick();
+  assert.equal(h.calls.filter(c => c.method === 'terminal.kill').length, 0);
+  assert.equal(h.removes().length, 0); assert.equal(h.terminal.state, 'live');
 });

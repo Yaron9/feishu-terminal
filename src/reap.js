@@ -106,8 +106,10 @@ export class Reap {
         if (!this.eligible(fresh) || this.fingerprint(fresh) !== fingerprint) { this.ready.delete(terminal.pane_id); return; }
         const { read } = await hc.read(terminal.pane_id, { source: 'visible' });
         if (detectMenu(read.text).kind) { this.ready.delete(terminal.pane_id); return; }
+        const binding = b.store.forPane(terminal.pane_id);
         const record = { paneId: terminal.pane_id, terminalId: terminal.terminal_id,
-          cli: lookupCli(fresh).cli, fingerprint, attempts: 0, phase: 'waiting' };
+          cli: lookupCli(fresh).cli, sessionId: binding?.sessionId, sessionSource: binding?.sessionSource,
+          cwd: binding?.cwd, fingerprint, attempts: 0, phase: 'waiting' };
         await b.store.transaction(data => { (data.reaps ??= []).push(record); });
         await this.finish(record, hc);
       });
@@ -137,6 +139,7 @@ export class Reap {
   async finish(record, hc) {
     const b = this.bridge, row = CLI_TABLE.find(row => row.cli === record.cli);
     if (!row || b.stopped) return;
+    let closed = false;
     for (;;) {
       let terminal;
       try { terminal = await hc.inspect(record.paneId); }
@@ -154,6 +157,11 @@ export class Reap {
         // hc itself refuses rm of a live terminal; an ambiguous rm can safely
         // be reconciled by inspecting the same identity on the next tick.
         await hc.remove(record.paneId); await this.complete(record); return;
+      }
+      if (record.attempts >= 1 && terminal.state === 'live' && !lookupCli(terminal) &&
+          terminal.foreground?.pid != null && terminal.foreground.pid === terminal.pid) {
+        if (closed) return;
+        await hc.close(record.paneId); closed = true; continue;
       }
       if (!this.eligible(terminal) || this.fingerprint(terminal) !== record.fingerprint) { await this.forget(record); return; }
       if (record.phase === 'signalling' || record.attempts >= row.exit.maxAttempts) return;
@@ -178,7 +186,16 @@ export class Reap {
   }
   async complete(record) {
     const b = this.bridge, binding = b.store.forPane(record.paneId);
-    if (binding?.identity?.terminalId === record.terminalId && b.registry.get(binding.chatId)) await b.wake.dormant(binding);
+    if (binding?.identity?.terminalId === record.terminalId && b.registry.get(binding.chatId)) {
+      await b.store.transaction(data => {
+        const item = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
+        if (!b.sameGeneration(binding, item) || item.identity?.terminalId !== record.terminalId) return;
+        for (const key of ['cli', 'sessionId', 'sessionSource', 'cwd'])
+          if (record[key] !== undefined) item[key] = record[key];
+        item.sessionVerified = item.sessionSource === 'verified';
+      });
+      await b.wake.dormant(binding);
+    }
     await this.forget(record);
   }
 }

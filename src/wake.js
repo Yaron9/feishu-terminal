@@ -33,6 +33,7 @@ export class Wake {
     await b.store.transaction(data => {
       const item = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
       if (!b.sameGeneration(binding, item)) return;
+      if (data.reaps?.some(record => record.paneId === item.paneId)) return;
       const changed = facts.cli !== item.cli || facts.cwd !== item.cwd;
       let id = changed ? null : item.sessionId, source = changed ? null : item.sessionSource;
       if (facts.cli === 'claude') {
