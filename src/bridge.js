@@ -1263,12 +1263,12 @@ export class Bridge {
     if (this.turnMode(binding) && binding.turn && !this.screenFallback(binding) && !(state.menu?.kind && !binding.inputTranscriptSeen && binding.inputInteraction)) return this.sessionCard(turnCard({
       turn: binding.turn, tip, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible,
       suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding);
-    if (this.screenFallback(binding) && binding.turn) {
+    if (this.screenFallback(binding)) {
       const row = lookupCli(pane), lines = stripChrome(state.visible).split('\n').filter(line => line.trim() && !(row?.footerPatterns ?? []).some(pattern => pattern.test(line)));
       const counts = new Map();
       for (const line of (binding.inputScreen ?? '').split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
       const diff = lines.filter(line => { const n = counts.get(line) ?? 0; if (!n) return true; counts.set(line, n - 1); return false; });
-      const card = renderSchema(this.sessionCard(turnCard({ turn: { ...binding.turn, text: (diff.length ? diff : lines).join('\n') }, topicId: binding.topicId, nonce, screen: state.visible, suppressMenu: true, tip, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
+      const card = renderSchema(this.sessionCard(turnCard({ turn: { agent: ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' }[state.agent] ?? 'Claude'), status: state.status, ...binding.turn, text: (diff.length ? diff : lines).join('\n') }, topicId: binding.topicId, nonce, screen: state.visible, suppressMenu: true, tip, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
       if (binding.menuSelected && !binding.inputTranscriptSeen) card.body.elements.unshift({ tag: 'markdown', content: `已选择：${binding.menuSelected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
       return card;
     }

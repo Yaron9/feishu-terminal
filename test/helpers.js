@@ -128,7 +128,7 @@ export function mockFeishu(now) {
 // and explicit screen cards are deliberately excluded from output assertions.
 export function outputReplies(feishu) {
   return feishu.calls.filter(c => c.type === 'reply' && (c.msgType === 'text' ||
-    (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content))))
+    (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content) && !/<font color='grey'>(?:w\d+:p\d+|hc:[^<]+)<\/font>/.test(c.content.body.elements.at(-1)?.content ?? ''))))
     .map(c => {
       if (c.msgType === 'text') return c;
       const elements = c.content.body.elements;

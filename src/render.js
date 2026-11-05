@@ -181,7 +181,7 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
   });
   const failed = ['error', 'failed', 'frozen'].includes(turn.status);
   const activity = failed ? '出错' : turn.settled ? (running.length ? `本轮完成 · 后台 ${running.length} 个任务运行中` : '已完成') : blocked ? '等待你确认' : '工作中';
-  const contextual = failed ? RECOVERY_TIP : blocked ? '' :
+  const contextual = turn.status === 'frozen' ? RECOVERY_TIP : failed || blocked ? '' :
     turn.truncated || turn.toolsTruncated || Array.from(preview).length > 1500 ? CLIPPED_TIP : tip;
   if (contextual) elements.push(tipLine(contextual));
   return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
@@ -242,13 +242,13 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
     });
   }
   const shell = agent === null || (agent === undefined && status === 'unknown');
-  const activity = shell ? (status === 'working' ? '运行中' : '空闲') :
+  const activity = shell ? (status === 'blocked' ? '等待你确认' : status === 'working' ? '运行中' : '空闲') :
     ({ working: '工作中', idle: '空闲', done: '已完成', blocked: '等待你确认', error: '出错', failed: '出错' }[status] ?? '状态待更新');
-  if (['error', 'failed', 'frozen'].includes(status)) elements.push(tipLine(RECOVERY_TIP));
+  if (status === 'frozen') elements.push(tipLine(RECOVERY_TIP));
   else if (status !== 'blocked' && clipped) elements.push(tipLine(CLIPPED_TIP));
   if (paneId) elements.push({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(paneId)) }] });
-  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
-    title: { tag: 'plain_text', content: `${shell ? '命令行' : '●'} · ${activity} · ${short(label)}` } }, elements };
+  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: status === 'blocked' ? 'orange' : shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'done' ? 'green' : 'blue',
+    title: { tag: 'plain_text', content: `${shell ? '命令行' : '🤖 ' + ({ claude: 'Claude', 'claude-code': 'Claude', codex: 'Codex', pi: 'Pi' }[String(agent).toLowerCase()] ?? 'Claude')} · ${activity}` } }, elements };
 }
 
 // JSON 2.0: one full-width interactive container per menu item. No text limits:

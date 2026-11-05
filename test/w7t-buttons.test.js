@@ -8,7 +8,7 @@ import { Store } from '../src/store.js';
 import { SessionFollow } from '../src/session-follow.js';
 import { Backends } from '../src/backends/index.js';
 import { HcBackend } from '../src/backends/hc.js';
-import { screenControls } from '../src/render.js';
+import { screenControls, screenCard, turnCard } from '../src/render.js';
 import { sessionTitle } from '../src/topics.js';
 
 test('settled turn picker selection immediately patches and shows screen-only result', async t => {
@@ -220,3 +220,26 @@ test('shell confirmation sends the chosen key and enter', async t => {
   assert.deepEqual(h.keys().at(-1)?.params.keys, ['y', 'enter']);
 });
 
+
+test('screen status headers and error recovery distinguish CLI errors', () => {
+  const error = screenCard({ agent: 'pi', status: 'error', text: 'Error: failed', suppressMenu: true });
+  assert.equal(error.header.title.content, '🤖 Pi · 出错');
+  assert.doesNotMatch(JSON.stringify(error), /终端已变化/);
+  assert.doesNotMatch(JSON.stringify(turnCard({ turn: { agent: 'Pi', status: 'error', text: 'Error: failed' } })), /终端已变化/);
+  assert.match(JSON.stringify(screenCard({ agent: 'pi', status: 'frozen', text: 'gone' })), /终端已变化/);
+  const shell = screenCard({ agent: null, status: 'blocked', text: 'continue (y/n):', suppressMenu: true });
+  assert.equal(shell.header.title.content, '命令行 · 等待你确认');
+  assert.equal(shell.header.template, 'orange');
+});
+
+test('first prompt screen fallback removes baseline and footer without a turn', async t => {
+  const h = await legacyHarness(t, { adapters: {} }), pane = h.fake.create();
+  Object.assign(pane, { agent: 'pi', agent_status: 'error', visible: 'Research Workflows\nold' });
+  await h.bridge.handle(message('/t open w1:p1', 'open'));
+  const b = h.bridge.store.forPane('w1:p1'), state = h.bridge.state(b);
+  Object.assign(b, { inputInteraction: 'i', cardInteraction: 'i', cardId: 'c', lastInputAt: h.now() - 4000, inputScreen: 'Research Workflows\nold', inputTranscriptSeen: false, turn: null });
+  Object.assign(state, { transcriptSource: 'fixture', agent: 'pi', status: 'error', visible: 'Research Workflows\nold\nhey\nError: not_found_error\n12%/model • model', menu: {} });
+  const card = h.bridge.interactionCard(b, pane, 'nonce', false), text = JSON.stringify(card);
+  assert.match(text, /hey/); assert.match(text, /not_found_error/); assert.doesNotMatch(text, /Research Workflows|12%\/model|终端已变化/);
+  assert.equal(card.header.title.content, '🤖 Pi · 出错');
+});

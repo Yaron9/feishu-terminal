@@ -70,7 +70,7 @@
       "template": "blue",
       "title": {
         "tag": "plain_text",
-        "content": "● · 工作中 · 项目 · Claude"
+        "content": "🤖 Claude · 工作中"
       }
     },
     "elements": [
@@ -98,7 +98,7 @@
       "template": "orange",
       "title": {
         "tag": "plain_text",
-        "content": "● · 等待你确认 · 项目 · Claude"
+        "content": "🤖 Claude · 等待你确认"
       }
     },
     "elements": [

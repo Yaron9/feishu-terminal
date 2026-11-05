@@ -70,7 +70,7 @@
       "template": "blue",
       "title": {
         "tag": "plain_text",
-        "content": "● · 工作中 · 项目 · Claude"
+        "content": "🤖 Claude · 工作中"
       }
     },
     "elements": [
@@ -98,7 +98,7 @@
       "template": "orange",
       "title": {
         "tag": "plain_text",
-        "content": "● · 等待你确认 · 项目 · Claude"
+        "content": "🤖 Claude · 等待你确认"
       }
     },
     "elements": [
@@ -629,11 +629,6 @@
               "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
             }
           ]
-        },
-        {
-          "tag": "markdown",
-          "content": "<font color='grey'>终端已变化，请重新 /t ls</font>",
-          "text_size": "notation"
         }
       ]
     }
@@ -730,7 +725,7 @@
       "template": "grey",
       "title": {
         "tag": "plain_text",
-        "content": "命令行 · 空闲 · 项目命令行"
+        "content": "命令行 · 空闲"
       }
     },
     "elements": [
@@ -758,7 +753,7 @@
       "template": "grey",
       "title": {
         "tag": "plain_text",
-        "content": "命令行 · 运行中 · 项目命令行"
+        "content": "命令行 · 运行中"
       }
     },
     "elements": [
@@ -786,7 +781,7 @@
       "template": "blue",
       "title": {
         "tag": "plain_text",
-        "content": "● · 空闲 · 项目 · Claude"
+        "content": "🤖 Claude · 空闲"
       }
     },
     "elements": [
@@ -814,7 +809,7 @@
       "template": "green",
       "title": {
         "tag": "plain_text",
-        "content": "● · 已完成 · 项目 · Claude"
+        "content": "🤖 Claude · 已完成"
       }
     },
     "elements": [
@@ -842,18 +837,13 @@
       "template": "red",
       "title": {
         "tag": "plain_text",
-        "content": "● · 出错 · 项目 · Claude"
+        "content": "🤖 Claude · 出错"
       }
     },
     "elements": [
       {
         "tag": "markdown",
         "content": "<font color='red'>错误：连接已断开。</font>"
-      },
-      {
-        "tag": "markdown",
-        "content": "<font color='grey'>终端已变化，请重新 /t ls</font>",
-        "text_size": "notation"
       },
       {
         "tag": "note",

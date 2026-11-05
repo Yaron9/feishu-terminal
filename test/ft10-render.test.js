@@ -37,7 +37,7 @@ test('live preview strips frames, prompts, spinner/status chrome and stays at te
   const card = screenCard({ paneId: 'pane', topicId: 'topic', nonce: 'nonce', text, status: 'idle' });
   const lines = card.elements[0].content.split('```')[1].slice(5).trimEnd().split('\n'); assert.equal(lines.length, 10);
   assert.equal(lines[0], 'line 10'); assert.equal(lines.at(-1), 'line 19');
-  assert.match(card.header.title.content, /● · 空闲/);
+  assert.match(card.header.title.content, /🤖 Claude · 空闲/);
   assert.ok(!JSON.stringify(assistantCard('<at id=all>all</at>')).includes('<at'));
   assert.ok(!JSON.stringify(userCard('<at id=all>all</at>')).includes('<at'));
 });

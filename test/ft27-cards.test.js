@@ -112,7 +112,7 @@ test('blocked/menu cards show only their button explanation; errors/frozen state
   assert.doesNotMatch(text(menu), /\/t /);
   for (const status of ['error', 'failed', 'frozen']) {
     for (const card of [turnCard({ turn: turn({ status, truncated: true }), tip: WELCOME_TIP }), screenCard({ text: 'bad', status })]) {
-      assert.ok(text(card).includes(RECOVERY_TIP));
+      assert.equal(text(card).includes(RECOVERY_TIP), status === 'frozen');
       assert.ok(!text(card).includes(CLIPPED_TIP));
     }
   }
