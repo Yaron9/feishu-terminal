@@ -40,6 +40,7 @@ export function createBridge({ config, transport, registry, backends, storeFile,
         await core.start(options);
       })();
     },
+    deliver: options => core ? core.deliver(options) : Promise.reject(new Error('Bridge not started')),
     handle: raw => dispatch(raw, true),
     // Standalone ACK path: wait for durable admission, then execute on core queues.
     accept: raw => dispatch(raw, false),

@@ -3,8 +3,9 @@ import { cardVersion, renderSchema, patchStoredCard, retirementCard } from './ca
 import { backgroundView, screenActivity, refreshBackgroundTails } from './transcripts/background.js';
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, menuElements, withSessionHeader, engineCard, engineResultCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, userCard, menuCard, menuElements, withSessionHeader, engineCard, engineResultCard } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
@@ -52,6 +53,7 @@ export class Bridge {
     this.sessionFollow.backend = this.backend;
     this.wake = new Wake(this, wakeOptions);
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
+    this.deliveryChains = new Map(); this.deliveryEvents = new EventEmitter().setMaxListeners(0);
     this.queues = new Map(); this.runtime = new Map(); this.pendingInputs = new Map(); this.stopped = false;
     this.reap = new Reap(this, reapOptions);
     this.registry = registry ?? createConfigRegistry(config);
@@ -89,6 +91,56 @@ export class Bridge {
     this.queues.set(key, tail);
     tail.then(() => { if (this.queues.get(key) === tail) this.queues.delete(key); });
     return result;
+  }
+  // One delivery per topic is in flight at a time (the chain below), so the
+  // first turn that starts after the send is unmistakably this input's turn.
+  // The turn id read at send time, not a wall clock, is that boundary: turnChunks
+  // mints a fresh id for the delivered input, so it never equals the old one.
+  deliver({ chatId, topicId, text, from, timeoutMs = 30 * 60e3 } = {}) {
+    const key = JSON.stringify([chatId, topicId]);
+    const run = () => new Promise((resolve, reject) => {
+      let sent = false, oldTurn = null, submitting = false, finished = false;
+      const fail = code => Object.assign(new Error(code), { code });
+      const finish = (error, result) => {
+        if (finished) return;
+        finished = true; clearTimeout(timer);
+        this.deliveryEvents.off('tick', check);
+        this.deliveryEvents.off('turnSettled', settled);
+        if (error) reject(error); else resolve(result);
+      };
+      const busy = binding => Boolean(binding.turn && !binding.turn.settled) ||
+        Boolean(binding.queuedInputs?.length) || Boolean(binding.outputBatch);
+      const settled = event => {
+        if (!sent || !event.text?.trim() || event.chatId !== chatId || event.topicId !== topicId || event.turnId === oldTurn) return;
+        finish(null, { answer: event.text, sessionId: event.sessionId ?? null });
+      };
+      // An earlier open turn is waited out, never taken as this answer.
+      const check = () => {
+        if (finished || sent || submitting) return;
+        submitting = true;
+        this.enqueue(async () => {
+          if (finished) return;
+          const binding = this.store.binding(chatId, topicId);
+          if (!binding) throw fail('no_topic');
+          if (busy(binding)) return;
+          oldTurn = binding.turn?.id ?? null; sent = true;
+          const action = { type: 'input', text: `[来自 ${from}]\n${text}` };
+          await this.feishu.reply(topicId, userCard(action.text), 'interactive');
+          // The Feishu reply path: dormant topics wake and resume, live ones type.
+          if (binding.dormant || binding.wakePending) await this.wake.route(binding, action);
+          else await this.input(binding, action.text);
+        }, topicId).catch(error => finish(error)).finally(() => { submitting = false; });
+      };
+      const timer = setTimeout(() => finish(fail('timeout')), timeoutMs);
+      this.deliveryEvents.on('tick', check);
+      this.deliveryEvents.on('turnSettled', settled);
+      check();
+    });
+    const task = (this.deliveryChains.get(key) ?? Promise.resolve()).catch(() => {}).then(run);
+    this.deliveryChains.set(key, task);
+    const forget = () => { if (this.deliveryChains.get(key) === task) this.deliveryChains.delete(key); };
+    task.then(forget, forget);
+    return task;
   }
   reportFailure(operation, error) {
     // verify() has already proved closure and made the binding dormant.
@@ -1333,6 +1385,7 @@ export class Bridge {
   }
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
+    this.deliveryEvents.emit('tick');
     this.tickPending = true;
     this.observeTick = (this.observeTick ?? 0) + 1;
     return (async () => {
@@ -1907,6 +1960,13 @@ export class Bridge {
         state.cardRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.cardFailures - 1));
         throw error;
       }
+      // A settled turn card is published: the answer of a waiting delivery is
+      // this turn's final assistant text.
+      const publishedTurn = this.store.binding(binding.chatId, binding.topicId);
+      if (pending.turnId && publishedTurn?.turn?.settled && pending.turnId === publishedTurn.turn.id &&
+          pending.signature === turnSignature(publishedTurn.turn))
+        this.deliveryEvents.emit('turnSettled', { chatId: binding.chatId, topicId: binding.topicId,
+          text: publishedTurn.turn.text, sessionId: publishedTurn.sessionId, turnId: publishedTurn.turn.id });
       state.cardFailures = 0; state.cardRetryAt = 0;
       state.lastCard = this.now(); state.signature = pending.signature; state.blockedNotice = false;
       // A retry must keep its fixed payload/UUID, then catch up with identity
