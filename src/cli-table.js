@@ -83,6 +83,22 @@ export const CLI_TABLE = Object.freeze([
   { cli: 'pi', launch: 'pi', instructions: '--append-system-prompt {file}', footerPatterns: [/^\s*\d+(?:\.\d+)?%\/\S+.*(?:model|•)/i], agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
 ]);
 for (const row of CLI_TABLE) row.menuScreen = menuScreen;
+
+// The launch command is a `line` that herdr-core runs via cmd.exe on Windows
+// (`%COMSPEC% /d /s /c`) and `sh -c` elsewhere. Only double quotes group an
+// argument in cmd.exe; Windows paths cannot contain `"`, so no escaping is
+// needed there. POSIX keeps single quotes and the standard `'\''` escape.
+export function shellQuote(value) {
+  return process.platform === 'win32' ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+// The row's instructions template, applied only when the file really exists.
+// Rows without `instructions` (codex, claude) are never modified: their
+// persona comes from AGENTS.md/CLAUDE.md in the cwd.
+export async function instructionsArg(row, file) {
+  if (!row?.instructions || !file) return null;
+  try { await stat(file); } catch { return null; }
+  return row.instructions.replace('{file}', shellQuote(file));
+}
 export function lookupCli(terminal) {
   const fields = [terminal?.agent, terminal?.status?.app].filter(v => typeof v === 'string').map(v => v.toLowerCase());
   return CLI_TABLE.find(row => fields.some(field => row.agents.includes(field))) ?? null;

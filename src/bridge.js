@@ -329,6 +329,7 @@ export class Bridge {
     // it must stay unique and durable so a restart never rejects the state.
     await this.store.bind({ chatId: event.chatId, topicId, paneId: `pending:${topicId}`, identity: null,
       ...root.session, cliCommand: row.launch, freshLaunch: true, dormant: true,
+      instructionsFile: group?.instructionsFile ?? null,
       queuedInputs: [{ id: randomUUID(), type: 'input', text: action.text }],
       topicRoot: root.metadata, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);

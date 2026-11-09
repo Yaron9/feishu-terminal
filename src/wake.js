@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CLI_TABLE, lookupCli, sameCwd } from './cli-table.js';
+import { CLI_TABLE, lookupCli, sameCwd, instructionsArg } from './cli-table.js';
 import { screenCard } from './render.js';
 import { topicTitle } from './topics.js';
 
@@ -151,7 +151,12 @@ export class Wake {
           } catch (error) { if (!ended(error)) throw error; }
         }
         await b.updateGeneration(binding, { wakeAttempt: { phase: 'launching', at: b.now() } });
-        terminal = await b.backend.backends.get('hc').create(binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : (binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli), binding.cwd,
+        // The persona file is re-passed on every launch, including resumes:
+        // pi applies --append-system-prompt only for the lifetime of the process.
+        // The binding copy wins so a restart keeps the file the topic was created with.
+        const instructions = await instructionsArg(row, binding.instructionsFile ?? b.registry.get(binding.chatId)?.instructionsFile);
+        const command = binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : (binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli);
+        terminal = await b.backend.backends.get('hc').create(instructions ? `${command} ${instructions}` : command, binding.cwd,
           { labels: { 'ft.woken': '1', ...(binding.sessionId ? { session: binding.sessionId } : {}) }, ...(parentId ? { parent: parentId } : {}) });
         await b.store.transaction(data => { (data.createdTerminals ??= []).push(terminal.terminal_id); });
       }
