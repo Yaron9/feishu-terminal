@@ -269,6 +269,7 @@ test('piSessionDir maps a cwd to the pi session directory name', () => {
   assert.equal(piSessionDir('/private/tmp'), '--private-tmp--');
   assert.equal(piSessionDir('/Users/example/AGI/MetaMe'), '--Users-example-AGI-MetaMe--');
   assert.equal(piSessionDir('/Users/example/'), '--Users-example--');
+  assert.equal(piSessionDir('D:\\work\\superagent-ft\\work\\live-w16s3\\cwd'), '--D--work-superagent-ft-work-live-w16s3-cwd--');
   assert.equal(piSessionDir(''), null);
   assert.equal(piSessionDir('/'), null);
 });

@@ -26,7 +26,7 @@ export function piItems(record, offset = 0) {
 // to the current session directory instead of walking every historical one.
 export const piSessionDir = cwd => {
   if (typeof cwd !== 'string' || !cwd) return null;
-  const name = cwd.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\//g, '-');
+  const name = cwd.replace(/^[\\/]+/, '').replace(/[\\/]+$/, '').replace(/[:\\/]/g, '-');
   return name ? `--${name}--` : null;
 };
 const escapeRegExp = source => String(source).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
