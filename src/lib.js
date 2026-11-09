@@ -41,6 +41,10 @@ export function createBridge({ config, transport, registry, backends, storeFile,
       })();
     },
     deliver: options => core ? core.deliver(options) : Promise.reject(new Error('Bridge not started')),
+    bindingForPane: paneId => {
+      const binding = core?.store.forPane(paneId);
+      return binding ? { chatId: binding.chatId, topicId: binding.topicId, member: binding.member ?? null } : null;
+    },
     handle: raw => dispatch(raw, true),
     // Standalone ACK path: wait for durable admission, then execute on core queues.
     accept: raw => dispatch(raw, false),

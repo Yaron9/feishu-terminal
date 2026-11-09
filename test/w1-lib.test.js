@@ -59,6 +59,11 @@ test('public bridge isolates two groups, topics, group cwd, picker actions and o
   const [one, two] = state.list();
   assert.equal(one.chatId, 'oc_test1'); assert.equal(two.chatId, 'oc_test2');
   assert.notEqual(one.topicId, two.topicId); assert.notEqual(one.paneId, two.paneId);
+  assert.deepEqual(h.bridge.bindingForPane(one.paneId), { chatId: one.chatId, topicId: one.topicId, member: null });
+  assert.equal(h.bridge.bindingForPane('hc:missing'), null);
+  const detached = h.bridge.bindingForPane(one.paneId);
+  detached.topicId = 'mutated';
+  assert.equal(h.bridge.bindingForPane(one.paneId).topicId, one.topicId);
   assert.deepEqual(h.fake.calls.filter(c => ['workspace.create', 'tab.create'].includes(c.method)).map(c => c.params.cwd),
     [h.config.groups.oc_test1.cwd, h.config.groups.oc_test2.cwd]);
   const writeCount = () => h.fake.calls.filter(c => c.method === 'pane.send_text').length;
