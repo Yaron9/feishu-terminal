@@ -15,7 +15,23 @@
 //       history up to a known prompt offset).
 import { homedir } from 'node:os';
 import { readdir, stat, open, readFile, lstat } from 'node:fs/promises';
+import { join as pathJoin, posix } from 'node:path';
 import { createHash } from 'node:crypto';
+
+// One `hc exec --on m node -e ...` program that lists directories, stats files
+// and prints the home directory as JSON/plain text. It is run with argv (no
+// shell) so argument quoting cannot leak into the command line.
+const STAT_SCRIPT = `const fs = require('fs');
+const [cmd, arg] = process.argv.slice(1);
+if (cmd === 'list') {
+  const entries = fs.readdirSync(arg, { withFileTypes: true });
+  process.stdout.write(JSON.stringify(entries.map(e => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }))));
+} else if (cmd === 'stat') {
+  const s = fs.statSync(arg);
+  process.stdout.write(JSON.stringify({ isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, dev: s.dev, ino: s.ino, birthtimeMs: s.birthtimeMs }));
+} else if (cmd === 'home') {
+  process.stdout.write(require('os').homedir());
+}`;
 
 const WINDOW = 1024 * 1024;
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -29,6 +45,7 @@ export function localFiles({ home = homedir() } = {}) {
   }
   return {
     home,
+    join: (...parts) => pathJoin(...parts),
     async list(dir) {
       const entries = await readdir(dir, { withFileTypes: true });
       return entries.map(entry => ({ name: entry.name, isDirectory: entry.isDirectory(), isFile: entry.isFile() }));
@@ -76,6 +93,57 @@ export function localFiles({ home = homedir() } = {}) {
         offset += start;
         return { lines, cursor: { identity, offset, skip, anchor: await anchor(offset) } };
       } finally { await file.close(); }
+    },
+  };
+}
+
+// A port over another machine's files, through the hc core that ft already
+// talks to. `client` is the hc backend's client (src/backends/hc.js HcClient);
+// every read is one RPC, and `hc file read` is line based, so the cursor is a
+// line number per file rather than a byte offset.
+export function hcFiles(machine, client) {
+  const decode = b64 => Buffer.from(b64 ?? '', 'base64').toString('utf8');
+  const execNode = async argv => {
+    const result = await client.request('machine.exec', { argv, on: machine });
+    if (result.code !== 0) {
+      const error = new Error(decode(result.stderr) || 'hc_exec_failed');
+      error.code = 'hc_exec_failed'; throw error;
+    }
+    return decode(result.stdout);
+  };
+  let homePromise;
+  const home = () => { homePromise ??= execNode(['node', '-e', STAT_SCRIPT, 'home']); return homePromise; };
+  return {
+    get home() { return home(); },
+    join: (...parts) => posix.join(...parts),
+    async list(dir) { return JSON.parse(await execNode(['node', '-e', STAT_SCRIPT, 'list', dir])); },
+    async stat(path) { return JSON.parse(await execNode(['node', '-e', STAT_SCRIPT, 'stat', path])); },
+    async readFile(path) { return (await client.request('file.read', { path, on: machine })).text; },
+    async seek(path, position) { return { offset: position }; },
+    async readFrom(path, cursor, { end = false, onReset = () => {} } = {}) {
+      let position = cursor?.offset ?? 1;
+      if (end) {
+        // Total line count without fetching any content: start just past EOF.
+        const probe = await client.request('file.read', { path, on: machine, offset: 1, limit: 0 });
+        return { lines: [], cursor: { offset: probe.lines + 1 } };
+      }
+      let result;
+      try {
+        result = await client.request('file.read', { path, on: machine, offset: position });
+      } catch (error) {
+        // offset past EOF: an append-only session has no new lines yet. Never
+        // re-read the whole file; keep the cursor where it is.
+        if (error.code === 'invalid_params' && position > 1) return { lines: [], cursor };
+        throw error;
+      }
+      const { text, first, last } = result;
+      // A trailing partial line at EOF must be reread once it is completed.
+      const partialTrailing = last >= first && text !== '' && !text.endsWith('\n');
+      let parts = text === '' ? [] : text.split('\n');
+      if (text.endsWith('\n')) parts = parts.slice(0, -1);
+      const entries = parts.map((line, i) => ({ text: line, position: first + i }));
+      const next = partialTrailing ? last : (last >= first ? last + 1 : position);
+      return { lines: entries, cursor: { offset: next } };
     },
   };
 }

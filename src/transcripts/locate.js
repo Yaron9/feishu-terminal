@@ -1,11 +1,10 @@
-import { join, basename } from 'node:path';
+import { basename } from 'node:path';
 import { sameCwd, resumeSessionId, CLI_TABLE } from '../cli-table.js';
 import { echoIndex, inputHash } from '../input-echo.js';
 import { readJsonl, cursorAt } from './jsonl.js';
 
 const validId = id => typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id);
 export async function locateSession(files, pane, binding, bindings, sessions, config, now = Date.now()) {
-    if (/^hc:[^/]+\//.test(pane.pane_id ?? '')) return null;
     const root = config.root;
     const held = new Set(bindings.filter(b => b.topicId !== binding.topicId || b.chatId !== binding.chatId).map(b => b.transcript?.path).filter(Boolean));
     const saved = binding.transcript?.adapter === config.key && binding.transcript.path;
@@ -39,7 +38,7 @@ export async function locateSession(files, pane, binding, bindings, sessions, co
     const walk = async (dir, depth) => {
       let entries; try { entries = await files.list(dir); } catch { return; }
       for (const entry of entries) {
-        const file = join(dir, entry.name);
+        const file = files.join(dir, entry.name);
         if (depth && entry.isDirectory && config.directory(entry.name)) { await walk(file, depth - 1); continue; }
         if (depth || !entry.isFile || !config.file(entry.name) || held.has(file) || (!savedValid && id && !config.matchesId(entry.name, id))) continue;
         try {

@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import { localFiles } from './files.js';
 import { readJsonl } from './jsonl.js';
 import { locateSession } from './locate.js';
@@ -49,7 +48,7 @@ export class CodexTranscript {
   async locate(pane, binding = {}, bindings = [], now) {
     const home = await this.files.home;
     return locateSession(this.files, pane, binding, bindings, this.sessions, {
-      key: 'codex', root: join(home, '.codex', 'sessions'), depth: 3,
+      key: 'codex', root: this.files.join(home, '.codex', 'sessions'), depth: 3,
       directory: name => /^\d+$/.test(name), file: name => /^rollout-.*\.jsonl$/.test(name),
       matchesId: (name, id) => name.endsWith(`-${id}.jsonl`),
       meta: r => r.type === 'session_meta' ? { id: r.payload?.session_id ?? r.payload?.id, cwd: r.payload?.cwd, timestamp: r.timestamp ?? r.payload?.timestamp } : null,
