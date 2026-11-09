@@ -38,8 +38,11 @@ export class Wake {
     const ownInputs = (current.sentInputs ?? []).filter(input => current.identity?.terminalId && input.terminalId === current.identity.terminalId);
     let sentMatch = null;
     if (!facts.sessionVerified && !soleTerminal && !current.sessionId && !current.dormant && !current.wakePending && !current.wakeAttempt && ownInputs.length) {
+      const cache = state.sentTextCandidates ??= new Map();
       for (const candidate of facts.probeCandidates ?? []) {
-        if (await b.sessionFollow.sentTextMatch(candidate, ownInputs)) { sentMatch = candidate.sessionId; break; }
+        if (!candidate.source) continue;
+        if (!cache.has(candidate.source)) cache.set(candidate.source, b.sessionFollow.sentTextMatch(candidate, ownInputs));
+        if (await cache.get(candidate.source)) { sentMatch = candidate.sessionId; break; }
       }
     }
     await b.store.transaction(data => {
