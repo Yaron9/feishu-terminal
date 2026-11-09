@@ -5,6 +5,21 @@ const hint = /(?:esc(?:ape)?\s+to\s+(?:cancel|close|exit|go back)|[↑↓]\s*(?:
 const titleHint = /(?:resume\s+session|select\s+(?:a\s+)?(?:model|session|option)|choose|settings|configuration|config|permission|allow|confirm|proceed|do you|would you|选择|设置|恢复会话|是否|确认|允许)/i;
 const chrome = value => !value || /^[\s─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝+\-↑↓]+$/u.test(value) || /[⌕🔍]|search…|search\.\.\./i.test(value);
 const numbered = line => /^\s*(?:[❯›>│┃║]\s*)?([1-9])[.)、．）]\s*(\S.*)$/u.exec(line);
+// Claude's rating survey puts every option on one row at the idle prompt:
+// `1: Bad    2: Fine   3: Good   0: Dismiss`. Keys are printed per option, so
+// they need not start at 1 and may include 0.
+const inlineRow = line => {
+  const parts = line.trim().split(/\s{2,}/);
+  if (parts.length < 2) return null;
+  const items = [];
+  for (const part of parts) {
+    const match = /^(\d)[:：.．、）)]\s*(\S.*?)\s*$/u.exec(part.trim());
+    const label = match?.[2]?.replace(/[|｜]+$/, '').trim();
+    if (!label || Array.from(label).length > 24 || /\s{2,}/u.test(label)) return null;
+    items.push({ key: match[1], label });
+  }
+  return new Set(items.map(item => item.key)).size === items.length ? items : null;
+};
 const empty = () => ({ kind: null, title: '', items: [], cursorIndex: -1 });
 const unbox = line => line.replace(/^\s*[│┃║]\s?|\s*[│┃║]\s*$/gu, '').trimEnd();
 
@@ -21,6 +36,29 @@ function contextAbove(lines, question) {
     context.unshift(unbox(lines[index - 1]));
   const text = context.slice(-12).map(line => Array.from(line).slice(0, 300).join('')).join('\n').trim();
   return text ? { context: text } : {};
+}
+
+// A rating prompt asks at an idle pane, where herdr never reports a blocked
+// terminal. The question mark and the option row are the proof, and they must
+// sit at the bottom of the screen: the same row in scrollback is history. Only
+// the input box and the status line may follow it.
+function surveyMenu(lines, last) {
+  const row = lines.findLastIndex(line => inlineRow(line));
+  if (row < 0 || row > last || last - row > 4) return null;
+  for (const line of lines.slice(row + 1, last + 1)) {
+    const value = unbox(line).trim();
+    if (!value || chrome(value) || /^[❯›>→]\s*/.test(value) || /[?？]/.test(value) || numbered(value)) continue;
+    return null;
+  }
+  let index = row - 1;
+  while (index >= 0 && chrome(unbox(lines[index]).trim())) index--;
+  const title = index >= 0 ? unbox(lines[index]).trim() : '';
+  if (!/[?？]/.test(title)) return null;
+  const items = inlineRow(lines[row]).map(item => ({ label: item.label, sublabel: '', key: item.key }));
+  const dismiss = items.find(item => /dismiss|skip|later|忽略|跳过|稍后|取消/i.test(item.label)) ??
+    items.find(item => item.key === '0');
+  return { kind: 'numbered', title: title.replace(/^[●•*]\s*/, ''), ...contextAbove(lines, index),
+    items, cursorIndex: -1, dismissKey: dismiss?.key ?? null };
 }
 
 // Status/output churn is not proof that a different approval is on screen.
@@ -53,12 +91,15 @@ export function detectMenu(text = '', { status, cli } = {}) {
   // A footer above a new prompt belongs to history. Only the bottom live
   // control region can own choices; question punctuation is never evidence.
   const last = lines.findLastIndex(line => !chrome(line.trim()));
+  if (status !== 'working') {
+    const survey = surveyMenu(lines, last);
+    if (survey) return survey;
+  }
   const footer = hintIndex >= 0 && lines.slice(hintIndex + 1).every(line => chrome(line.trim()) || hint.test(line));
   if (hintIndex >= 0 && !footer) return empty();
   const updateMenu = footer && /enter\s+continue\s*·\s*esc\s+skip/i.test(lines[hintIndex]) &&
     lines.some(line => /^\s*Update available\s*·/i.test(line));
   const tableMenu = updateMenu || (lookupCli({ agent: cli })?.menuScreen?.(lines.join('\n')) ?? false);
-  if (status !== undefined && !['blocked', 'waiting'].includes(status) && !tableMenu) return empty();
   let end = footer ? hintIndex : last + 1;
   while (end > 0 && hint.test(lines[end - 1])) end--;
   let bottom = end - 1;
@@ -69,14 +110,19 @@ export function detectMenu(text = '', { status, cli } = {}) {
     if (match) numberRows.unshift({ match, index: i });
     else if (lines[i].trim()) break;
   }
-  if (numberRows.length && numberRows.every((row, i) => Number(row.match[1]) === i + 1)) {
-    const titleIndex = lines.slice(0, numberRows[0].index).findLastIndex(line => !chrome(unbox(line).trim()));
-    const title = titleIndex >= 0 ? unbox(lines[titleIndex]).trim() : '';
+  const numberedRows = numberRows.length > 0 && numberRows.every((row, i) => Number(row.match[1]) === i + 1);
+  const askTitleIndex = numberedRows ? lines.slice(0, numberRows[0].index).findLastIndex(line => !chrome(unbox(line).trim())) : -1;
+  const askTitle = askTitleIndex >= 0 ? unbox(lines[askTitleIndex]).trim() : '';
+  const approval = /permission|allow|confirm|proceed|do you want|would you like|是否|确认|允许/i.test(askTitle);
+  // A prompt that spells out its question and its numbered choices is a menu
+  // even when the pane still reads idle: the screen itself is the evidence.
+  if (status !== undefined && !['blocked', 'waiting'].includes(status) && !tableMenu &&
+      !(approval && numberedRows && status !== 'working')) return empty();
+  if (numberedRows) {
     const cursor = numberRows.some(row => /^\s*[❯›>]/u.test(lines[row.index]));
-    const approval = /permission|allow|confirm|proceed|do you want|would you like|是否|确认|允许/i.test(title);
     const pickerTitle = lines.slice(0, numberRows[0].index).findLastIndex(line => titleHint.test(line) && !hint.test(line));
     if ((cursor || footer) && (approval || (cursor && pickerTitle >= 0) || (cursor && updateMenu))) {
-      return { kind: 'numbered', title, ...contextAbove(lines, titleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '' })),
+      return { kind: 'numbered', title: askTitle, ...contextAbove(lines, askTitleIndex), items: numberRows.map(row => ({ label: row.match[2].replace(/\s*[│┃║]\s*$/u, '').trim(), sublabel: '', key: row.match[1] })),
         cursorIndex: numberRows.findIndex(row => /^\s*[❯›>]/u.test(lines[row.index])) };
     }
   }

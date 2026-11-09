@@ -285,28 +285,36 @@ export function menuCard({ menu, topicId, nonce, menuUI = {}, result, agent = 'C
 }
 
 export function menuElements({ menu, topicId, nonce, menuUI = {}, agent = 'Claude' }) {
-  const controls = menu.kind === 'list' ? menuControls(menu, menuUI) :
-    [...menu.items.map((item, i) => [item.label, String(i + 1)]), ['Esc 取消', 'esc'], ['刷新', 'refresh']];
+  const options = menu.kind === 'list' ? menuControls(menu, menuUI).map(([label, key]) => {
+    const match = /^menu:(?:select|confirm):(\d+)$/.exec(key);
+    return { label, key, index: match ? Number(match[1]) : -1, confirm: key.startsWith('menu:confirm:') };
+  }) : [
+    ...menu.items.map((item, i) => ({ label: item.label, key: item.key ?? String(i + 1), index: i, confirm: false })),
+    { label: 'Esc 取消', key: 'esc', index: -1, confirm: false },
+    { label: '刷新', key: 'refresh', index: -1, confirm: false },
+  ];
   const value = key => ({ topic_id: topicId, nonce, key });
   const elements = [menuPrompt(menu, menuUI, agent)];
-  for (const [label, key] of controls) {
-    const match = /^menu:(?:select|confirm):(\d+)$/.exec(key);
-    const index = match ? Number(match[1]) : menu.kind === 'numbered' && /^\d$/.test(key) ? Number(key) - 1 : -1;
-    if (index < 0) continue;
-    const item = menu.items[index] ?? { label, sublabel: '' };
-    const warning = menuUI.warnings?.[index];
-    const text = (index === menu.cursorIndex ? '▶ ' : '') + literal(item.label) +
+  for (const control of options) {
+    if (control.index < 0) continue;
+    const item = menu.items[control.index] ?? { label: control.label, sublabel: '' };
+    const warning = menuUI.warnings?.[control.index];
+    // Numbered and survey options carry their own key, and the screen shows that
+    // key too: the card has to repeat it, or an option called just "Yes" reads
+    // like a bare confirm button instead of choice 1 of 3.
+    const number = menu.kind === 'numbered' && /^[0-9]$/.test(String(control.key)) ? `${control.key}. ` : '';
+    const text = (control.index === menu.cursorIndex ? '▶ ' : '') + literal(number + item.label) +
       (item.sublabel ? '\n' + "<font color='grey'>" + literal(item.sublabel) + '</font>' : '') +
       (warning?.length ? '\n' + literal('⚠️ 已在 ' + warning.map(w => w.label).join('、') + ' 运行') : '') +
-      (key.startsWith('menu:confirm:') ? '\n**确定恢复**' : '');
+      (control.confirm ? '\n**确定恢复**' : '');
     elements.push({ tag: 'interactive_container', width: 'fill', height: 'auto',
       has_border: true, border_color: 'grey', corner_radius: '8px',
-      behaviors: [{ type: 'callback', value: value(key) }], elements: [markdown(text)] });
+      behaviors: [{ type: 'callback', value: value(control.key) }], elements: [markdown(text)] });
   }
-  for (const [label, key] of controls) {
-    if (/^menu:(?:select|confirm):/.test(key) || (menu.kind === 'numbered' && /^\d$/.test(key))) continue;
-    elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(label, 60) },
-      type: 'default', behaviors: [{ type: 'callback', value: value(key) }] });
+  for (const control of options) {
+    if (control.index >= 0) continue;
+    elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(control.label, 60) },
+      type: 'default', behaviors: [{ type: 'callback', value: value(control.key) }] });
   }
   return elements;
 }
