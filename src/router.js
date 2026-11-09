@@ -20,7 +20,15 @@ export const HELP = '在群里新发一条消息（如 claude 或 cd ~/proj && c
 // Nothing except the exact /t token is reserved. Payload whitespace is data.
 export function route(text, bound = false) {
   if (typeof text !== 'string') return { type: 'error', message: '目前只支持文字消息，请发送文字或命令。' };
-  if (!/^\/t(?:\s|$)/u.test(text)) return { type: bound ? 'input' : 'create', text };
+  if (!/^\/t(?:\s|$)/u.test(text)) {
+    // /engine is an ft command in any context; it must never reach the terminal.
+    // The name (if any) is validated by the bridge against the CLI table.
+    if (/^\/engine(?:\s|$)/iu.test(text)) {
+      const args = text.trim().split(/\s+/u).slice(1);
+      return { type: 'engine', name: args.length ? args.join(' ').toLowerCase() : null };
+    }
+    return { type: bound ? 'input' : 'create', text };
+  }
   const raw = /^\/t\s+raw(?:[ \t]|\r?\n)([\s\S]*)$/u.exec(text);
   if (raw) return bound ? { type: 'raw', text: raw[1] } : { type: 'error', message: '请先发送 /t ls，点 [打开] 进入终端话题。' };
   const parts = text.trim().split(/\s+/u).slice(1);

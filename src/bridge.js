@@ -4,7 +4,7 @@ import { backgroundView, screenActivity, refreshBackgroundTails } from './transc
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, menuElements, withSessionHeader } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, menuCard, menuElements, withSessionHeader, engineCard, engineResultCard } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
@@ -211,6 +211,7 @@ export class Bridge {
         return;
       }
       if (action.type === 'closePicker') { await this.picker.show(event, binding); return; }
+      if (action.type === 'engine') { await this.engine(event, binding, action.name); return; }
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
       if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
       if (action.type === 'create') {
@@ -294,9 +295,11 @@ export class Bridge {
     }
     // A plain root message in a group with a default CLI skips the shell:
     // the topic binds dormant and the wake path launches the CLI directly.
+    // /engine's stored group default wins over the static registry cli.
     // Explicit CLI starts, / commands and the resume migration keep the old path.
     const group = this.registry.get(event.chatId);
-    const defaultRow = group?.cli ? CLI_TABLE.find(row => row.cli === group.cli) : null;
+    const defaultCli = this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
+    const defaultRow = defaultCli ? CLI_TABLE.find(row => row.cli === defaultCli) : null;
     if (defaultRow && !/^\s*(?:codex|claude|pi)(?:\s|$)/i.test(action.text) && !/^\s*\//u.test(action.text)) {
       await this.createDormantTopic(event, action, defaultRow, group); return;
     }
@@ -336,6 +339,128 @@ export class Bridge {
     return { card, session: { cli: row.cli, cwd, sessionId: null, sessionSource: null, sessionTitle: title },
       metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
         publishedSessionId: null, publishedTreeHeader: 'null', createdAt: this.now(), lastAttemptAt: null, stopped: false } };
+  }
+  async setGroupEngine(chatId, cli) {
+    await this.store.transaction(data => { (data.groupEngines ??= {})[chatId] = cli; });
+  }
+  // /engine: without a name, show one action card (current topic CLI, group
+  // default, one button per CLI row). With a name, switch the group default
+  // and the current topic. Unknown names get the valid list as text.
+  async engine(event, binding, name) {
+    const group = this.registry.get(event.chatId);
+    const groupDefault = this.store.data.groupEngines?.[event.chatId] ?? group?.cli ?? null;
+    if (!name) {
+      if (!group || !binding) {
+        await this.feishu.reply(event.topicId, groupDefault ? `本群默认 CLI：${this.agentName(groupDefault)}；这个话题还没有绑定终端。` : '该群没有默认 CLI。');
+        return;
+      }
+      const card = { kind: 'engine', chatId: event.chatId, topicId: event.topicId, inTopic: true,
+        createdAt: this.now(), nonce: randomUUID() };
+      const view = engineCard({ topicId: event.topicId, nonce: card.nonce, current: binding.cli ?? null, group: groupDefault });
+      card.messageId = await this.feishu.reply(event.topicId, view, 'interactive');
+      await this.rememberCard(card.messageId, view, 'engine', card);
+      await this.store.saveActionCard(card, this.now());
+      return;
+    }
+    const row = CLI_TABLE.find(r => r.cli === name);
+    if (!row) {
+      await this.feishu.reply(event.topicId, `未知引擎：${name}。可选：${CLI_TABLE.map(r => r.cli).join('、')}。也可发送 /engine 后点按钮选择。`);
+      return;
+    }
+    await this.switchEngine(event, binding, row);
+  }
+  // Button path: same nonce/ownership checks as other management cards, and
+  // the one-shot consume happens before any state change.
+  async engineButton(event) {
+    const card = this.store.actionCard(event.messageId);
+    const cli = /^engine:([a-z][a-z0-9-]*)$/.exec(event.key ?? '')?.[1];
+    const row = CLI_TABLE.find(r => r.cli === cli);
+    if (!card || card.kind !== 'engine' || card.spent || !row ||
+        card.chatId !== event.chatId || card.topicId !== event.topicId || card.nonce !== event.nonce ||
+        !await this.store.consumeActionCard(card)) {
+      await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效，请重新发送 /engine。'); return;
+    }
+    const binding = this.store.binding(card.chatId, card.topicId);
+    await this.log(event, binding, 'engine_button', cli);
+    await this.switchEngine(event, binding, row, card);
+  }
+  // One switch. The group default is remembered only once the change actually
+  // applies; if the old CLI refuses to exit, nothing is modified. card = the
+  // action card to patch (button path); text commands publish one result card.
+  async switchEngine(event, binding, row, card = null) {
+    const chatId = event.chatId;
+    const previous = binding?.cli ?? this.store.data.groupEngines?.[chatId] ?? this.registry.get(chatId)?.cli ?? null;
+    const done = async (text, ok = true, title) => {
+      const view = engineResultCard(text, ok, title);
+      if (card) await this.patchCard(card.messageId, view, 'engine');
+      else await this.feishu.reply(event.topicId, view, 'interactive');
+    };
+    if (binding && binding.cli === row.cli) {
+      await this.setGroupEngine(chatId, row.cli);
+      await done(`已经是 ${this.agentName(row.cli)}。`, true, '话题引擎');
+      return;
+    }
+    if (binding?.frozen) {
+      await this.setGroupEngine(chatId, row.cli);
+      await done(`已把本群默认引擎设为 ${this.agentName(row.cli)}；这个话题已暂停同步，未做改动。`);
+      return;
+    }
+    if (binding && !binding.dormant && !binding.wakePending) {
+      const hc = this.backend.backends.get('hc');
+      if (!hc || !/^hc:/u.test(binding.paneId ?? '')) { await done('当前终端不在 hc 后端，暂不支持切换引擎。', false); return; }
+      if (!await this.exitEngineCli(binding, hc)) {
+        const running = lookupCli(await hc.inspect(binding.paneId).catch(() => null));
+        await done(`未能退出 ${this.agentName(running?.cli ?? binding.cli ?? '命令行')}，未做任何修改。请稍后重试。`, false);
+        return;
+      }
+    }
+    await this.setGroupEngine(chatId, row.cli);
+    if (!binding) {
+      await done(`✅ 本群默认引擎已设为 ${this.agentName(row.cli)}；这个话题还没有绑定终端，新话题会直接使用。`);
+      return;
+    }
+    // Retarget the topic: the old session stays on disk and stays resumable
+    // via /t; the wake path performs a fresh launch of the new CLI here.
+    if (!await this.updateGeneration(binding, { cli: row.cli, sessionId: null, sessionSource: null, sessionVerified: false,
+      sessionHandoff: null, cliCommand: row.launch, freshLaunch: true, dormant: true, wakePending: false,
+      wakeTarget: null, wakeAttempt: null, wakeCardId: null, unknownSessionNotified: false, needs_check: false,
+      pendingCard: null, pendingMenuCard: null, outputBatch: null, recoveryPending: null })) {
+      throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+    }
+    await done(`✅ 引擎已切换：${previous ? this.agentName(previous) : '命令行'} → ${this.agentName(row.cli)}（本群新话题也用 ${this.agentName(row.cli)}）`);
+    const current = this.store.binding(chatId, binding.topicId);
+    try { await this.wake.ensure(current); }
+    catch (error) { this.reportFailure('engine_wake_failed', error); }
+  }
+  // Retire the CLI that the live terminal actually runs, mirroring reap's
+  // finish(): send that row's exit keys, poll until the CLI is gone, then
+  // close a surviving wrapper shell. Returns false if the CLI never exits.
+  async exitEngineCli(binding, hc, timeoutMs = 15000) {
+    const gone = error => ['not_found', 'pane_not_found'].includes(error.code);
+    const exited = terminal => terminal.terminal_id !== binding.identity?.terminalId || terminal.state !== 'live' || !lookupCli(terminal);
+    let terminal;
+    try { terminal = await hc.inspect(binding.paneId); }
+    catch (error) { if (gone(error)) return true; throw error; }
+    if (terminal.terminal_id !== binding.identity?.terminalId) return true;
+    const row = lookupCli(terminal);
+    if (row) {
+      const deadline = this.now() + timeoutMs;
+      const attempts = Math.max(1, row.exit?.maxAttempts ?? 1);
+      const budget = Math.floor(timeoutMs / attempts);
+      for (let attempt = 0; attempt < attempts && !exited(terminal); attempt++) {
+        await hc.sendKeys(binding.paneId, row.exit.keys);
+        const until = Math.min(deadline, this.now() + budget);
+        while (this.now() < until && !exited(terminal)) {
+          await this.reap.sleep(100);
+          try { terminal = await hc.inspect(binding.paneId); }
+          catch (error) { if (gone(error)) return true; throw error; }
+        }
+      }
+      if (!exited(terminal)) return false;
+    }
+    // CLI gone: close the shell that wrapped it, if one survived.
+    if (terminal.state === 'live') { try { await hc.close(binding.paneId); } catch { /* reap reclaims it later */ } }
+    return true;
   }
   async pointToTopic(event) {
     const pointer = this.store.data.topicPointers?.find(p => p.chatId === event.chatId && p.oldTopicId === event.topicId);
@@ -849,6 +974,7 @@ export class Bridge {
   async button(event, binding) {
     if (event.key?.startsWith('tree:')) { await this.tree.navigate(event, binding); return; }
     if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
+    if (/^engine:[a-z][a-z0-9-]*$/.test(event.key ?? '')) { await this.engineButton(event); return; }
     if (event.key !== 'refresh' && !validKeys([event.key]) && !/^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '')) {
       await this.feishu.reply(event.topicId || event.messageId, '该按钮已停用'); return;
     }

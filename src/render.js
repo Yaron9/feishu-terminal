@@ -1,4 +1,4 @@
-import { lookupCli } from './cli-table.js';
+import { CLI_TABLE, lookupCli } from './cli-table.js';
 import { stripVTControlCharacters } from './ansi.js';
 import { detectMenu, menuControls } from './menus.js';
 import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
@@ -218,6 +218,28 @@ export function pickerCard(card, result) {
   if (!result && card.kind === 'close') elements.unshift(text('仅解绑：话题停止同步，终端继续在 VPS 上运行\n关闭终端：结束终端里的程序（如 Claude 会话），不可恢复'));
   return { config: { wide_screen_mode: true, update_multi: true },
     header: { template: result ? 'grey' : card.kind === 'confirm' ? 'red' : card.kind === 'close' ? 'orange' : 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? `终端列表（共 ${card.entries.length} 个）` : '关闭终端' } }, elements };
+}
+
+// /engine action card: one switch button per CLI table row, same callback
+// shape as picker cards (topic_id + nonce + key), guarded via actionCards.
+export function engineCard({ topicId, nonce, current, group }) {
+  const label = cli => ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' })[String(cli).toLowerCase()] ?? String(cli ?? '');
+  const text = content => ({ tag: 'div', text: { tag: 'plain_text', content } });
+  const actions = CLI_TABLE.map(row => ({ tag: 'button',
+    text: { tag: 'plain_text', content: label(row.cli) + (row.cli === current ? '（当前）' : row.cli === group ? '（本群默认）' : '') },
+    type: row.cli === current ? 'primary' : 'default',
+    value: { topic_id: topicId, nonce, key: `engine:${row.cli}` } }));
+  return { config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: '话题引擎' } },
+    elements: [text(`当前话题 CLI：${current ? label(current) : '未设置'}｜本群默认 CLI：${group ? label(group) : '未设置'}`),
+      { tag: 'action', actions },
+      text('点按钮切换：本话题立即改用新引擎，本群新话题也沿用新引擎。')] };
+}
+// Terminal result of one /engine switch. Exactly one card per prompt, never two.
+export function engineResultCard(text, ok = true, title = ok ? '引擎已切换' : '引擎切换未完成') {
+  return { config: { wide_screen_mode: true, update_multi: true },
+    header: { template: ok ? 'green' : 'red', title: { tag: 'plain_text', content: title } },
+    elements: [{ tag: 'div', text: { tag: 'plain_text', content: text } }] };
 }
 
 export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, output, note, menuUI, suppressMenu = false }) {
