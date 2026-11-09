@@ -190,7 +190,7 @@ export class Wake {
         // The persona file is re-passed on every launch, including resumes:
         // pi applies --append-system-prompt only for the lifetime of the process.
         // The binding copy wins so a restart keeps the file the topic was created with.
-        const instructions = await instructionsArg(row, binding.instructionsFile ?? b.registry.get(binding.chatId)?.instructionsFile);
+        const instructions = await instructionsArg(row, binding.instructionsFile ?? b.registry?.get(binding.chatId)?.instructionsFile);
         const command = binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : (binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli);
         terminal = await b.backend.backends.get('hc').create(instructions ? `${command} ${instructions}` : command, binding.cwd,
           { labels: { 'ft.woken': '1', ...(binding.sessionId ? { session: binding.sessionId } : {}) }, ...(parentId ? { parent: parentId } : {}) });
