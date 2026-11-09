@@ -115,7 +115,7 @@ test('codex and claude launches are unchanged even with an instructionsFile', as
   const dir = await mkdtemp(join(process.cwd(), '.test-w16s3-file-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'persona.md'); await writeFile(file, 'persona');
-  for (const [cli, line] of [['codex', 'codex --no-daemon'], ['claude', 'claude']]) {
+  for (const [cli, line] of [['codex', CLI_TABLE.find(row => row.cli === 'codex').launch], ['claude', 'claude']]) {
     const h = await harness(t, { groupCli: cli, instructionsFile: file });
     h.onRun = term => h.ready(term, 'idle', cli);
     await h.bridge.handle(message('hello', `root-${cli}`));
@@ -141,7 +141,7 @@ async function wakeFixture(t, { bindingInstructionsFile, registryInstructionsFil
     registry: { get: () => ({ instructionsFile: registryInstructionsFile }) },
     backend: { backends: new Map([['hc', { list: async () => [], create: async line => { command = line; return terminal; } }]]),
       identity: () => ({ terminalId: 'new' }), get: async () => terminal },
-    runtime: new Map(), verify: async () => {}, resubscribe: () => {}, input: async () => true, writeInput: async () => {} };
+    runtime: new Map(), verify: async () => {}, resubscribe: () => {}, input: async (_binding, _text, _a, _b, claim) => { await claim(); return true; }, writeInput: async () => {} };
   await new Wake(b).ensure(store.list()[0]);
   return command;
 }
