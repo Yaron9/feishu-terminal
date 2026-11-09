@@ -79,7 +79,7 @@ const menuScreen = screen => {
 };
 export const CLI_TABLE = Object.freeze([
   { cli: 'claude', launch: 'claude', footerPatterns: [/^\s*⏵⏵.*(?:mode|interrupt)/i, /^\s*\? for shortcuts/i], agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
-  { cli: 'codex', launch: 'codex --no-daemon', backgroundScreen: /\b[1-9]\d* background terminals? running\b/i, footerPatterns: [/^\s*\? for shortcuts(?:\s|$)/i, /^\s*[^\n]*\s·\s(?:[A-Za-z]:[\\/]|~[\\/]|\/).*$/], agents: ['codex'], resume: 'codex resume {id} --no-daemon', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
+  { cli: 'codex', launch: 'codex --no-daemon -c check_for_update_on_startup=false', backgroundScreen: /\b[1-9]\d* background terminals? running\b/i, footerPatterns: [/^\s*\? for shortcuts(?:\s|$)/i, /^\s*[^\n]*\s·\s(?:[A-Za-z]:[\\/]|~[\\/]|\/).*$/], agents: ['codex'], resume: 'codex resume {id} --no-daemon -c check_for_update_on_startup=false', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
   { cli: 'pi', launch: 'pi', instructions: '--append-system-prompt {file}', footerPatterns: [/^\s*\d+(?:\.\d+)?%\/\S+.*(?:model|•)/i], agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
 ]);
 for (const row of CLI_TABLE) row.menuScreen = menuScreen;

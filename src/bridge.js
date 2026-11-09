@@ -309,7 +309,7 @@ export class Bridge {
     const created = this.store.binding(event.chatId, topicId);
     await this.verify(created); this.resubscribe();
     await this.log(event, created, 'first_input', action.text);
-    await this.input(created, action.text);
+    await this.input(created, action.text, false, true);
   }
   async createDormantTopic(event, action, row, group) {
     const root = this.dormantRoot(action.text, row, group?.cwd ?? this.config.defaultCwd);
@@ -797,7 +797,7 @@ export class Bridge {
       return pending.card.header.title.content;
     }, `card:${binding.topicId}`);
   }
-  async input(binding, text, staged = false) {
+  async input(binding, text, staged = false, firstInput = false) {
     this.reap.input(binding.topicId);
     await this.verify(binding);
     if (this.store.binding(binding.chatId, binding.topicId).needs_check && !staged) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
@@ -820,9 +820,10 @@ export class Bridge {
     }
     const { read: inputScreen } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
     const inputInteraction = randomUUID();
+    const current = this.store.binding(binding.chatId, binding.topicId);
     await this.updateGeneration(binding, { lastInputAt: this.now(), inputScreen: stripChrome(inputScreen.text).split('\n').filter(line => line.trim()).join('\n'),
       inputInteraction, inputTranscriptSeen: false, menuSelected: null,
-      ...(binding.firstWakeCardId && binding.firstWakeCardId === binding.cardId ?
+      ...((firstInput && current?.cardId || binding.firstWakeCardId && binding.firstWakeCardId === binding.cardId) ?
         { cardInteraction: inputInteraction, screenCardFresh: false, firstWakeCardId: null } : {}) });
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);

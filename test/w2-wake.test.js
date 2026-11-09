@@ -127,7 +127,7 @@ test('queue and refresh failures retain short causes without upstream messages o
   assert.deepEqual(h.errors, ['bridge_operation_failed Error']);
 });
 
-for (const [cli, ready, command] of [['pi', 'done', 'pi --session same'], ['codex', 'idle', 'codex resume same --no-daemon'], ['claude', 'idle', 'claude --resume same']]) {
+for (const [cli, ready, command] of [['pi', 'done', 'pi --session same'], ['codex', 'idle', 'codex resume same --no-daemon -c check_for_update_on_startup=false'], ['claude', 'idle', 'claude --resume same']]) {
   test(`${cli}: wake waits for ${ready}, changes generation, and submits queued text through input`, async t => {
     const h = await harness(t, { cli, ready }), before = h.binding(); await h.dormant();
     let sleeps = 0;

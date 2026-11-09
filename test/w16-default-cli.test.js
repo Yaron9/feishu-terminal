@@ -21,8 +21,9 @@ test('group registry preserves optional default CLI and instructions path', () =
 });
 
 test('CLI rows declare their interactive launch command', () => {
+  assert.equal(CLI_TABLE.find(row => row.cli === 'codex').resume, 'codex resume {id} --no-daemon -c check_for_update_on_startup=false');
   assert.deepEqual(CLI_TABLE.map(({ cli, launch }) => [cli, launch]), [
-    ['claude', 'claude'], ['codex', 'codex --no-daemon'], ['pi', 'pi'],
+    ['claude', 'claude'], ['codex', 'codex --no-daemon -c check_for_update_on_startup=false'], ['pi', 'pi'],
   ]);
 });
 
@@ -86,7 +87,7 @@ test('plain root message with group cli codex launches codex directly, no shell 
   await h.bridge.handle(message('帮我看看这个项目', 'root-1'));
   // Exactly one hc create: the CLI launch in the group cwd, never a shell pane.
   assert.equal(h.runs().length, 1);
-  assert.equal(h.runs()[0].params.line, 'codex --no-daemon');
+  assert.equal(h.runs()[0].params.line, 'codex --no-daemon -c check_for_update_on_startup=false');
   assert.equal(h.runs()[0].params.cwd, h.cwd);
   assert.deepEqual(h.runs()[0].params.labels, { 'ft.woken': '1', source: 'feishu-terminal' });
   // The queued text is written exactly once, only after ready.
@@ -119,7 +120,7 @@ test('quotes, ; and && in the root text never reach the create command line', as
   h.onRun = term => h.ready(term);
   await h.bridge.handle(message(text, 'root-2'));
   assert.equal(h.runs().length, 1);
-  assert.equal(h.runs()[0].params.line, 'codex --no-daemon');
+  assert.equal(h.runs()[0].params.line, 'codex --no-daemon -c check_for_update_on_startup=false');
   assert.ok(!JSON.stringify(h.runs()[0].params).includes('whoami'));
   assert.equal(h.sends().length, 1);
   assert.equal(h.sends()[0].params.text, text);
@@ -203,4 +204,21 @@ test('a slow fresh CLI reuses its waiting card for the first input', async t => 
   assert.equal(h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive').length, 1);
   assert.equal(h.binding().cardId, waiting);
   assert.ok(h.feishu.calls.some(c => c.type === 'patch' && c.id === waiting));
+});
+
+test('CLI root reuses an already published startup card for its first interaction', async t => {
+  const h = await harness(t);
+  const original = h.bridge.input.bind(h.bridge);
+  h.bridge.input = async (...args) => {
+    const binding = args[0];
+    const id = await h.feishu.reply(binding.topicId, { schema: '2.0' }, 'interactive');
+    await h.store.update(binding.chatId, binding.topicId, { cardId: id });
+    return original(...args);
+  };
+  await h.bridge.handle(message('codex', 'cli-root'));
+  const term = h.terminals.get('t1');
+  h.ready(term); term.agent = 'codex'; term.output = 'Codex ready';
+  h.advance(); await h.bridge.tick();
+  const cards = h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive');
+  assert.equal(cards.length, 1);
 });

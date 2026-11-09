@@ -10,7 +10,7 @@ test('table matches hc agent fields and describes resume, readiness and exits', 
   assert.equal(lookupCli({ status: { app: 'claude-code' } }).cli, 'claude');
   assert.equal(lookupCli({ agent: 'pi' }).cli, 'pi');
   assert.equal(lookupCli({ agent: 'unknown', foreground: { name: 'codex' } }), null);
-  assert.deepEqual(CLI_TABLE.map(x => x.resume), ['claude --resume {id}', 'codex resume {id} --no-daemon', 'pi --session {id}']);
+  assert.deepEqual(CLI_TABLE.map(x => x.resume), ['claude --resume {id}', 'codex resume {id} --no-daemon -c check_for_update_on_startup=false', 'pi --session {id}']);
   assert.ok(CLI_TABLE.every(x => x.readyStates.includes('idle') && x.readyStates.includes('done')));
   assert.deepEqual(CLI_TABLE.map(x => x.exit), [{ keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, { keys: ['ctrl+c'], maxAttempts: 3 }, { keys: ['ctrl+d'], maxAttempts: 1 }]);
 });
