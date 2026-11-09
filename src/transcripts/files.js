@@ -43,10 +43,14 @@ if (cmd === 'list') {
 // data instead of a function.
 const SCAN_SCRIPT = `const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const [root, depthStr, sinceStr, dirSrc, fileSrc] = process.argv.slice(2);
 const depth = Number(depthStr), since = Number(sinceStr);
 const dirRe = dirSrc ? new RegExp(dirSrc) : null;
 const fileRe = fileSrc ? new RegExp(fileSrc) : null;
+// The port passes a root that may start with a tilde; expand it here so a
+// locate needs no separate home exec.
+const expand = p => (p === '~' || p.startsWith('~/')) ? os.homedir() + p.slice(1) : p;
 const out = [];
 (function walk(dir, remaining) {
   let entries;
@@ -62,7 +66,7 @@ const out = [];
       } catch { /* unstat-able candidate */ }
     }
   }
-})(root, depth);
+})(expand(root), depth);
 process.stdout.write(JSON.stringify(out));`;
 
 const WINDOW = 1024 * 1024;
@@ -165,8 +169,10 @@ export function hcFiles(machine, client, { scanTtl = 1000 } = {}) {
     }
     return decode(result.stdout);
   };
-  let homePromise;
-  const home = () => { homePromise ??= execNode(['node', '-e', STAT_SCRIPT, 'home']); return homePromise; };
+  // The remote home is a `~` sentinel, not a separate exec: the scan script
+  // expands it, so one locate is a single machine.exec (the scan). The
+  // adapters only use home to build the scan root.
+  const home = () => '~';
   // A per-machine scan cache keeps locate cheap while a binding has no verified
   // session: within one poll interval the same tree scan is reused instead of
   // starting another node process on the remote machine.

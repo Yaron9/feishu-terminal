@@ -35,8 +35,9 @@ export async function locateSession(files, pane, binding, bindings, sessions, co
     const since = binding.cliCommandSentAt ?? command?.sentAt;
     if (!savedValid && !id && !Number.isFinite(since)) return null;
     const scanSince = savedValid ? pending.sentAt : (id ? 0 : since);
+    const directory = config.directoryForCwd ? config.directoryForCwd(cwd) : config.directory;
     let candidates;
-    try { candidates = await files.scan(root, config.depth, { since: scanSince, directory: config.directory, file: config.file }); }
+    try { candidates = await files.scan(root, config.depth, { since: scanSince, directory, file: config.file }); }
     catch { candidates = []; }
     const matches = [];
     for (const candidate of candidates) {
@@ -45,6 +46,11 @@ export async function locateSession(files, pane, binding, bindings, sessions, co
       try {
         let meta, first, promptOffset;
         let scanCursor = null, previous;
+        // Stop as soon as this candidate's answer is decided: the session meta
+        // and the first user message (or, when re-locating a saved session, the
+        // pending prompt offset) are found at the head of the file. Reading to
+        // EOF would replay the whole history line-by-line on every locate.
+        const needMore = () => savedValid ? !(meta && promptOffset !== undefined) : !(meta && first);
         do {
           previous = scanCursor?.offset ?? 0;
           const scan = await readJsonl(file, scanCursor, (record, offset) => {
@@ -54,7 +60,7 @@ export async function locateSession(files, pane, binding, bindings, sessions, co
           return [];
           }, { files });
           scanCursor = scan.cursor;
-        } while (scanCursor.offset > previous);
+        } while (scanCursor.offset > previous && needMore());
         const sessionId = meta?.id;
         if (!validId(sessionId) || !config.matchesId(name, sessionId) || (!savedValid && id && sessionId !== id) || !sameCwd(cwd, meta.cwd)) continue;
         if (savedValid) {

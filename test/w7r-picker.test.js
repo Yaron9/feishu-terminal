@@ -36,7 +36,7 @@ test('picker click navigates down and enters', async t => {
 });
 for (const kind of ['codex','pi']) test(`${kind} follows a unique prompt without replay and respects ambiguity and held paths`, async t => {
   const home = await mkdtemp(join(tmpdir(),'w7r-')); t.after(() => rm(home,{recursive:true,force:true}));
-  const dir = kind === 'codex' ? join(home,'.codex','sessions','2026','01','01') : join(home,'.pi','agent','sessions','project'); await mkdir(dir,{recursive:true});
+  const dir = kind === 'codex' ? join(home,'.codex','sessions','2026','01','01') : join(home,'.pi','agent','sessions','--tmp--'); await mkdir(dir,{recursive:true});
   const now = Date.now(), ts = new Date(now).toISOString();
   const make = async (id, prompt) => {
     const path = join(dir, kind === 'codex' ? `rollout-test-${id}.jsonl` : `test_${id}.jsonl`);

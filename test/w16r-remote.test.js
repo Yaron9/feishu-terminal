@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname, basename } from 'node:path';
-import { PiTranscript } from '../src/transcripts/pi.js';
+import { PiTranscript, piSessionDir } from '../src/transcripts/pi.js';
 import { hcFiles, localFiles } from '../src/transcripts/files.js';
 import { inputHash, normalizeInput } from '../src/input-echo.js';
 import { fakeHc } from './hc-helper.js';
@@ -59,6 +59,7 @@ function remoteFs() {
       const depth = Number(depthStr), since = Number(sinceStr);
       const dirRe = dirSrc ? new RegExp(dirSrc) : null;
       const fileRe = fileSrc ? new RegExp(fileSrc) : null;
+      const root = arg === '~' || arg.startsWith('~/') ? '/Users/example' + arg.slice(1) : arg;
       const out = [];
       const walk = (dir, remaining) => {
         for (const d of dirs) if (dirname(d) === dir) {
@@ -73,7 +74,7 @@ function remoteFs() {
           }
         }
       };
-      walk(arg, depth);
+      walk(root, depth);
       return { code: 0, stdout: b64(JSON.stringify(out)), stderr: b64(''), truncated: false, timed_out: false, ms: 1 };
     }
     if (cmd === 'stat') {
@@ -110,12 +111,12 @@ async function remoteHarness(t) {
   t.after(async () => { await bridge.stop(); await hc.close(); await rm(root, { recursive: true, force: true }); });
   return { bridge, store, feishu, hc, remote, terminal, errors, now,
     advance(ms) { time += ms; },
-    sessionPath: id => `/Users/example/.pi/agent/sessions/--tmp--/1970-01-01_${id}.jsonl` };
+    sessionPath: id => `/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_${id}.jsonl` };
 }
 
 test('remote pi adapter reads a turn through hc and advances its line cursor without a full reread', async t => {
   const remote = remoteFs();
-  const path = '/Users/example/.pi/agent/sessions/--tmp--/1970-01-01_flow.jsonl';
+  const path = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
   remote.addFile(path, lines([sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')]));
   const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
   const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
@@ -144,7 +145,7 @@ test('remote pi adapter reads a turn through hc and advances its line cursor wit
   assert.ok(reads.every(c => c.params.offset === undefined || c.params.offset >= 1), 'offsets are valid');
   assert.ok(reads.some(c => c.params.offset === off), 'a later read resumes at the saved line cursor');
   const homes = remote.calls.filter(c => c.method === 'machine.exec' && c.params.argv?.[3] === 'home');
-  assert.equal(homes.length, 1, 'home is resolved once per machine');
+  assert.equal(homes.length, 0, 'home is never a separate exec: the scan expands ~');
 });
 
 test('remote pi topic streams one clean turn card per prompt and later cards exclude earlier answers', async t => {
@@ -207,9 +208,9 @@ test('a remote read failure falls back to screen mode and records one audit entr
 
 test('one locate makes a single scan exec and reads only candidate files', async t => {
   const remote = remoteFs();
-  const path = '/Users/example/.pi/agent/sessions/--tmp--/1970-01-01_flow.jsonl';
+  const path = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
   remote.addFile(path, lines([sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')]));
-  remote.addFile('/Users/example/.pi/agent/sessions/--tmp--/notes.txt', 'not a session');
+  remote.addFile('/Users/example/.pi/agent/sessions/--Users-example-sample-project--/notes.txt', 'not a session');
   const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
   const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
   const binding = { chatId: 'a', topicId: 'b', cliCommandSentAt: 0, sentInputs: [input('hello')] };
@@ -224,7 +225,7 @@ test('one locate makes a single scan exec and reads only candidate files', async
 
 test('the scan is cached per machine within one poll interval', async t => {
   const remote = remoteFs();
-  const path = '/Users/example/.pi/agent/sessions/--tmp--/1970-01-01_flow.jsonl';
+  const path = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
   remote.addFile(path, lines([sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')]));
   const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
   const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
@@ -252,7 +253,7 @@ test('the local port locates a local pi session exactly as before', async t => {
 
 test('a remote scan failure falls back without throwing', async t => {
   const remote = remoteFs();
-  const path = '/Users/example/.pi/agent/sessions/--tmp--/1970-01-01_flow.jsonl';
+  const path = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
   remote.addFile(path, lines([sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')]));
   const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
   const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
@@ -260,4 +261,50 @@ test('a remote scan failure falls back without throwing', async t => {
   await adapter.files.home; // resolve home once so the failure lands on the scan
   remote.fail('machine.exec', 'hc_exec_failed');
   assert.equal(await adapter.locate(pane, binding, [binding]), null);
+});
+
+test('piSessionDir maps a cwd to the pi session directory name', () => {
+  assert.equal(piSessionDir('/Users/example/sample-project'), '--Users-example-sample-project--');
+  assert.equal(piSessionDir('/Users/example'), '--Users-example--');
+  assert.equal(piSessionDir('/private/tmp'), '--private-tmp--');
+  assert.equal(piSessionDir('/Users/example/AGI/MetaMe'), '--Users-example-AGI-MetaMe--');
+  assert.equal(piSessionDir('/Users/example/'), '--Users-example--');
+  assert.equal(piSessionDir(''), null);
+  assert.equal(piSessionDir('/'), null);
+});
+
+test('a locate narrowed by cwd scans only the current session directory, not every history file', async t => {
+  const remote = remoteFs();
+  const target = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
+  remote.addFile(target, lines([sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')]));
+  // Many historical sessions in other cwd directories must not be touched.
+  for (let i = 0; i < 60; i++) {
+    remote.addFile(`/Users/example/.pi/agent/sessions/--Users-example-other-${i}--/1970-01-01_hist${i}.jsonl`,
+      lines([{ ...sessionLine(`hist${i}`), cwd: `/Users/example/other-${i}` }, msg('user', 'old'), msg('assistant', 'old', 'stop')]));
+  }
+  const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
+  const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
+  const binding = { chatId: 'a', topicId: 'b', cliCommandSentAt: 0, sentInputs: [input('hello')] };
+  assert.equal(await adapter.locate(pane, binding, [binding]), target);
+  const scans = remote.calls.filter(c => c.method === 'machine.exec' && c.params.argv?.[3] === 'scan');
+  assert.equal(scans.length, 1, 'one scan exec per locate');
+  assert.equal(scans[0].params.argv[7], '^--Users-example-sample-project--$', 'scan narrowed to the cwd-derived directory');
+  const reads = remote.calls.filter(c => c.method === 'file.read');
+  assert.ok(reads.every(c => c.params.path === target), 'only the current candidate is read');
+  assert.ok(reads.length <= 3, `bounded file.read calls (got ${reads.length})`);
+});
+
+test('locate reads a candidate in one call even with a long history (early break)', async t => {
+  const remote = remoteFs();
+  const path = '/Users/example/.pi/agent/sessions/--Users-example-sample-project--/1970-01-01_flow.jsonl';
+  const records = [sessionLine('flow'), msg('user', 'hello'), msg('assistant', 'clean answer', 'stop')];
+  for (let i = 0; i < 500; i++) records.push(msg('assistant', `filler ${i}`, 'stop'));
+  remote.addFile(path, lines(records));
+  const adapter = new PiTranscript({ files: hcFiles('mac', remote.client) });
+  const pane = { pane_id: 'hc:mac/t42', cwd: '/Users/example/sample-project' };
+  const binding = { chatId: 'a', topicId: 'b', cliCommandSentAt: 0, sentInputs: [input('hello')] };
+  assert.equal(await adapter.locate(pane, binding, [binding]), path);
+  const reads = remote.calls.filter(c => c.method === 'file.read' && c.params.path === path);
+  assert.equal(reads.length, 1, 'one file.read locates the candidate (early break, no EOF probe)');
+  assert.equal(reads[0].params.offset, 1, 'read starts from the top once');
 });
