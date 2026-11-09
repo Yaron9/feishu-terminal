@@ -202,6 +202,11 @@ export class Reap {
         for (const key of ['cli', 'sessionId', 'sessionSource', 'cwd'])
           if (record[key] !== undefined) item[key] = record[key];
         item.sessionVerified = item.sessionSource === 'verified';
+        // Go dormant in the same write: a probe that already read the exited
+        // pane (a shell prompt, no CLI) must not overwrite these facts with an
+        // unknown CLI and leave the topic unable to wake.
+        Object.assign(item, { dormant: true, frozen: false, pendingCard: null, pendingMenuCard: null,
+          outputBatch: null, recoveryPending: null });
       });
       await b.wake.dormant(binding);
     }
