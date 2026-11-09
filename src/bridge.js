@@ -21,6 +21,7 @@ import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
 import { lookupCli, CLI_TABLE } from './cli-table.js';
 import { modelKey, cleanModel, sameModel } from './group-model.js';
+import { matchMember } from './members.js';
 
 function screenBody(binding, pane, current, visible, limit = 20000) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
@@ -337,6 +338,11 @@ export class Bridge {
     // /engine's stored group default wins over the static registry cli.
     // Explicit CLI starts, / commands and the resume migration keep the old path.
     const group = this.registry.get(event.chatId);
+    // A NEW root message that starts with a team member's name opens that
+    // member's own topic (their cwd, persona and CLI); the rest is the
+    // prompt. A name inside a topic is ordinary input, never a switch.
+    const call = this.memberCall(event, group, action.text);
+    if (call && await this.createMemberTopic(event, action, group, call)) return;
     const defaultCli = this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
     const defaultRow = defaultCli ? CLI_TABLE.find(row => row.cli === defaultCli) : null;
     if (defaultRow && !/^\s*(?:codex|claude|pi)(?:\s|$)/i.test(action.text) && !/^\s*\//u.test(action.text)) {
@@ -353,25 +359,56 @@ export class Bridge {
     await this.log(event, created, 'first_input', action.text);
     await this.input(created, action.text, false, true);
   }
-  async createDormantTopic(event, action, row, group) {
-    const root = this.dormantRoot(action.text, row, group?.cwd ?? this.config.defaultCwd);
+  // "甲，…" / "甲：…" / "甲 …" on a new root message = call that member.
+  memberCall(event, group, text) {
+    if (event.isReply || !Array.isArray(group?.members) || !group.members.length) return null;
+    if (/^\s*\//u.test(text)) return null;
+    const call = matchMember(text, group.members);
+    return call && call.member.key ? call : null;
+  }
+  // Every call opens a new session in the member's own topic: the binding
+  // carries the member key (so engine/model memory is group + member), the
+  // member's cwd, CLI row and persona; the stripped text is the first prompt.
+  async createMemberTopic(event, action, group, { member, prompt }) {
+    const key = modelKey(event.chatId, { member: member.key });
+    const cli = this.store.data.groupEngines?.[key] ?? member.cli ?? this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
+    const row = CLI_TABLE.find(item => item.cli === cli);
+    if (!row) return false;
+    await this.createDormantTopic(event, { ...action, text: prompt }, row, group, member);
+    return true;
+  }
+  async createDormantTopic(event, action, row, group, member = null) {
+    const cwd = member?.cwd ?? group?.cwd ?? this.config.defaultCwd;
+    const root = this.dormantRoot(action.text, row, cwd, member);
     const topicId = event.messageId;
+    const name = member ? member.name ?? member.key : null;
     // paneId is a placeholder until wake.rebind binds the launched terminal;
     // it must stay unique and durable so a restart never rejects the state.
     await this.store.bind({ chatId: event.chatId, topicId, paneId: `pending:${topicId}`, identity: null,
       ...root.session, cliCommand: row.launch, freshLaunch: true, dormant: true,
-      instructionsFile: group?.instructionsFile ?? null,
-      queuedInputs: [{ id: randomUUID(), type: 'input', text: action.text }],
-      topicRoot: { type: 'user', text: action.text, createdAt: this.now() }, welcomePending: true });
+      ...(member ? { member: member.key, memberName: name } : {}),
+      instructionsFile: (member ? member.instructionsFile : group?.instructionsFile) ?? null,
+      // A bare nickname opens the topic with nothing queued: the CLI starts
+      // and waits for the user's next line in its own topic.
+      queuedInputs: action.text ? [{ id: randomUUID(), type: 'input', text: action.text }] : [],
+      topicRoot: { type: 'user', text: action.text || (name ?? ''), createdAt: this.now() }, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
+    // A member topic opens with its identity card (`🤖 甲 · Codex`): the
+    // user's own message is the topic root, so this is the durable card that
+    // names who was called and which CLI runs in the topic.
+    if (member) {
+      const cardId = await this.feishu.reply(topicId, root.card, 'interactive');
+      await this.rememberCard(cardId, root.card, 'member', { chatId: event.chatId, topicId });
+      await this.updateGeneration(created, { memberCardId: cardId });
+    }
     this.state(created); this.resubscribe();
     await this.log(event, created, 'first_input', action.text);
     await this.wake.ensure(created);
   }
   // Root card for a topic whose CLI has not launched yet: same shape as
   // topicCard, but the grey label shows the agent starting instead of a pane.
-  dormantRoot(text, row, cwd) {
-    const title = sessionTitle(cleanTitle(text)) || this.agentName(row.cli);
+  dormantRoot(text, row, cwd, member = null) {
+    const title = this.memberTitle(member, row.cli) ?? (sessionTitle(cleanTitle(text)) || this.agentName(row.cli));
     const card = withSessionHeader({ schema: '2.0', config: { update_multi: true },
       header: { title: { tag: 'plain_text', content: title } },
       body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${this.agentName(row.cli)} · 启动中</font>` }] } },
@@ -380,8 +417,20 @@ export class Bridge {
       metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
         publishedSessionId: null, publishedTreeHeader: 'null', createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
-  async setGroupEngine(chatId, cli) {
-    await this.store.transaction(data => { (data.groupEngines ??= {})[chatId] = cli; });
+  // The root card of a member topic names the person, then the CLI it runs
+  // (`🤖 甲 · Codex`), so one group can host several members of one CLI.
+  memberTitle(member, cli) {
+    const name = String(member?.name ?? member?.key ?? '').trim().slice(0, 40);
+    return name && cli ? `🤖 ${name} · ${this.agentName(cli)}` : null;
+  }
+  memberOf(chatId, key) {
+    if (!key) return null;
+    return (this.registry.get(chatId)?.members ?? []).find(member => member?.key === key) ?? { key };
+  }
+  bindingMember(binding) { return binding?.member ? this.memberOf(binding.chatId, binding.member) : null; }
+  async setGroupEngine(chatId, cli, member = null) {
+    const key = modelKey(chatId, { member });
+    await this.store.transaction(data => { (data.groupEngines ??= {})[key] = cli; });
   }
   // Group memory of the model a CLI actually ran. The model is read from the
   // transcript (not the screen) when a turn completes; a /model choice in the
@@ -403,8 +452,9 @@ export class Bridge {
   // default, one button per CLI row). With a name, switch the group default
   // and the current topic. Unknown names get the valid list as text.
   async engine(event, binding, name) {
-    const group = this.registry.get(event.chatId);
-    const groupDefault = this.store.data.groupEngines?.[event.chatId] ?? group?.cli ?? null;
+    const group = this.registry.get(event.chatId), member = this.bindingMember(binding);
+    // Inside a member topic the stored default belongs to that member only.
+    const groupDefault = this.store.data.groupEngines?.[modelKey(event.chatId, binding)] ?? member?.cli ?? group?.cli ?? null;
     if (!name) {
       if (!group || !binding) {
         await this.feishu.reply(event.topicId, groupDefault ? `本群默认 CLI：${this.agentName(groupDefault)}；这个话题还没有绑定终端。` : '该群没有默认 CLI。');
@@ -445,20 +495,24 @@ export class Bridge {
   // action card to patch (button path); text commands publish one result card.
   async switchEngine(event, binding, row, card = null) {
     const chatId = event.chatId;
-    const previous = binding?.cli ?? this.store.data.groupEngines?.[chatId] ?? this.registry.get(chatId)?.cli ?? null;
+    // A member topic stores its engine under group + member, so switching one
+    // member's CLI never changes the group default or another member's row.
+    const member = binding?.member ?? null, where = member ? '该成员' : '本群';
+    const key = modelKey(chatId, { member });
+    const previous = binding?.cli ?? this.store.data.groupEngines?.[key] ?? this.memberOf(chatId, member)?.cli ?? this.registry.get(chatId)?.cli ?? null;
     const done = async (text, ok = true, title) => {
       const view = engineResultCard(text, ok, title);
       if (card) await this.patchCard(card.messageId, view, 'engine');
       else await this.feishu.reply(event.topicId, view, 'interactive');
     };
     if (binding && binding.cli === row.cli) {
-      await this.setGroupEngine(chatId, row.cli);
+      await this.setGroupEngine(chatId, row.cli, member);
       await done(`已经是 ${this.agentName(row.cli)}。`, true, '话题引擎');
       return;
     }
     if (binding?.frozen) {
-      await this.setGroupEngine(chatId, row.cli);
-      await done(`已把本群默认引擎设为 ${this.agentName(row.cli)}；这个话题已暂停同步，未做改动。`);
+      await this.setGroupEngine(chatId, row.cli, member);
+      await done(`已把${where}默认引擎设为 ${this.agentName(row.cli)}；这个话题已暂停同步，未做改动。`);
       return;
     }
     if (binding && !binding.dormant && !binding.wakePending) {
@@ -470,9 +524,9 @@ export class Bridge {
         return;
       }
     }
-    await this.setGroupEngine(chatId, row.cli);
+    await this.setGroupEngine(chatId, row.cli, member);
     if (!binding) {
-      await done(`✅ 本群默认引擎已设为 ${this.agentName(row.cli)}；这个话题还没有绑定终端，新话题会直接使用。`);
+      await done(`✅ ${where}默认引擎已设为 ${this.agentName(row.cli)}；这个话题还没有绑定终端，新话题会直接使用。`);
       return;
     }
     // Retarget the topic: the old session stays on disk and stays resumable
@@ -483,7 +537,7 @@ export class Bridge {
       pendingCard: null, pendingMenuCard: null, outputBatch: null, recoveryPending: null })) {
       throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
     }
-    await done(`✅ 引擎已切换：${previous ? this.agentName(previous) : '命令行'} → ${this.agentName(row.cli)}（本群新话题也用 ${this.agentName(row.cli)}）`);
+    await done(`✅ 引擎已切换：${previous ? this.agentName(previous) : '命令行'} → ${this.agentName(row.cli)}（${where}新话题也用 ${this.agentName(row.cli)}）`);
     const current = this.store.binding(chatId, binding.topicId);
     try { await this.wake.ensure(current); }
     catch (error) { this.reportFailure('engine_wake_failed', error); }
