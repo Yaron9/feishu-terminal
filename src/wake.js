@@ -81,7 +81,8 @@ export class Wake {
     if (!binding || binding.frozen) return;
     const row = CLI_TABLE.find(row => row.cli === binding.cli);
     const replay = ['codex', 'pi'].includes(binding.cli) && !binding.sessionId && binding.sessionReplay;
-    if (!row || !binding.cwd || (!replay && !/^[a-zA-Z0-9_-]+$/.test(binding.sessionId ?? ''))) {
+    // freshLaunch: the group default CLI is launched by run(); no session id exists yet.
+    if (!row || !binding.cwd || (!replay && !binding.freshLaunch && !/^[a-zA-Z0-9_-]+$/.test(binding.sessionId ?? ''))) {
       if (!binding.unknownSessionNotified) {
         await b.updateGeneration(binding, { unknownSessionNotified: true });
         await b.feishu.reply(binding.topicId, '无法唤醒：没有可靠的会话编号，请从 /t ls 重新打开终端。消息已保留。');
@@ -184,7 +185,7 @@ export class Wake {
       if (!b.sameGeneration(binding, current) || data.bindings.some(item => item !== current && item.paneId === terminal.pane_id)) return null;
       const generation = randomUUID();
       Object.assign(current, { paneId: terminal.pane_id, identity: b.backend.identity(fresh), generation,
-        dormant: false, frozen: false, wakePending: false, wakeTarget: null, wakeAttempt: null, wakeCardId: null,
+        dormant: false, frozen: false, freshLaunch: null, wakePending: false, wakeTarget: null, wakeAttempt: null, wakeCardId: null,
         unknownSessionNotified: false, allowDesktop: true, nonce: randomUUID(), menuNonce: randomUUID(),
         pendingCard: null, pendingMenuCard: null, cardMenu: null, menuConfirm: null, menuPage: 0,
         menuCardId: null, cardSignature: null, menuSignature: null, sessionHandoff: null, outputBatch: null });

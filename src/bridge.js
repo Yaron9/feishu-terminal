@@ -14,11 +14,11 @@ import { Wake } from './wake.js';
 import { Reap } from './reap.js';
 import { TerminalTree } from './terminal-tree.js';
 import { auditRecord, appendAudit } from './store.js';
-import { topicTitle, sessionTitle } from './topics.js';
+import { topicTitle, sessionTitle, cleanTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
-import { lookupCli } from './cli-table.js';
+import { lookupCli, CLI_TABLE } from './cli-table.js';
 
 function screenBody(binding, pane, current, visible, limit = 20000) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
@@ -292,6 +292,14 @@ export class Bridge {
       });
       await this.pointToTopic(event); return;
     }
+    // A plain root message in a group with a default CLI skips the shell:
+    // the topic binds dormant and the wake path launches the CLI directly.
+    // Explicit CLI starts, / commands and the resume migration keep the old path.
+    const group = this.registry.get(event.chatId);
+    const defaultRow = group?.cli ? CLI_TABLE.find(row => row.cli === group.cli) : null;
+    if (defaultRow && !/^\s*(?:codex|claude|pi)(?:\s|$)/i.test(action.text) && !/^\s*\//u.test(action.text)) {
+      await this.createDormantTopic(event, action, defaultRow, group); return;
+    }
     const pane = await this.createPane(event.chatId);
     const identity = await this.identity(pane.pane_id);
     const root = await this.newRoot(pane, action.text);
@@ -312,6 +320,40 @@ export class Bridge {
       // so creator/owner status is not sufficient to recall this user message.
       await this.pointToTopic(event).catch(() => {});
     }
+  }
+  async createDormantTopic(event, action, row, group) {
+    const root = this.dormantRoot(action.text, row, group?.cwd ?? this.config.defaultCwd);
+    const topicId = await this.feishu.send(event.chatId, root.card);
+    await this.rememberCard(topicId, root.card, 'root');
+    // paneId is a placeholder until wake.rebind binds the launched terminal;
+    // it must stay unique and durable so a restart never rejects the state.
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: `pending:${topicId}`, identity: null,
+      ...root.session, cliCommand: row.launch, freshLaunch: true, dormant: true,
+      queuedInputs: [{ id: randomUUID(), type: 'input', text: action.text }],
+      topicRoot: root.metadata, welcomePending: true });
+    const created = this.store.binding(event.chatId, topicId);
+    await this.store.transaction(data => {
+      (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
+    });
+    this.state(created); this.resubscribe();
+    try {
+      await this.log(event, created, 'first_input', action.text);
+      await this.wake.ensure(created);
+    } finally {
+      await this.pointToTopic(event).catch(() => {});
+    }
+  }
+  // Root card for a topic whose CLI has not launched yet: same shape as
+  // topicCard, but the grey label shows the agent starting instead of a pane.
+  dormantRoot(text, row, cwd) {
+    const title = sessionTitle(cleanTitle(text)) || this.agentName(row.cli);
+    const card = withSessionHeader({ schema: '2.0', config: { update_multi: true },
+      header: { title: { tag: 'plain_text', content: title } },
+      body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${this.agentName(row.cli)} · 启动中</font>` }] } },
+      { title, sessionId: null });
+    return { card, session: { cli: row.cli, cwd, sessionId: null, sessionSource: null, sessionTitle: title },
+      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
+        publishedSessionId: null, publishedTreeHeader: 'null', createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
   async pointToTopic(event) {
     const pointer = this.store.data.topicPointers?.find(p => p.chatId === event.chatId && p.oldTopicId === event.topicId);
