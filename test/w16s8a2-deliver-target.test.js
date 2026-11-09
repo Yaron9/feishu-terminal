@@ -5,7 +5,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { Bridge } from '../src/bridge.js';
+import { SessionFollow } from '../src/session-follow.js';
 
 const pause = () => new Promise(resolve => setTimeout(resolve, 5));
 const roster = () => [
@@ -174,4 +177,20 @@ test('a group outside the registry rejects with no_group', async () => {
   await assert.rejects(f.deliver({ member: 'jia', text: '在吗' }), { code: 'no_group' });
   await assert.rejects(f.deliver({ text: '在吗' }), { code: 'no_group' });
   assert.deepEqual(f.posts, []);
+});
+
+// A delivery's `[来自 x]\ntext` input is stored whitespace-normalized while the
+// CLI session file keeps its newline as a JSON escape: the session that a fresh
+// member topic must claim is found across that difference, and only then.
+test('a two-line delivery prefix still matches its own session record', async t => {
+  const temp = await mkdtemp(new URL('../.test-', import.meta.url));
+  t.after(() => rm(temp, { recursive: true, force: true }));
+  const file = join(temp, 'rollout-test.jsonl');
+  await writeFile(file, JSON.stringify({ type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '[来自 测试员]\n你是谁？只回一句' }] } }) + '\n', 'utf8');
+  const follow = new SessionFollow({ home: temp });
+  assert.equal(await follow.sentTextMatch({ source: file },
+    [{ prefix: '[来自 测试员] 你是谁？只回一句', length: 17 }]), true);
+  assert.equal(await follow.sentTextMatch({ source: file },
+    [{ prefix: '[来自 别人] 你是谁？只回一句', length: 17 }]), false);
 });

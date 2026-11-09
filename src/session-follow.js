@@ -8,6 +8,13 @@ import { lookupCli, resumeSessionId } from './cli-table.js';
 // session payloads are projected immediately and never retained or audited.
 // Session files and directories are read through the file port; /proc lookups
 // stay local-only (a remote machine's /proc is a different namespace).
+const escapeRe = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The stored prefix is whitespace-normalized, but a session file keeps a
+// newline as its JSON escape (`\n`) and a paste's blanks as spaces. One
+// whitespace run matches either, so a `[来自 x]\ntext` delivery still finds
+// the user record it typed.
+const gap = '(?:\\s|\\\\[nrt])+';
+const spacedNeedle = needle => new RegExp(needle.split(/(?:\\[nrt]|\s)+/u).map(escapeRe).join(gap), 'u');
 export class SessionFollow {
   constructor({ home = homedir(), files, procRoot = '/proc', read = readFile,
     kill = (pid, signal) => process.kill(pid, signal), sleep = ms => new Promise(r => setTimeout(r, ms)),
@@ -28,7 +35,7 @@ export class SessionFollow {
     const probe = sessionId ? null : await row.probe({ home: this.home, cwd, startedAfterMs: terminal.created_ms ?? 0 });
     return { cli: row.cli, cwd, sessionId: sessionId ?? probe?.sessionId ?? null, sessionVerified, sessionStartedAt: probe?.startedAt ?? null, probeCandidates: probe ? (probe.candidates ?? [probe]) : [] };
   }
-  // Text ft typed into its own pane appears verbatim in the CLI session file.
+// Text ft typed into its own pane appears verbatim in the CLI session file.
   // Matching that exact text attributes a probe candidate to the one binding
   // that sent it, which is what lets concurrent same-CLI same-cwd topics each
   // claim their own session. Identical texts stay unattributed.
@@ -45,7 +52,8 @@ export class SessionFollow {
         if (this.textMatches.has(key)) return this.textMatches.get(key);
         const bytes = Buffer.alloc(4 * 1024 * 1024), { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
         const raw = bytes.subarray(0, bytesRead).toString('utf8');
-        const match = needles.some(needle => raw.includes(needle));
+        const match = needles.some(needle => raw.includes(needle)) ||
+          needles.some(needle => spacedNeedle(needle).test(raw));
         this.textMatches.set(key, match);
         if (this.textMatches.size > 128) this.textMatches.delete(this.textMatches.keys().next().value);
         return match;
