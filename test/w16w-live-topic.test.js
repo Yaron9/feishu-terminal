@@ -84,6 +84,27 @@ test('two fresh topics with the same CLI and cwd both create a pane', async t =>
   assert.deepEqual(h.errors, []);
 });
 
+test('repeated verification observes each binding at most once per poll interval', async t => {
+  const h = await harness(t);
+  const terminal = h.create();
+  const pane = await h.backend.get(`hc:${terminal.address}`);
+  await h.store.bind({ chatId: 'oc_test', topicId: 'poll', paneId: pane.pane_id, identity: h.backend.identity(pane) });
+  const binding = h.store.binding('oc_test', 'poll');
+  let observations = 0;
+  h.bridge.wake.observe = async () => { observations++; };
+  await Promise.all([h.bridge.verify(binding), h.bridge.verify(binding)]);
+  await h.bridge.verify(binding);
+  assert.equal(observations, 1);
+  h.advance(250);
+  await h.bridge.verify(binding);
+  assert.equal(observations, 2);
+  h.bridge.tickPending = true; h.bridge.observeTick = 1;
+  h.advance(250); await h.bridge.verify(binding);
+  h.advance(1000); await h.bridge.verify(binding);
+  assert.equal(observations, 3, 'a slow tick still observes only once');
+  h.bridge.tickPending = false;
+});
+
 test('a live pane owned by another topic does not block a non-fresh wake', async t => {
   const h = await harness(t);
   h.onRun = term => h.ready(term);

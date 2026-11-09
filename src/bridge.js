@@ -81,6 +81,20 @@ export class Bridge {
     });
     return this.runtime.get(binding.topicId);
   }
+  async observeBinding(binding, terminal) {
+    const state = this.state(binding), now = this.now();
+    if (this.tickPending && state.observeTick === this.observeTick) return;
+    if (state.observePromise) {
+      if (this.tickPending) state.observeTick = this.observeTick;
+      return state.observePromise;
+    }
+    if (now - (state.lastObserve ?? -Infinity) < 250) return;
+    state.lastObserve = now;
+    if (this.tickPending) state.observeTick = this.observeTick;
+    const observation = this.wake.observe(binding, terminal);
+    state.observePromise = observation;
+    try { await observation; } finally { if (state.observePromise === observation) state.observePromise = null; }
+  }
   async start({ timers = true } = {}) {
     this.starting = true;
     await this.scanSessions();
@@ -540,7 +554,7 @@ export class Bridge {
       if (Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
         throw Object.assign(new Error('Identity mismatch'), { code: 'identity_mismatch', identityProof: true });
       Object.assign(state, { verified: true, verifyRetryAt: 0 });
-      await this.wake.observe(binding, terminal);
+      await this.observeBinding(binding, terminal);
       if (!state.ioOutage) Object.assign(state, { outageSince: null, outageNotified: false, verifyAttempts: 0 });
     } catch (error) {
       if (error.code === 'binding_changed') throw error;
@@ -1203,6 +1217,7 @@ export class Bridge {
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
     this.tickPending = true;
+    this.observeTick = (this.observeTick ?? 0) + 1;
     return (async () => {
       if (this.now() - (this.lastMaintenance ?? -Infinity) >= 60000) {
         await this.store.maintain(this.now()); this.lastMaintenance = this.now();

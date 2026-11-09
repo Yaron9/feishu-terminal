@@ -244,7 +244,7 @@ export class TerminalTree {
     for (const binding of b.store.list().filter(item => b.registry.get(item.chatId) && !item.frozen && !item.dormant &&
       (item.tree || panes.some(pane => this.parentId(pane) === item.paneId)))) {
       const pane = panes.find(item => b.identitiesMatch(binding, item));
-      if (pane) await b.wake.observe(binding, pane);
+      if (pane) await b.observeBinding(binding, pane);
     }
     let progress;
     do {
