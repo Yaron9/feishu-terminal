@@ -87,33 +87,19 @@ test('update-window errors stop quietly and persist across restart; known 14-day
   assert.equal(h.bridge.store.forPane('w1:p1').topicRoot.stopped, true);
 });
 
-test('new user post gets its own bot topic, exactly-once input and durable old-thread pointers', async t => {
+test('new user post binds its own topic and processes each input once across restart', async t => {
   const h = await harness(t), event = message('claude');
   await Promise.all([h.bridge.handle(event), h.bridge.handle({ ...event, eventId: 'duplicate' })]);
-  const binding = h.store.forPane('w1:p1'), root = h.feishu.calls.find(c => c.type === 'send');
-  assert.notEqual(binding.topicId, event.messageId); assert.equal(binding.topicId, root.id);
-  assert.equal(root.text.header.title.content, 'claude');
-  assert.equal(binding.topicRoot.type, 'interactive');
+  const binding = h.store.forPane('w1:p1');
+  assert.equal(binding.topicId, event.messageId);
+  assert.equal(binding.topicRoot.type, 'user');
+  assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
   assert.deepEqual(inputs(h).map(c => c.method), ['pane.send_text', 'pane.send_keys']);
-  assert.equal(inputs(h)[0].params.text, 'claude');
-  assert.equal(h.feishu.calls.filter(c => c.topicId === 'm1').length, 1);
-  assert.equal(h.feishu.calls.at(-1).content, '已在新话题「claude」打开，请到那里继续');
-  await h.bridge.handle(message('ignored', 'later', 'm1'));
-  assert.equal(inputs(h).length, 2); assert.match(h.feishu.calls.at(-1).content, /请到那里继续/);
-  await h.restart(); await h.bridge.handle(message('ignored after restart', 'later2', 'm1'));
-  assert.equal(inputs(h).length, 2);
-  await h.bridge.handle(message('pwd', 'new-input', binding.topicId)); assert.equal(inputs(h).length, 4);
+  await h.restart();
+  assert.equal(h.store.forPane('w1:p1').topicId, event.messageId);
+  await h.bridge.handle(message('pwd', 'new-input', binding.topicId));
+  assert.equal(inputs(h).length, 4);
   await h.bridge.handle(event); assert.equal(inputs(h).length, 4);
-});
-
-test('pointer failure never replays input; a later old-thread message can still get a pointer', async t => {
-  const h = await harness(t), reply = h.feishu.reply.bind(h.feishu);
-  h.feishu.reply = async () => { throw new Error('offline'); };
-  await h.bridge.handle(message('pwd')); assert.equal(inputs(h).length, 2);
-  h.feishu.reply = reply;
-  await h.bridge.handle(message('pwd')); assert.equal(inputs(h).length, 2);
-  await h.bridge.handle(message('next', 'next', 'm1'));
-  assert.equal(inputs(h).length, 2); assert.match(h.feishu.calls.at(-1).content, /请到那里继续/);
 });
 
 test('open and move create bot cards; moving preserves existing input and transcript state', async t => {
@@ -176,11 +162,12 @@ test('ambiguous first input stays claimed and requires inspection after restart,
 test('old user-thread pointers follow moves and show the latest published session title', async t => {
   const h = await harness(t); await h.bridge.handle(message('claude'));
   const old = h.store.forPane('w1:p1'), pane = h.fake.panes.get('w1:p1');
+  await h.store.transaction(data => { (data.topicPointers ??= []).push({ chatId: 'oc_test', oldTopicId: 'old-request', topicId: old.topicId }); });
   pane.terminal_title_stripped = 'Renamed session';
   await h.bridge.handle(message('/t move', 'move', old.topicId));
   const current = h.store.forPane('w1:p1');
   assert.equal(h.store.data.topicPointers[0].topicId, current.topicId);
-  await h.bridge.handle(message('do not input', 'later', 'm1'));
+  await h.bridge.handle(message('do not input', 'later', 'old-request'));
   assert.equal(h.feishu.calls.at(-1).content, '已在新话题「Renamed session」打开，请到那里继续');
   assert.equal(inputs(h).length, 2);
 });

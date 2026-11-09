@@ -100,10 +100,9 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);
   for (const message of r.messages.values()) assert.ok(message.body.content.includes('[selftest]'));
   assert.ok(r.historyCalls > 0);
-  const roots = [...r.messages.values()].filter(m => m.msg_type === 'interactive' && !m.root_id);
+  const roots = [...r.messages.values()].filter(m => m.msg_type === 'text' && !m.root_id);
   assert.equal(roots.length, 1);
-  assert.equal(JSON.parse(roots[0].body.content).schema, '2.0');
-  assert.ok([...r.messages.values()].some(m => m.root_id === roots[0].message_id));
+  assert.ok([...r.messages.values()].some(m => m.root_id === roots[0].message_id && m.msg_type === 'interactive'));
   const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
   for (const message of r.messages.values()) {
     if (!message.body.content.includes('模拟输入：')) assert.ok(readIds.has(message.message_id));

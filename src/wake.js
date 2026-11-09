@@ -116,7 +116,8 @@ export class Wake {
     if (!binding.dormant && !binding.wakePending) { await this.drain(binding); return; }
     if (!binding.wakePending) {
       await b.updateGeneration(binding, { wakePending: true });
-      await b.feishu.reply(binding.topicId, '正在唤醒…');
+      if (!(binding.freshLaunch && binding.topicRoot?.type === 'user'))
+        await b.feishu.reply(binding.topicId, '正在唤醒…');
       binding = b.store.binding(binding.chatId, binding.topicId);
     }
     let terminal = await this.target(binding);
@@ -186,6 +187,7 @@ export class Wake {
       const generation = randomUUID();
       Object.assign(current, { paneId: terminal.pane_id, identity: b.backend.identity(fresh), generation,
         dormant: false, frozen: false, freshLaunch: null, wakePending: false, wakeTarget: null, wakeAttempt: null, wakeCardId: null,
+        firstWakeCardId: current.freshLaunch && current.topicRoot?.type === 'user' ? current.wakeCardId : null,
         unknownSessionNotified: false, allowDesktop: true, nonce: randomUUID(), menuNonce: randomUUID(),
         pendingCard: null, pendingMenuCard: null, cardMenu: null, menuConfirm: null, menuPage: 0,
         menuCardId: null, cardSignature: null, menuSignature: null, sessionHandoff: null, outputBatch: null });
@@ -227,7 +229,8 @@ export class Wake {
     const card = b.sessionCard(screenCard({ paneId: terminal.pane_id, topicId: binding.topicId, nonce, text: read.text,
       label: binding.cli, agent: binding.cli, status: 'blocked', suppressMenu: true,
       note: '唤醒仍在等待确认，消息已排队。请使用按键处理屏幕后刷新。' }), binding);
-    const cardId = await b.feishu.reply(binding.topicId, card, 'interactive');
+    const cardId = binding.wakeCardId ?? await b.feishu.reply(binding.topicId, card, 'interactive');
+    if (binding.wakeCardId) await b.patchCard(cardId, card, 'status');
     await b.rememberCard(cardId, card, 'status');
     await b.updateGeneration(binding, { cardId, nonce, cardCreatedAt: b.now(), wakeCardId: cardId,
       menuCardId: null, cardMenu: null });

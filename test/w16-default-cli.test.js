@@ -100,22 +100,16 @@ test('plain root message with group cli codex launches codex directly, no shell 
   assert.equal(binding.cli, 'codex');
   assert.deepEqual(binding.queuedInputs, []);
   assert.equal(binding.needs_check, false);
-  // One root card (pane-less, label 启动中) plus the usual topic card flow.
-  const roots = h.feishu.calls.filter(c => c.type === 'send');
-  assert.equal(roots.length, 1);
-  assert.equal(roots[0].text.header.title.content, '帮我看看这个项目');
-  assert.match(JSON.stringify(roots[0].text), /Codex · 启动中/);
-  assert.ok(!JSON.stringify(roots[0].text).includes('hc:t1'));
-  assert.equal(h.feishu.calls.filter(c => c.content === '正在唤醒…').length, 1);
-  // topicPointers entry and pointToTopic reply exactly as today.
-  assert.equal(h.store.data.topicPointers.filter(p => p.oldTopicId === 'root-1').length, 1);
-  assert.equal(h.feishu.calls.filter(c => c.type === 'reply' && c.topicId === 'root-1' &&
-    String(c.content).includes('已在新话题')).length, 1);
+  assert.equal(binding.topicId, 'root-1');
+  assert.equal(binding.topicRoot.type, 'user');
+  assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
+  assert.equal(h.store.data.topicPointers?.length ?? 0, 0);
+  assert.equal(h.feishu.calls.filter(c => String(c.content).includes('\u5df2\u5728\u65b0\u8bdd\u9898')).length, 0);
   assert.equal(h.audits.filter(a => a.action === 'first_input').length, 1);
-  // The usual topic card follows once output refresh runs.
   h.advance(); await h.bridge.tick();
   const topicCards = h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive' && c.topicId === binding.topicId);
-  assert.ok(topicCards.length >= 1, 'topic card published after input');
+  assert.equal(topicCards.length, 1);
+  assert.match(JSON.stringify(topicCards[0].content), /\u4f1a\u8bdd\uff1a/);
   assert.deepEqual(h.errors, []);
 });
 
@@ -141,9 +135,8 @@ test('root text that is itself a CLI start keeps the shell path even with group 
   const binding = h.binding();
   assert.ok(!binding.dormant);
   assert.equal(binding.freshLaunch, undefined);
-  const roots = h.feishu.calls.filter(c => c.type === 'send');
-  assert.equal(roots.length, 1);
-  assert.match(JSON.stringify(roots[0].text), /hc:t1/, 'usual pane-based root card');
+  assert.equal(binding.topicId, 'root-3');
+  assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
 });
 
 test('without a group cli a plain message keeps the shell path', async t => {
@@ -155,6 +148,18 @@ test('without a group cli a plain message keeps the shell path', async t => {
   assert.equal(h.sends()[0].params.text, 'hello there');
   assert.ok(!h.binding().dormant);
   assert.equal(h.binding().cli, null);
+  assert.equal(h.binding().topicId, 'root-4');
+  h.advance(); await h.bridge.tick();
+  assert.equal(h.feishu.calls.filter(c => c.type === 'send').length, 0);
+  const cards = h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive');
+  assert.equal(cards.length, 1);
+  assert.match(JSON.stringify(cards[0].content), /\u4f1a\u8bdd\uff1a/);
+  assert.ok(!h.feishu.calls.some(c => String(c.content).includes('\u5df2\u5728\u65b0\u8bdd\u9898')));
+  await h.store.update('oc_test', 'root-4', { sessionTitle: 'Changed', sessionId: 'session-id' });
+  h.advance(120000); await h.bridge.tick();
+  assert.ok(!h.feishu.calls.some(c => c.type === 'patch' && c.id === 'root-4'));
+  const restored = await new Store(join(h.home, 'state.json')).load();
+  assert.equal(restored.binding('oc_test', 'root-4').topicRoot.type, 'user');
 });
 
 test('launch timeout leaves the text queued and shows the existing wake screen card', async t => {
@@ -172,4 +177,30 @@ test('launch timeout leaves the text queued and shows the existing wake screen c
   assert.equal(card.msgType, 'interactive');
   assert.match(JSON.stringify(card.content), /Update available/);
   assert.match(JSON.stringify(card.content), /唤醒仍在等待确认/);
+});
+
+
+
+test('resume migration keeps its pointer to the existing topic', async t => {
+  const h = await harness(t, { groupCli: null });
+  await h.bridge.handle(message('hello', 'original'));
+  await h.store.update('oc_test', 'original', { claudeSessionId: 'same' });
+  await h.bridge.handle(message('claude --resume same', 'resume-request'));
+  assert.equal(h.store.list().length, 1);
+  assert.ok(h.store.data.topicPointers.some(p => p.oldTopicId === 'resume-request' && p.topicId === 'original'));
+  assert.ok(h.feishu.calls.some(c => c.type === 'reply' && c.topicId === 'resume-request' && String(c.content).includes('\u5df2\u5728\u65b0\u8bdd\u9898')));
+});
+
+
+test('a slow fresh CLI reuses its waiting card for the first input', async t => {
+  const h = await harness(t, { timeoutMs: 1000 });
+  await h.bridge.handle(message('slow request', 'slow-root'));
+  const waiting = h.binding().wakeCardId;
+  assert.ok(waiting);
+  h.ready(h.terminals.get('t1'));
+  await h.bridge.wake.ensure(h.binding());
+  h.advance(); await h.bridge.tick();
+  assert.equal(h.feishu.calls.filter(c => c.type === 'reply' && c.msgType === 'interactive').length, 1);
+  assert.equal(h.binding().cardId, waiting);
+  assert.ok(h.feishu.calls.some(c => c.type === 'patch' && c.id === waiting));
 });

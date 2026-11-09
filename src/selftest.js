@@ -143,10 +143,8 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       root = await feishu.send(config.chatIds[0], command);
       await deliver(command, root, false);
       check((await feishu.getMessage(root))?.message_id === root);
-      const pointer = store.data.topicPointers?.find(p => p.oldTopicId === root);
-      check(pointer && pointer.topicId !== root); root = pointer.topicId;
       const binding = store.binding(config.chatIds[0], root);
-      check(binding && owned.has(binding.paneId)); paneId = binding.paneId;
+      check(binding && binding.topicRoot?.type === 'user' && owned.has(binding.paneId)); paneId = binding.paneId;
       const message = await feishu.getMessage(root); threadId = message.thread_id;
       check(threadId);
       check((await herdr.request('pane.get', { pane_id: paneId })).pane?.pane_id === paneId);

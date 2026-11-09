@@ -303,45 +303,27 @@ export class Bridge {
     const pane = await this.createPane(event.chatId);
     const identity = await this.identity(pane.pane_id);
     const root = await this.newRoot(pane, action.text);
-    const topicId = await this.feishu.send(event.chatId, root.card);
-    await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, ...root.session, topicRoot: root.metadata, welcomePending: true });
+    const topicId = event.messageId;
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, ...root.session,
+      topicRoot: { type: 'user', text: action.text, createdAt: this.now() }, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
-    await this.store.transaction(data => {
-      (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
-    });
     await this.verify(created); this.resubscribe();
-    try {
-      await this.log(event, created, 'first_input', action.text);
-      await this.input(created, action.text);
-    } finally {
-      // Setup normally assigns the operator as owner; claim setup omits owner_id.
-      // Official DELETE docs (230026) restrict bots to their own messages,
-      // so creator/owner status is not sufficient to recall this user message.
-      await this.pointToTopic(event).catch(() => {});
-    }
+    await this.log(event, created, 'first_input', action.text);
+    await this.input(created, action.text);
   }
   async createDormantTopic(event, action, row, group) {
     const root = this.dormantRoot(action.text, row, group?.cwd ?? this.config.defaultCwd);
-    const topicId = await this.feishu.send(event.chatId, root.card);
-    await this.rememberCard(topicId, root.card, 'root');
+    const topicId = event.messageId;
     // paneId is a placeholder until wake.rebind binds the launched terminal;
     // it must stay unique and durable so a restart never rejects the state.
     await this.store.bind({ chatId: event.chatId, topicId, paneId: `pending:${topicId}`, identity: null,
       ...root.session, cliCommand: row.launch, freshLaunch: true, dormant: true,
       queuedInputs: [{ id: randomUUID(), type: 'input', text: action.text }],
-      topicRoot: root.metadata, welcomePending: true });
+      topicRoot: { type: 'user', text: action.text, createdAt: this.now() }, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
-    await this.store.transaction(data => {
-      (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
-    });
     this.state(created); this.resubscribe();
-    try {
-      await this.log(event, created, 'first_input', action.text);
-      await this.wake.ensure(created);
-    } finally {
-      await this.pointToTopic(event).catch(() => {});
-    }
+    await this.log(event, created, 'first_input', action.text);
+    await this.wake.ensure(created);
   }
   // Root card for a topic whose CLI has not launched yet: same shape as
   // topicCard, but the grey label shows the agent starting instead of a pane.
@@ -837,8 +819,11 @@ export class Bridge {
       await this.updateGeneration(binding, { lastTranscript: state.previous, screenCardFresh: true, screenInteraction: randomUUID() });
     }
     const { read: inputScreen } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
+    const inputInteraction = randomUUID();
     await this.updateGeneration(binding, { lastInputAt: this.now(), inputScreen: stripChrome(inputScreen.text).split('\n').filter(line => line.trim()).join('\n'),
-      inputInteraction: randomUUID(), inputTranscriptSeen: false, menuSelected: null });
+      inputInteraction, inputTranscriptSeen: false, menuSelected: null,
+      ...(binding.firstWakeCardId && binding.firstWakeCardId === binding.cardId ?
+        { cardInteraction: inputInteraction, screenCardFresh: false, firstWakeCardId: null } : {}) });
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
     await this.updateGeneration(binding, { menuTurnContinuation: false });
