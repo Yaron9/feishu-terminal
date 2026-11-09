@@ -30,21 +30,41 @@ export class Wake {
     }
     const current = b.store.binding(binding.chatId, binding.topicId);
     if (!b.sameGeneration(binding, current)) return;
+    // Concurrent same-CLI panes in one cwd make the cwd probe ambiguous, and
+    // soleTerminal stays false even when only one session exists. Attribute a
+    // candidate by the exact text ft sent into this binding's own pane: only
+    // that binding can match it, so concurrent topics each claim their own
+    // session instead of blocking each other. Identical texts stay unclaimed.
+    const ownInputs = (current.sentInputs ?? []).filter(input => current.identity?.terminalId && input.terminalId === current.identity.terminalId);
+    let sentMatch = null;
+    if (!facts.sessionVerified && !soleTerminal && !current.sessionId && !current.dormant && !current.wakePending && !current.wakeAttempt && ownInputs.length) {
+      for (const candidate of facts.probeCandidates ?? []) {
+        if (await b.sessionFollow.sentTextMatch(candidate, ownInputs)) { sentMatch = candidate.sessionId; break; }
+      }
+    }
     await b.store.transaction(data => {
       const item = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
       if (!b.sameGeneration(binding, item)) return;
       if (data.reaps?.some(record => record.paneId === item.paneId)) return;
+      // A wake in flight (fresh launch after /engine, dormant rebind) is the
+      // binding's own intent about cli, cwd and session. Every fact here comes
+      // from the old pane still tearing down; assigning any of them mid-switch
+      // would undo the switch. Session attribution resumes on the next probe.
+      if (item.wakeAttempt || item.wakePending || item.dormant) return;
       const changed = facts.cli !== item.cli || facts.cwd !== item.cwd;
       let id = changed ? null : item.sessionId, source = changed ? null : item.sessionSource;
       if (facts.cli === 'claude') {
         id = (facts.sessionVerified ? facts.sessionId : null) ?? (changed ? null : item.sessionId) ?? item.claudeSessionId ?? null;
         source = facts.sessionVerified ? 'verified' : source;
       } else if (facts.sessionVerified) { id = facts.sessionId; source = 'verified'; }
-      else if (facts.sessionId && (soleTerminal || (Number.isFinite(facts.sessionStartedAt) &&
-        (item.sentInputs ?? []).some(input => input.terminalId === item.identity?.terminalId && input.sentAt <= facts.sessionStartedAt &&
-          /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')))) &&
-        !data.bindings.some(other => other !== item && other.sessionId === facts.sessionId)) {
-        id = facts.sessionId; source = 'probe';
+      else {
+        const claim = facts.sessionId ?? sentMatch;
+        if (claim && (sentMatch === claim || soleTerminal || (Number.isFinite(facts.sessionStartedAt) &&
+          (item.sentInputs ?? []).some(input => input.terminalId === item.identity?.terminalId && input.sentAt <= facts.sessionStartedAt &&
+            /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')))) &&
+          !data.bindings.some(other => other !== item && other.sessionId === claim)) {
+          id = claim; source = 'probe';
+        }
       }
       if (changed || id !== item.sessionId || source !== item.sessionSource) {
         Object.assign(item, { cli: facts.cli, cwd: facts.cwd, sessionId: id, sessionSource: source, sessionVerified: source === 'verified' });
@@ -134,9 +154,16 @@ export class Wake {
         const owner = b.store.forPane(terminal.pane_id);
         if (owner && owner.topicId !== binding.topicId) return;
       } else {
-        for (const live of terminals) {
-          const facts = await b.sessionFollow.describe(live);
-          if (facts.cli === row.cli && sameCwd(facts.cwd, binding.cwd) && !facts.sessionVerified) return;
+        // A freshLaunch starts a brand-new session and cannot duplicate one.
+        // A live pane owned by another binding is already known to ft; only an
+        // unowned unverified same-CLI pane may be that session running outside ft.
+        if (!binding.freshLaunch) {
+          for (const live of terminals) {
+            const owner = b.store.forPane(live.pane_id);
+            if (owner && owner.topicId !== binding.topicId) continue;
+            const facts = await b.sessionFollow.describe(live);
+            if (facts.cli === row.cli && sameCwd(facts.cwd, binding.cwd) && !facts.sessionVerified) return;
+          }
         }
         // A lost run response may still create a process. Keep its intent and
         // discover it by labels on future ticks; never retry that mutation.

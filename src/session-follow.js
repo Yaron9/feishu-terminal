@@ -13,7 +13,7 @@ export class SessionFollow {
   }
   async describe(terminal) {
     const row = lookupCli(terminal), cwd = terminal.foreground?.cwd ?? terminal.foreground_cwd ?? terminal.cwd;
-    if (!row || !cwd || /^hc:[^/]+\//.test(terminal.pane_id)) return { cli: row?.cli ?? null, cwd: cwd ?? null, sessionId: null, sessionVerified: false };
+    if (!row || !cwd || /^hc:[^/]+\//.test(terminal.pane_id)) return { cli: row?.cli ?? null, cwd: cwd ?? null, sessionId: null, sessionVerified: false, probeCandidates: [] };
     const valid = id => typeof id === 'string' && /^[a-zA-Z0-9_-]+$/.test(id) ? id : null;
     // Labels are written with the resume command before the process starts.
     let sessionId = valid(terminal.labels?.session);
@@ -21,7 +21,21 @@ export class SessionFollow {
     if (!sessionId && row.cli === 'claude') sessionId = await this.sessionIdOf(terminal.foreground?.pid ?? terminal.foreground_pid);
     const sessionVerified = Boolean(sessionId);
     const probe = sessionId ? null : await row.probe({ home: this.home, cwd, startedAfterMs: terminal.created_ms ?? 0 });
-    return { cli: row.cli, cwd, sessionId: sessionId ?? probe?.sessionId ?? null, sessionVerified, sessionStartedAt: probe?.startedAt ?? null };
+    return { cli: row.cli, cwd, sessionId: sessionId ?? probe?.sessionId ?? null, sessionVerified, sessionStartedAt: probe?.startedAt ?? null, probeCandidates: probe ? (probe.candidates ?? [probe]) : [] };
+  }
+  // Text ft typed into its own pane appears verbatim in the CLI session file.
+  // Matching that exact text attributes a probe candidate to the one binding
+  // that sent it, which is what lets concurrent same-CLI same-cwd topics each
+  // claim their own session. Identical texts stay unattributed.
+  async sentTextMatch(candidate, inputs = []) {
+    if (!candidate?.source) return false;
+    const needles = inputs.filter(input => typeof input.prefix === 'string' && input.prefix.length >= 4)
+      .map(input => JSON.stringify(input.prefix).slice(1, -1)).filter(Boolean);
+    if (!needles.length) return false;
+    try {
+      const raw = await this.read(candidate.source, 'utf8');
+      return needles.some(needle => raw.includes(needle));
+    } catch { return false; }
   }
   async hcCandidates(sessionId) {
     if (!this.backend?.backends?.has('hc')) return [];

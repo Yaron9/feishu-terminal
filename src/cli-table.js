@@ -25,7 +25,10 @@ async function firstLine(file) {
   } finally { await handle.close(); }
 }
 function result(matches) {
-  if (matches.length > 1) return { sessionId: null, source: null, reason: 'ambiguous' };
+  // Ambiguity only blocks the unowned claim path. Candidates stay available so
+  // each binding can identify its own session by the exact text ft sent into
+  // its own pane (sentTextMatch, used by wake.observe).
+  if (matches.length > 1) return { sessionId: null, source: null, reason: 'ambiguous', candidates: matches };
   return matches[0] ?? null;
 }
 export async function probeClaude({ cwd, startedAfterMs = 0, home }) {
