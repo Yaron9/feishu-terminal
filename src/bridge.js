@@ -13,13 +13,15 @@ import { cleanTitle, topicCard, topicTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, resumeWarnings, menuControls, menuPageSize } from './menus.js';
+import { createUsageReader } from './usage.js';
 
 const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.length ?
   createHash('sha256').update(clean(text)).digest('hex') : null;
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, readUsage }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
+    this.readUsage = readUsage ?? createUsageReader();
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
@@ -128,12 +130,23 @@ export class Bridge {
   async receive(event) {
     if (this.stopped) return;
     if (event.kind === 'message' && event.senderType !== 'user') return; // never loop on bot output
-    if (event.chatId !== this.chatId || !this.config.operatorOpenIds.includes(event.openId)) {
+    const usageCommand = event.kind === 'message' && typeof event.text === 'string' && event.text.trim() === '/usage';
+    const privateUsage = usageCommand && event.chatType === 'p2p';
+    if (!event.chatId || !event.openId || (!privateUsage && event.chatId !== this.chatId) || !this.config.operatorOpenIds.includes(event.openId)) {
       await this.refuse(event); return;
     }
     const binding = this.store.binding(event.chatId, event.topicId);
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
+      if (usageCommand) {
+        await this.log(event, binding, 'usage');
+        let result;
+        try { result = await this.readUsage(); } catch { /* Never expose upstream errors. */ }
+        const text = typeof result === 'string' && result.trim() ? result : 'Claude 额度暂时无法读取，请稍后重试或检查 cswap。';
+        if (event.isReply) await this.feishu.reply(event.topicId, text);
+        else await this.feishu.send(event.chatId, text);
+        return;
+      }
       if (await this.pointToTopic(event)) return;
       const action = route(event.text, Boolean(binding));
       await this.log(event, binding, action.type, event.text ?? '');

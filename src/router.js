@@ -9,6 +9,7 @@ export function validKeys(keys) {
 }
 
 export const HELP = '在群里新发一条消息（如 claude 或 cd ~/proj && claude），即可新开终端；在话题内回复，会发到同一终端。\n' +
+  '/usage 查看 cswap 已登记账号的 Claude 额度；\n' +
   '/t ls 查看终端，点 [打开] 同步到话题；原话题找不到时点 [移到新话题]，也可在已绑定话题发送 /t move。\n' +
   '/t close 选择仅解绑或关闭终端；仅解绑会保留运行，关闭会结束程序。\n' +
   'Claude 的 /resume、/model、/config 菜单直接点选项即可选择，无需输入文字；点「更多…」翻页，Esc 取消。标有「⚠️ 已在其他终端运行」的会话需再点一次确定恢复。\n' +
