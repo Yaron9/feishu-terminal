@@ -49,7 +49,7 @@ export class CodexTranscript {
     const home = await this.files.home;
     return locateSession(this.files, pane, binding, bindings, this.sessions, {
       key: 'codex', root: this.files.join(home, '.codex', 'sessions'), depth: 3,
-      directory: name => /^\d+$/.test(name), file: name => /^rollout-.*\.jsonl$/.test(name),
+      directory: '^\\d+$', file: '^rollout-.*\\.jsonl$',
       matchesId: (name, id) => name.endsWith(`-${id}.jsonl`),
       meta: r => r.type === 'session_meta' ? { id: r.payload?.session_id ?? r.payload?.id, cwd: r.payload?.cwd, timestamp: r.timestamp ?? r.payload?.timestamp } : null,
       items: codexItems,

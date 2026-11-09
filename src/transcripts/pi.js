@@ -28,7 +28,7 @@ export class PiTranscript {
     const home = await this.files.home;
     return locateSession(this.files, pane, binding, bindings, this.sessions, {
       key: 'pi', root: this.files.join(home, '.pi', 'agent', 'sessions'), depth: 1,
-      directory: () => true, file: name => name.endsWith('.jsonl'),
+      directory: null, file: '\\.jsonl$',
       matchesId: (name, id) => name.endsWith(`_${id}.jsonl`),
       meta: r => r.type === 'session' ? { id: r.id, cwd: r.cwd, timestamp: r.timestamp } : null,
       items: piItems,

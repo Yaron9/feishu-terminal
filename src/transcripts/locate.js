@@ -34,40 +34,38 @@ export async function locateSession(files, pane, binding, bindings, sessions, co
     const command = (binding.sentInputs ?? []).findLast(i => i.hash && binding.cliCommand && i.hash === inputHash(binding.cliCommand));
     const since = binding.cliCommandSentAt ?? command?.sentAt;
     if (!savedValid && !id && !Number.isFinite(since)) return null;
+    const scanSince = savedValid ? pending.sentAt : (id ? 0 : since);
+    let candidates;
+    try { candidates = await files.scan(root, config.depth, { since: scanSince, directory: config.directory, file: config.file }); }
+    catch { candidates = []; }
     const matches = [];
-    const walk = async (dir, depth) => {
-      let entries; try { entries = await files.list(dir); } catch { return; }
-      for (const entry of entries) {
-        const file = files.join(dir, entry.name);
-        if (depth && entry.isDirectory && config.directory(entry.name)) { await walk(file, depth - 1); continue; }
-        if (depth || !entry.isFile || !config.file(entry.name) || held.has(file) || (!savedValid && id && !config.matchesId(entry.name, id))) continue;
-        try {
-          if ((savedValid || !id) && (await files.stat(file)).mtimeMs < (savedValid ? pending.sentAt : since)) continue;
-          let meta, first, promptOffset;
-          let scanCursor = null, previous;
-          do {
-            previous = scanCursor?.offset ?? 0;
-            const scan = await readJsonl(file, scanCursor, (record, offset) => {
-            if (!meta && config.meta(record)) meta = config.meta(record);
-            if (!first) first = config.items(record).find(item => item.role === 'user');
-            if (savedValid && promptOffset === undefined && config.items(record).some(item => item.role === 'user' && Date.parse(item.ts) >= pending.sentAt && echoIndex(item, [pending], now, binding.identity?.terminalId) === 0)) promptOffset = offset;
-            return [];
-            }, { files });
-            scanCursor = scan.cursor;
-          } while (scanCursor.offset > previous);
-          const sessionId = meta?.id;
-          if (!validId(sessionId) || !config.matchesId(basename(file), sessionId) || (!savedValid && id && sessionId !== id) || !sameCwd(cwd, meta.cwd)) continue;
-          if (savedValid) {
-            if (promptOffset !== undefined) matches.push({ file, sessionId, cursor: await cursorAt(files, file, promptOffset) });
-            continue;
-          }
-          const start = Date.parse(meta.timestamp ?? '');
-          if (!id && (!Number.isFinite(start) || start < since || !first || echoIndex(first, [...(binding.sentInputs ?? [])], Date.parse(first.ts) || Date.now(), binding.identity?.terminalId) < 0)) continue;
-          matches.push({ file, sessionId, fresh: !id });
-        } catch { /* inaccessible or incomplete rollout */ }
-      }
-    };
-    await walk(root, config.depth);
+    for (const candidate of candidates) {
+      const file = candidate.path, name = candidate.name;
+      if (held.has(file) || (!savedValid && id && !config.matchesId(name, id))) continue;
+      try {
+        let meta, first, promptOffset;
+        let scanCursor = null, previous;
+        do {
+          previous = scanCursor?.offset ?? 0;
+          const scan = await readJsonl(file, scanCursor, (record, offset) => {
+          if (!meta && config.meta(record)) meta = config.meta(record);
+          if (!first) first = config.items(record).find(item => item.role === 'user');
+          if (savedValid && promptOffset === undefined && config.items(record).some(item => item.role === 'user' && Date.parse(item.ts) >= pending.sentAt && echoIndex(item, [pending], now, binding.identity?.terminalId) === 0)) promptOffset = offset;
+          return [];
+          }, { files });
+          scanCursor = scan.cursor;
+        } while (scanCursor.offset > previous);
+        const sessionId = meta?.id;
+        if (!validId(sessionId) || !config.matchesId(name, sessionId) || (!savedValid && id && sessionId !== id) || !sameCwd(cwd, meta.cwd)) continue;
+        if (savedValid) {
+          if (promptOffset !== undefined) matches.push({ file, sessionId, cursor: await cursorAt(files, file, promptOffset) });
+          continue;
+        }
+        const start = Date.parse(meta.timestamp ?? '');
+        if (!id && (!Number.isFinite(start) || start < since || !first || echoIndex(first, [...(binding.sentInputs ?? [])], Date.parse(first.ts) || Date.now(), binding.identity?.terminalId) < 0)) continue;
+        matches.push({ file, sessionId, fresh: !id });
+      } catch { /* inaccessible or incomplete rollout */ }
+    }
     if (matches.length !== 1) return savedValid ? saved : null;
     if (savedValid && matches[0].file === saved) return saved;
     const match = matches[0]; sessions.set(match.file, match); return match.file;
