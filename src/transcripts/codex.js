@@ -1,5 +1,5 @@
 import { localFiles } from './files.js';
-import { readJsonl } from './jsonl.js';
+import { readJsonl, splitModel } from './jsonl.js';
 import { locateSession } from './locate.js';
 
 const injected = blocks => blocks.some(b => /^(?:# AGENTS\.md instructions\b|<environment_context>)/.test(String(b.text ?? '').trimStart()));
@@ -40,6 +40,20 @@ export function codexItems(record, offset = 0) {
   return [{ ...base, role: 'tool', text: `🔧 ${name}: ${Array.from(String(description).replace(/\s+/g, ' ')).slice(0, 60).join('')}` }];
 }
 
+// Codex writes the model and reasoning effort it actually runs in each turn's
+// `turn_context` (the session meta only names the provider). Reading it beats
+// parsing the footer screen, and it also covers a /model switch mid-session.
+export function codexModel(record) {
+  if (record?.type !== 'turn_context') return null;
+  const model = record.payload?.model, effort = record.payload?.effort;
+  if (typeof model !== 'string' || !model) return null;
+  return { model, ...(typeof effort === 'string' && effort ? { effort } : {}) };
+}
+const codexRecordItems = (record, offset) => {
+  const items = codexItems(record, offset), model = codexModel(record);
+  return model ? [...items, { role: 'model', model }] : items;
+};
+
 export class CodexTranscript {
   constructor({ home, files } = {}) {
     this.files = files ?? localFiles({ home });
@@ -55,5 +69,5 @@ export class CodexTranscript {
       items: codexItems,
     }, now);
   }
-  async read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, codexItems, { end: Boolean(cursor?.atEnd), files: this.files }); }
+  async read(path, cursor) { return splitModel(await readJsonl(path, cursor?.atEnd ? null : cursor, codexRecordItems, { end: Boolean(cursor?.atEnd), files: this.files })); }
 }

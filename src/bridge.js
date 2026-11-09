@@ -20,6 +20,7 @@ import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
 import { lookupCli, CLI_TABLE } from './cli-table.js';
+import { modelKey, cleanModel, sameModel } from './group-model.js';
 
 function screenBody(binding, pane, current, visible, limit = 20000) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
@@ -381,6 +382,22 @@ export class Bridge {
   }
   async setGroupEngine(chatId, cli) {
     await this.store.transaction(data => { (data.groupEngines ??= {})[chatId] = cli; });
+  }
+  // Group memory of the model a CLI actually ran. The model is read from the
+  // transcript (not the screen) when a turn completes; a /model choice in the
+  // terminal is therefore reused by the next topic and by every resume.
+  modelFor(binding) {
+    const key = modelKey(binding?.chatId, binding), cli = binding?.cli;
+    if (!key || !cli) return null;
+    return cleanModel(this.store.data.groupModels?.[key]?.[cli]);
+  }
+  async rememberModel(binding, observed) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    const key = modelKey(current.chatId, current), cli = current.cli, value = cleanModel(observed);
+    if (!key || !cli || !value) return;
+    // An unchanged value needs no write; the model is re-observed every turn.
+    if (sameModel(this.store.data.groupModels?.[key]?.[cli], value)) return;
+    await this.store.transaction(data => { ((data.groupModels ??= {})[key] ??= {})[cli] = value; });
   }
   // /engine: without a name, show one action card (current topic CLI, group
   // default, one button per CLI row). With a name, switch the group default
@@ -762,7 +779,7 @@ export class Bridge {
     const state = this.state(binding), source = state.transcriptSource;
     const current = this.store.binding(binding.chatId, binding.topicId), checkpoint = current.transcript;
     if (!checkpoint || checkpoint.path !== source.path || checkpoint.adapter !== source.key) return null;
-    const { items, cursor } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
+    const { items, cursor, model } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
     if (JSON.stringify(cursor) === JSON.stringify(checkpoint.cursor)) return null;
     if (items.some(item => item.role === 'user' || item.role === 'assistant'))
       await this.updateGeneration(binding, { inputTranscriptSeen: true });
@@ -776,7 +793,8 @@ export class Bridge {
     }
     return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs, checkedInputs,
       transcript: { adapter: source.key, path: source.path, cursor,
-        lastRecordAt: cursor.offset !== checkpoint.cursor?.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
+        lastRecordAt: cursor.offset !== checkpoint.cursor?.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() },
+      ...(model ? { model } : {}) };
   }
   async createPane(chatId) {
     return this.enqueue(() => this.createPaneSerial(chatId), 'pane-create');
@@ -1910,6 +1928,12 @@ export class Bridge {
     }
     const keepScreenAnchor = !batch.transcript && !state.transcriptSource &&
       this.store.binding(binding.chatId, binding.topicId)?.screenInteraction;
+    // A transcript read may carry the model record of a still-running turn; the
+    // memory is written once that turn actually completes.
+    if (batch.model) state.seenModel = batch.model;
+    if (state.seenModel && batch.chunks.some(chunk => chunk.turn?.settled)) {
+      await this.rememberModel(binding, state.seenModel); state.seenModel = null;
+    }
     if (!await this.updateGeneration(binding, { ...(keepScreenAnchor ? {} : { lastTranscript: batch.checkpoint }), outputBatch: null,
       ...(batch.transcript ? { transcript: batch.transcript } : {}) })) return;
     if (!keepScreenAnchor) state.previous = batch.checkpoint;
@@ -1957,6 +1981,7 @@ export class Bridge {
     if ((['idle', 'done'].includes(state.status) && (current.turn.hasOutput || current.turn.activeObserved)) ||
       current.turn.path !== state.transcriptSource?.path) {
       await this.updateGeneration(binding, { turn: { ...current.turn, settled: true, status: 'idle' } });
+      if (state.seenModel) { await this.rememberModel(binding, state.seenModel); state.seenModel = null; }
     }
   }
 }

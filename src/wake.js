@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CLI_TABLE, lookupCli, sameCwd, instructionsArg } from './cli-table.js';
+import { CLI_TABLE, lookupCli, sameCwd, instructionsArg, modelArgs } from './cli-table.js';
 import { screenCard } from './render.js';
 import { topicTitle } from './topics.js';
 
@@ -191,7 +191,15 @@ export class Wake {
         // pi applies --append-system-prompt only for the lifetime of the process.
         // The binding copy wins so a restart keeps the file the topic was created with.
         const instructions = await instructionsArg(row, binding.instructionsFile ?? b.registry?.get(binding.chatId)?.instructionsFile);
-        const command = binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : (binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli);
+        // A remembered model decorates only commands built from the CLI table
+        // (launch of this row or its resume); a command line the user typed
+        // keeps exactly what it already contains.
+        const resume = binding.sessionId ? row.resume.replace('{id}', binding.sessionId) : null;
+        const launch = binding.cliCommand && !/\b(?:resume|--session)\b/i.test(binding.cliCommand) ? binding.cliCommand : row.cli;
+        const base = resume ?? launch;
+        const remembered = resume || launch === row.launch || launch === row.cli ? b.modelFor?.(binding) ?? null : null;
+        const rememberedArgs = modelArgs(row, remembered);
+        const command = rememberedArgs ? `${base} ${rememberedArgs}` : base;
         terminal = await b.backend.backends.get('hc').create(instructions ? `${command} ${instructions}` : command, binding.cwd,
           { labels: { 'ft.woken': '1', ...(binding.sessionId ? { session: binding.sessionId } : {}) }, ...(parentId ? { parent: parentId } : {}) });
         await b.store.transaction(data => { (data.createdTerminals ??= []).push(terminal.terminal_id); });

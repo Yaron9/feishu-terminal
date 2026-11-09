@@ -1,5 +1,5 @@
 import { localFiles } from './files.js';
-import { readJsonl } from './jsonl.js';
+import { readJsonl, splitModel } from './jsonl.js';
 import { locateSession } from './locate.js';
 
 export function piItems(record, offset = 0) {
@@ -31,6 +31,29 @@ export const piSessionDir = cwd => {
 };
 const escapeRegExp = source => String(source).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// pi records a `model_change` when the model or provider changes, and every
+// assistant message carries the provider/model it ran with. The session start
+// itself names neither, so a launch-time /model pick is seen on its first turn.
+export function piModel(record) {
+  if (!record || typeof record !== 'object') return null;
+  const provider = typeof record.provider === 'string' && record.provider ? record.provider : null;
+  if (record.type === 'model_change') {
+    const model = record.modelId;
+    return typeof model === 'string' && model ? { ...(provider ? { provider } : {}), model } : null;
+  }
+  if (record.type === 'message' && record.message?.role === 'assistant') {
+    const model = record.message.model;
+    if (typeof model !== 'string' || !model) return null;
+    const messageProvider = typeof record.message.provider === 'string' && record.message.provider ? record.message.provider : provider;
+    return { ...(messageProvider ? { provider: messageProvider } : {}), model };
+  }
+  return null;
+}
+const piRecordItems = (record, offset) => {
+  const items = piItems(record, offset), model = piModel(record);
+  return model ? [...items, { role: 'model', model }] : items;
+};
+
 export class PiTranscript {
   constructor({ home, files } = {}) {
     this.files = files ?? localFiles({ home });
@@ -48,5 +71,5 @@ export class PiTranscript {
     }, now);
   }
   // Appended records are the current branch; tail reading needs no active-path walk.
-  async read(path, cursor) { return readJsonl(path, cursor?.atEnd ? null : cursor, piItems, { end: Boolean(cursor?.atEnd), files: this.files }); }
+  async read(path, cursor) { return splitModel(await readJsonl(path, cursor?.atEnd ? null : cursor, piRecordItems, { end: Boolean(cursor?.atEnd), files: this.files })); }
 }

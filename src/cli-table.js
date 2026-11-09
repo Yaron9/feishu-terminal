@@ -1,5 +1,6 @@
 ﻿import { readdir, readFile, stat, open } from 'node:fs/promises';
 import { join, win32, posix } from 'node:path';
+import { safeModelValue } from './group-model.js';
 
 // Compare foreign path styles without resolving them against this host's cwd.
 export function sameCwd(a, b) {
@@ -80,10 +81,13 @@ const menuScreen = screen => {
   return footer >= 0 && lines.slice(0, footer).some(line => /^\s*[❯›>→]\s+\S/u.test(line)) &&
     lines.slice(footer + 1).every(line => !line.trim() || /[↑↓].*(?:browse|navigate)/i.test(line));
 };
+// `model` is the remembered-model template per row. Each segment is appended
+// whole or dropped whole: a pi model recorded without a provider still yields
+// just `--model X`, and an unrecorded codex effort adds no `-c` segment.
 export const CLI_TABLE = Object.freeze([
-  { cli: 'claude', launch: 'claude', footerPatterns: [/^\s*⏵⏵.*(?:mode|interrupt)/i, /^\s*\? for shortcuts/i], agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
-  { cli: 'codex', launch: 'codex --no-daemon -c check_for_update_on_startup=false', backgroundScreen: /\b[1-9]\d* background terminals? running\b/i, footerPatterns: [/^\s*\? for shortcuts(?:\s|$)/i, /^\s*[^\n]*\s·\s(?:[A-Za-z]:[\\/]|~[\\/]|\/).*$/], agents: ['codex'], resume: 'codex resume {id} --no-daemon -c check_for_update_on_startup=false', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
-  { cli: 'pi', launch: 'pi', instructions: '--append-system-prompt {file}', footerPatterns: [/^\s*\d+(?:\.\d+)?%\/\S+.*(?:model|•)/i], agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
+  { cli: 'claude', launch: 'claude', model: ['--model {model}'], footerPatterns: [/^\s*⏵⏵.*(?:mode|interrupt)/i, /^\s*\? for shortcuts/i], agents: ['claude', 'claude-code'], resume: 'claude --resume {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['/', 'e', 'x', 'i', 't', 'enter'], maxAttempts: 1 }, probe: probeClaude },
+  { cli: 'codex', launch: 'codex --no-daemon -c check_for_update_on_startup=false', model: ['-m {model}', '-c model_reasoning_effort={effort}'], backgroundScreen: /\b[1-9]\d* background terminals? running\b/i, footerPatterns: [/^\s*\? for shortcuts(?:\s|$)/i, /^\s*[^\n]*\s·\s(?:[A-Za-z]:[\\/]|~[\\/]|\/).*$/], agents: ['codex'], resume: 'codex resume {id} --no-daemon -c check_for_update_on_startup=false', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+c'], maxAttempts: 3 }, probe: probeCodex },
+  { cli: 'pi', launch: 'pi', instructions: '--append-system-prompt {file}', model: ['--provider {provider}', '--model {model}'], footerPatterns: [/^\s*\d+(?:\.\d+)?%\/\S+.*(?:model|•)/i], agents: ['pi'], resume: 'pi --session {id}', readyStates: ['idle', 'done', 'error'], exit: { keys: ['ctrl+d'], maxAttempts: 1 }, probe: probePi },
 ]);
 for (const row of CLI_TABLE) row.menuScreen = menuScreen;
 
@@ -101,6 +105,16 @@ export async function instructionsArg(row, file) {
   if (!row?.instructions || !file) return null;
   try { await stat(file); } catch { return null; }
   return row.instructions.replace('{file}', shellQuote(file));
+}
+// Render the remembered model through the row's template. Only safe model
+// identifiers (no shell metacharacters) ever reach the command line.
+export function modelArgs(row, remembered) {
+  if (!row?.model || !remembered) return '';
+  const values = { model: safeModelValue(remembered.model), provider: safeModelValue(remembered.provider), effort: safeModelValue(remembered.effort) };
+  return row.model
+    .filter(segment => [...segment.matchAll(/\{(\w+)\}/g)].every(match => Boolean(values[match[1]])))
+    .map(segment => segment.replace(/\{(\w+)\}/g, (_match, name) => values[name]))
+    .join(' ');
 }
 export function lookupCli(terminal) {
   const fields = [terminal?.agent, terminal?.status?.app].filter(v => typeof v === 'string').map(v => v.toLowerCase());

@@ -1,0 +1,5 @@
+{"type":"session_meta","timestamp":"2026-11-09T16:30:57.679Z","payload":{"session_id":"01a1c125-f8df-7680-9a3b-f0c94038157a","id":"01a1c125-f8df-7680-9a3b-f0c94038157a","timestamp":"2026-11-09T16:30:53.666Z","cwd":"D:\\work\\superagent-ft\\work\\live-w7\\cwd","originator":"codex-tui","cli_version":"0.166.0","model_provider":"openai"}}
+{"type":"turn_context","timestamp":"2026-11-09T16:30:59.136Z","payload":{"turn_id":"01a1c126-0889-77b2-a163-0a467751b3e5","root_turn_id":"01a1c126-0889-77b2-a163-0a467751b3e5","cwd":"D:\\work\\superagent-ft\\work\\live-w7\\cwd","model":"codex/gpt-6.1-terra","effort":"medium"}}
+{"type":"response_item","timestamp":"2026-11-09T16:30:59.813Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[redacted prompt]"}]}}
+{"type":"response_item","timestamp":"2026-11-09T16:31:03.644Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"[redacted answer]"}]}}
+{"type":"event_msg","timestamp":"2026-11-09T16:31:04.270Z","payload":{"type":"task_complete","turn_id":"01a1c126-0889-77b2-a163-0a467751b3e5","root_turn_id":"01a1c126-0889-77b2-a163-0a467751b3e5"}}

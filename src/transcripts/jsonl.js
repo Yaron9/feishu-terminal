@@ -17,3 +17,16 @@ export async function readJsonl(path, cursor, project, { end = false, onReset = 
   }
   return { items, cursor: next };
 }
+
+// Adapters project one { role: 'model', model } marker per record that names
+// the model in use. A read keeps only the latest marker as `model`, so the
+// bridge records what the CLI actually ran without seeing model items.
+export function splitModel({ items, cursor }) {
+  let model = null;
+  const messages = [];
+  for (const item of items) {
+    if (item.role === 'model') { if (item.model) model = item.model; continue; }
+    messages.push(item);
+  }
+  return { items: messages, cursor, ...(model ? { model } : {}) };
+}
