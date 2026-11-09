@@ -92,11 +92,69 @@ export class Bridge {
     tail.then(() => { if (this.queues.get(key) === tail) this.queues.delete(key); });
     return result;
   }
+  // A delivery is addressed by topic, or by member: `member` names a team
+  // member's own topic (null = the group's own topics) and the topic is found
+  // — or opened — first. Resolution is serialized per group and member, so two
+  // concurrent member calls can never open two topics; the answer itself then
+  // belongs to the per-topic chain below.
+  deliver({ chatId, topicId, member = null, text, from, timeoutMs = 30 * 60e3 } = {}) {
+    if (topicId) return this.deliverTo({ chatId, topicId, text, from, timeoutMs });
+    const key = JSON.stringify([chatId, member, 'target']);
+    const task = (this.deliveryChains.get(key) ?? Promise.resolve()).catch(() => {})
+      .then(() => this.deliverTarget({ chatId, member, text, from }));
+    this.deliveryChains.set(key, task);
+    const forget = () => { if (this.deliveryChains.get(key) === task) this.deliveryChains.delete(key); };
+    task.then(forget, forget);
+    return task.then(resolved => this.deliverTo({ chatId, topicId: resolved, text, from, timeoutMs }));
+  }
+  // The target of a member delivery: the member's most recent non-frozen topic,
+  // or a brand-new one. Rejections happen before anything is posted.
+  async deliverTarget({ chatId, member, text, from }) {
+    const fail = code => Object.assign(new Error(code), { code });
+    const group = this.registry.get(chatId);
+    if (!group) throw fail('no_group');
+    const owner = member === null ? null : (group.members ?? []).find(item => item?.key === member);
+    if (member !== null && !owner) throw fail('no_member');
+    const recent = this.recentMemberTopic(chatId, member);
+    if (recent) return recent.topicId;
+    return this.createDeliverTopic({ chatId, member: owner, group, text, from });
+  }
+  // "Most recent" is the binding's own activity time, last input first.
+  recentMemberTopic(chatId, member) {
+    let best = null, at = -Infinity;
+    for (const binding of this.store.list()) {
+      if (binding.chatId !== chatId || binding.frozen || (binding.member ?? null) !== member) continue;
+      const when = binding.lastInputAt ?? binding.topicRoot?.createdAt ?? 0;
+      if (when >= at) { at = when; best = binding; }
+    }
+    return best;
+  }
+  // A member with no topic yet gets one: the bot posts a NEW root message and
+  // the same creation path a person's root message takes runs with it as the
+  // topic root and NO queued prompt (the CLI starts and waits). The input then
+  // goes through the ordinary delivery, so it shows as `[来自 <from>]`.
+  async createDeliverTopic({ chatId, member, group, text, from }) {
+    const label = member ? member.name ?? member.key : group.name ?? group.project ?? chatId;
+    const root = `📨 ${from} → ${label}：${[...String(text ?? '')].slice(0, 60).join('')}`;
+    const messageId = await this.feishu.send(chatId, root);
+    const action = { type: 'input', text: root };
+    const event = { kind: 'message', chatId, messageId, eventId: `deliver:${messageId}`,
+      topicId: messageId, isReply: false, senderType: 'user', text: root };
+    if (member) {
+      if (!await this.createMemberTopic(event, action, group, { member, prompt: '' }, { queue: false }))
+        throw Object.assign(new Error('no_cli'), { code: 'no_cli' });
+    } else {
+      const row = CLI_TABLE.find(item => item.cli === (this.store.data.groupEngines?.[chatId] ?? group.cli));
+      if (!row) throw Object.assign(new Error('no_cli'), { code: 'no_cli' });
+      await this.createDormantTopic(event, action, row, group, null, { queue: false });
+    }
+    return messageId;
+  }
   // One delivery per topic is in flight at a time (the chain below), so the
   // first turn that starts after the send is unmistakably this input's turn.
   // The turn id read at send time, not a wall clock, is that boundary: turnChunks
   // mints a fresh id for the delivered input, so it never equals the old one.
-  deliver({ chatId, topicId, text, from, timeoutMs = 30 * 60e3 } = {}) {
+  deliverTo({ chatId, topicId, text, from, timeoutMs = 30 * 60e3 } = {}) {
     const key = JSON.stringify([chatId, topicId]);
     const run = () => new Promise((resolve, reject) => {
       let sent = false, oldTurn = null, submitting = false, finished = false;
@@ -421,15 +479,18 @@ export class Bridge {
   // Every call opens a new session in the member's own topic: the binding
   // carries the member key (so engine/model memory is group + member), the
   // member's cwd, CLI row and persona; the stripped text is the first prompt.
-  async createMemberTopic(event, action, group, { member, prompt }) {
+  async createMemberTopic(event, action, group, { member, prompt }, options = {}) {
     const key = modelKey(event.chatId, { member: member.key });
     const cli = this.store.data.groupEngines?.[key] ?? member.cli ?? this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
     const row = CLI_TABLE.find(item => item.cli === cli);
     if (!row) return false;
-    await this.createDormantTopic(event, { ...action, text: prompt }, row, group, member);
+    // A bare nickname queues nothing; a delivery's 📨 root is the topic root
+    // only (`queue: false`), so the CLI starts and waits for the input.
+    await this.createDormantTopic(event, { ...action, text: options.queue === false ? action.text : prompt },
+      row, group, member, options);
     return true;
   }
-  async createDormantTopic(event, action, row, group, member = null) {
+  async createDormantTopic(event, action, row, group, member = null, { queue = Boolean(action.text) } = {}) {
     const cwd = member?.cwd ?? group?.cwd ?? this.config.defaultCwd;
     const root = this.dormantRoot(action.text, row, cwd, member);
     const topicId = event.messageId;
@@ -442,7 +503,7 @@ export class Bridge {
       instructionsFile: (member ? member.instructionsFile : group?.instructionsFile) ?? null,
       // A bare nickname opens the topic with nothing queued: the CLI starts
       // and waits for the user's next line in its own topic.
-      queuedInputs: action.text ? [{ id: randomUUID(), type: 'input', text: action.text }] : [],
+      queuedInputs: queue ? [{ id: randomUUID(), type: 'input', text: action.text }] : [],
       topicRoot: { type: 'user', text: action.text || (name ?? ''), createdAt: this.now() }, welcomePending: true });
     const created = this.store.binding(event.chatId, topicId);
     // A member topic opens with its identity card (`🤖 甲 · Codex`): the
