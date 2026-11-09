@@ -13,7 +13,8 @@ export { createBackends } from './backends/index.js';
  * @param {{config: Object, transport: import('./transport.js').Transport,
  * registry: import('./registry.js').GroupRegistry, backends: Object,
  * storeFile: string, auditFile: string, log?: Function, clock?: Function}} options
- * @returns {{start: Function, handle: (rawEvent: Object) => Promise<boolean>, stop: Function, accept: Function}}
+ * @returns {{start: Function, handle: (rawEvent: Object) => Promise<boolean>, stop: Function, accept: Function,
+ * topics: () => Promise<Object[]>, open: (topicId: string) => Promise<{paneId: string}>}}
  */
 export function createBridge({ config, transport, registry, backends, storeFile, auditFile, log = () => {}, clock = Date.now }) {
   if (!storeFile || !auditFile || !backends || !registry) throw new TypeError('storeFile, auditFile, backends and registry are required');
@@ -45,6 +46,10 @@ export function createBridge({ config, transport, registry, backends, storeFile,
       const binding = core?.store.forPane(paneId);
       return binding ? { chatId: binding.chatId, topicId: binding.topicId, member: binding.member ?? null } : null;
     },
+    // Desktop pickers list every project topic and wake the chosen one; both
+    // go through the same wake path a Feishu message uses.
+    topics: () => core ? core.topics() : Promise.reject(new Error('Bridge not started')),
+    open: topicId => core ? core.openTopic(topicId) : Promise.reject(new Error('Bridge not started')),
     handle: raw => dispatch(raw, true),
     // Standalone ACK path: wait for durable admission, then execute on core queues.
     accept: raw => dispatch(raw, false),

@@ -129,6 +129,50 @@ export class Bridge {
     }
     return best;
   }
+  // Every project topic this host owns, newest activity first, for a desktop
+  // picker (`metame open`) and the daemon's ft socket. Nothing is posted and no
+  // state changes here: reading the list must never wake or type into a topic.
+  async topics() {
+    const panes = new Map();
+    // A topic whose root text is a delivery header has no human title, so one
+    // list call supplies the terminal title the user sees in hc.
+    try {
+      for (const pane of await this.backend.backends.get('hc')?.list() ?? []) panes.set(pane.pane_id, pane);
+    } catch { /* a missing title must never fail the listing */ }
+    const items = [];
+    for (const binding of this.store.list()) {
+      const group = this.registry.get(binding.chatId);
+      if (!group) continue;
+      const pane = panes.get(binding.paneId) ?? {};
+      const root = cleanTitle(binding.topicRoot?.text);
+      const title = [...(root || topicTitle(pane, binding.sessionTitle) || binding.topicId)].slice(0, 40).join('');
+      items.push({ topicId: binding.topicId, chatId: binding.chatId, group: group.project ?? null,
+        member: binding.memberName ?? binding.member ?? null, cli: binding.cli ?? null, title,
+        // A frozen binding has lost its pane identity and must be reopened from
+        // /t ls; it cannot be attached, so it is not offered as live.
+        state: binding.dormant || binding.frozen ? 'dormant' : 'live',
+        paneId: binding.paneId ?? null,
+        lastInputAt: binding.lastInputAt ?? binding.topicRoot?.createdAt ?? null });
+    }
+    return items.sort((a, b) => (b.lastInputAt ?? 0) - (a.lastInputAt ?? 0));
+  }
+  // Wake a dormant topic exactly as a Feishu message would — its own session is
+  // resumed by the wake path — but queue nothing and post no wake card, then
+  // return the live pane for `hc attach`. A live topic is returned untouched so
+  // picking one twice never types into it.
+  async openTopic(topicId) {
+    const fail = code => Object.assign(new Error(code), { code });
+    const id = String(topicId ?? '').trim();
+    if (!id) throw fail('topic_required');
+    const binding = this.store.list().find(item => item.topicId === id && this.registry.get(item.chatId));
+    if (!binding) throw fail('topic_not_found');
+    if (binding.frozen) throw fail('topic_frozen');
+    if (!binding.dormant) return { paneId: binding.paneId };
+    await this.wake.ensure(binding, { wait: true, card: false });
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (!current || current.dormant || current.wakePending) throw fail('wake_failed');
+    return { paneId: current.paneId };
+  }
   // A member with no topic yet gets one: the bot posts a NEW root message and
   // the same creation path a person's root message takes runs with it as the
   // topic root and NO queued prompt (the CLI starts and waits). The input then
