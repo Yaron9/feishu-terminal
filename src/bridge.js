@@ -974,6 +974,7 @@ export class Bridge {
       await this.backend.sendText(binding.paneId, text, { submit: true, beforeSubmit: () => this.verify(binding) });
       await this.updateGeneration(binding, { needs_check: false });
     } catch (error) {
+      if (error.code === 'connection_error') error.inputId = inputId;
       if (!['agent_blocked', 'blocked'].includes(error.code)) throw error;
       await this.updateGeneration(binding, { needs_check: false });
       await this.store.transaction(data => {

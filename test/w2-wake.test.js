@@ -244,6 +244,42 @@ test('queued input is not replayed after an ambiguous send', async t => {
   assert.equal(JSON.parse(await readFile(h.store.file, 'utf8')).bindings[0].queuedInputs.length, 0);
 });
 
+test('connection errors retain input and only retry requests known not to have been dispatched', async t => {
+  const h = await harness(t); await h.dormant(); h.onRun = term => h.ready(term);
+  const send = h.backend.sendText.bind(h.backend); let attempts = 0;
+  h.backend.sendText = async (...args) => {
+    if (++attempts === 1) throw Object.assign(new Error('offline'), { code: 'connection_error', notDispatched: true });
+    return send(...args);
+  };
+  await h.send('keep me');
+  assert.equal(h.binding().queuedInputs[0].text, 'keep me');
+  assert.equal(h.binding().needs_check, false);
+  h.advance(); await h.bridge.tick();
+  assert.equal(h.binding().queuedInputs.length, 0);
+  assert.equal(h.sends().length, 1);
+});
+
+test('ambiguous connection error retains the input and tells the user', async t => {
+  const h = await harness(t); await h.dormant(); h.onRun = term => h.ready(term);
+  h.backend.sendText = async () => { throw Object.assign(new Error('lost'), { code: 'connection_error' }); };
+  await h.send('uncertain');
+  assert.equal(h.binding().queuedInputs[0].text, 'uncertain');
+  assert.equal(h.binding().needs_check, true);
+  assert.match(JSON.stringify(h.feishu.calls), /消息是否送达无法确认/);
+});
+
+test('connection retries stop after three attempts and retain the message', async t => {
+  const h = await harness(t); await h.dormant(); h.onRun = term => h.ready(term); let attempts = 0;
+  h.backend.sendText = async () => { attempts++; throw Object.assign(new Error('offline'), { code: 'connection_error', notDispatched: true }); };
+  await h.send('retry limit');
+  h.advance(2000); await h.bridge.tick();
+  h.advance(3000); await h.bridge.tick();
+  h.advance(5000); await h.bridge.tick();
+  assert.equal(attempts, 3); assert.equal(h.binding().queuedInputs[0].text, 'retry limit');
+  assert.equal(h.binding().needs_check, true);
+  assert.match(JSON.stringify(h.feishu.calls), /重试次数已用完/);
+});
+
 test('a message detects closure immediately without a preceding tick', async t => {
   const h = await harness(t); h.old.state = 'finished'; h.onRun = term => h.ready(term);
   await h.send(); assert.equal(h.runs().length, 1); assert.equal(h.sends().length, 1);

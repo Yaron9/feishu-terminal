@@ -237,6 +237,7 @@ export class Wake {
       binding = b.store.binding(binding.chatId, binding.topicId);
       const item = binding?.queuedInputs?.[0];
       if (!item || binding.dormant || binding.frozen || binding.wakePending || binding.needs_check) return;
+      if (item.retryAt && b.now() < item.retryAt) return;
       await b.verify(binding);
       // Claim immediately before the input send. An uncertain delivery uses
       // needs_check and is never replayed after a crash or a second event.
@@ -248,13 +249,30 @@ export class Wake {
         });
         if (!claimed) throw Object.assign(new Error('Queued input changed'), { code: 'binding_changed' });
       };
-      if (item.type === 'input') {
+      try { if (item.type === 'input') {
         if (await b.input(binding, item.text, true, false, claim) === false) {
           const current = b.store.binding(binding.chatId, binding.topicId);
           await b.updateGeneration(binding, { queuedInputs: [item, ...(current.queuedInputs ?? [])] });
           return;
         }
       } else { await claim(); await b.writeInput(binding, item.type === 'raw' ? 'text' : 'keys', item.type === 'raw' ? { text: item.text } : { keys: item.keys }, false, true); }
+      } catch (error) {
+        if (error.code !== 'connection_error') throw error;
+        const current = b.store.binding(binding.chatId, binding.topicId);
+        if (!b.sameGeneration(binding, current) || current.queuedInputs?.some(queued => queued.id === item.id)) throw error;
+        const retries = (item.retries ?? 0) + 1, retry = error.notDispatched === true && retries < 3;
+        await b.store.transaction(data => {
+          const target = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
+          if (!b.sameGeneration(binding, target)) return;
+          target.queuedInputs = [{ ...item, retries, retryAt: b.now() + retries * 1000 }, ...(target.queuedInputs ?? [])];
+          target.needs_check = !retry;
+          if (error.notDispatched) target.sentInputs = (target.sentInputs ?? []).filter(input => input.id !== error.inputId);
+        });
+        if (!retry) await b.feishu.reply(binding.topicId, error.notDispatched ?
+          '消息发送失败，已保留。重试次数已用完，请检查连接后处理。' :
+          '连接中断，消息是否送达无法确认，已保留并暂停重试。请检查终端后处理。');
+        return;
+      }
     }
   }
   async screen(binding) {

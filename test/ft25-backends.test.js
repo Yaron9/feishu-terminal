@@ -71,6 +71,16 @@ test('hc quiet delay and started:false acknowledge once; lost responses are not 
   assert.equal(fake.calls.filter(c => c.method === 'terminal.send').length, 2);
 });
 
+test('hc isolates a dropped send from concurrent create and remains usable', async t => {
+  const fake = await fakeHc(); fake.create(); fake.drop('terminal.send');
+  const b = new HcBackend(new HcClient({ endpoint: fake.endpoint, timeoutMs: 300 }));
+  t.after(async () => { b.dispose(); await fake.close(); });
+  const [created, sent] = await Promise.allSettled([b.create('pi', '/tmp'), b.sendText('hc:t1', 'hello', { submit: true })]);
+  assert.equal(created.status, 'fulfilled'); assert.equal(sent.status, 'rejected');
+  assert.ok((await b.list()).some(item => item.pane_id === created.value.pane_id));
+  assert.equal((await b.sendText('hc:t1', 'next', { submit: true })).turn, 0);
+});
+
 test('hc named creation, finished inspection and removal preserve terminal identity', async t => {
   const fake = await fakeHc(), b = new HcBackend(new HcClient({ endpoint: fake.endpoint, timeoutMs: 300 }));
   t.after(async () => { b.dispose(); await fake.close(); });

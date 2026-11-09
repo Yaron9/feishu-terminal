@@ -44,18 +44,18 @@ export class HcClient extends HerdrClient {
     if (this.closed) return Promise.reject(new HerdrError('client_closed'));
     return new Promise((resolve, reject) => {
       const id = randomUUID(), helloId = randomUUID();
-      let finished = false;
+      let finished = false, dispatched = false;
       const finish = (error, result) => {
         if (finished) return;
         finished = true; clearTimeout(timer); socket.destroy();
-        if (error) reject(error); else resolve(result);
+        if (error) { if (!dispatched) error.notDispatched = true; reject(error); } else resolve(result);
       };
       const send = (id, method, params) => socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
       const socket = this.socket(message => {
         if (![id, helloId].includes(message.id)) return;
         if (message.error) { finish(rpcError(message.error)); return; }
         if (message.id === helloId) {
-          try { onHello(checkHello(message.result)); send(id, method, params); } catch (error) { finish(error); }
+          try { onHello(checkHello(message.result)); dispatched = true; send(id, method, params); } catch (error) { finish(error); }
         } else if ('result' in message) finish(null, message.result);
         else finish(new HerdrError('invalid_response'));
       }, () => finish(new HerdrError('connection_closed')));
