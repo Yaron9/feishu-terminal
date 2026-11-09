@@ -3,6 +3,8 @@
  * @property {string} chatId
  * @property {string} [project]
  * @property {string} [cwd]
+ * @property {string} [cli] Default CLI key from CLI_TABLE; absent preserves shell startup.
+ * @property {string} [instructionsFile] Absolute path to project instructions.
  * @property {string} [machine]
  * @property {string[]} operatorOpenIds
  * @property {(openId: string) => boolean} [isOperator] Overrides the operator list when present.
