@@ -313,7 +313,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "▶ 是，执行"
+              "content": "▶ 1. 是，执行"
             }
           ]
         },
@@ -337,7 +337,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "始终允许"
+              "content": "2. 始终允许"
             }
           ]
         },
@@ -361,7 +361,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "否，取消"
+              "content": "3. 否，取消"
             }
           ]
         },

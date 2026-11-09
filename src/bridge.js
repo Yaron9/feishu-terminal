@@ -828,6 +828,10 @@ export class Bridge {
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
     await this.updateGeneration(binding, { menuTurnContinuation: false });
+    // A rating survey takes the next keystroke as its answer, so a text message
+    // has to dismiss it first: the text belongs to the agent, not to the survey.
+    const survey = detectMenu(inputScreen.text, { cli: agent?.agent ?? binding.cli });
+    if (survey.dismissKey) await this.writeInput(binding, 'keys', { keys: [survey.dismissKey] });
     const inputId = await this.rememberInput(binding, text);
     await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
     try {
@@ -849,7 +853,13 @@ export class Bridge {
   async button(event, binding) {
     if (event.key?.startsWith('tree:')) { await this.tree.navigate(event, binding); return; }
     if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
-    if (event.key !== 'refresh' && !validKeys([event.key]) && !/^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '')) {
+    // A card callback may only carry a key the card really offers: the generic
+    // allowlist stays shut on a key no menu put on screen, while a menu's own
+    // option keys (a survey's "0: Dismiss" included) stay tappable.
+    const offered = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '') ||
+      binding?.cardMenu?.kind === 'numbered' &&
+      binding.cardMenu.items.some((item, i) => (item.key ?? String(i + 1)) === event.key);
+    if (event.key !== 'refresh' && !validKeys([event.key]) && !offered) {
       await this.feishu.reply(event.topicId || event.messageId, '该按钮已停用'); return;
     }
     const isMenu = Boolean(binding?.menuCardId && event.messageId === binding.menuCardId);
@@ -860,7 +870,9 @@ export class Bridge {
     else if (binding) binding = { ...binding, cardMenu: null };
     const menuAction = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '');
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
-      (event.key !== 'refresh' && !validKeys([event.key]) && !menuAction)) {
+      (event.key !== 'refresh' && !validKeys([event.key]) && !(menuAction ||
+        binding?.cardMenu?.kind === 'numbered' &&
+        binding.cardMenu.items.some((item, i) => (item.key ?? String(i + 1)) === event.key)))) {
       if (binding) { await this.staleCard(binding, event); return; }
       await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
@@ -881,7 +893,7 @@ export class Bridge {
       await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'numbered' && !['esc', 'refresh',
-      ...binding.cardMenu.items.map((_, i) => String(i + 1))].includes(event.key)) {
+      ...binding.cardMenu.items.map((item, i) => item.key ?? String(i + 1))].includes(event.key)) {
       await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'list' && !menuControls(binding.cardMenu, {
@@ -946,8 +958,9 @@ export class Bridge {
     if (!sameMenu(menu, await this.liveMenu(binding, fresh.read.text)) || menuScreenHash(menu, read.text) !== menuScreenHash(menu, fresh.read.text)) {
       await this.changedCard(binding, event); return;
     }
+    const picked = menu.kind === 'numbered' ? menu.items.find((item, i) => (item.key ?? String(i + 1)) === event.key) : null;
     const selected = selection ? menu.items[Number(selection[2])]?.label :
-      menu.kind === 'numbered' && /^[1-9]$/.test(event.key) ? menu.items[Number(event.key) - 1]?.label :
+      picked ? `${event.key}. ${picked.label}` :
       event.key === 'enter' ? menu.items[menu.cursorIndex]?.label : null;
     let selectionPatchFailed = false;
     if (selected) {
@@ -1029,7 +1042,12 @@ export class Bridge {
       await this.publishCard(this.store.binding(current.chatId, current.topicId), true);
     } else {
       await this.verify(current);
-      await this.patchCard(event.messageId, this.sessionCard(outputCard(state.visible, { full: true }), current),
+      // The screen still asks the user something: the card they are looking at
+      // must keep the question and its options, never the bare terminal text.
+      const card = state.menu?.kind ? menuCard({ menu: state.menu, topicId: current.topicId, nonce: current.nonce,
+        agent: this.agentName(state.agent ?? current.cli ?? '终端'), menuUI: { page: 0, pageSize: menuPageSize(state.menu) } }) :
+        outputCard(state.visible, { full: true });
+      await this.patchCard(event.messageId, this.sessionCard(card, current),
         event.messageId === current.menuCardId ? 'menu' : current.cardTurnId ? 'turn' : 'status');
       if (event.messageId === current.menuCardId) await this.updateGeneration(current, {
         menuCardId: null, menuNonce: null, cardMenu: null, menuSignature: null, menuPublishedNonce: null,
@@ -1040,7 +1058,7 @@ export class Bridge {
     await this.feishu.reply(binding.topicId, '菜单已变化，已更新卡片。');
   }
   async menuReply(binding, event, text) {
-    if (!/^(?:[1-9]\d*|[yn])$/i.test(text)) return false;
+    if (!/^(?:\d+|[yn])$/i.test(text)) return false;
     const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
     const menu = await this.liveMenu(binding, read.text);
     if (!menu.kind) {
@@ -1050,8 +1068,8 @@ export class Bridge {
     }
     if (!menu.items.length) return false;
     if (/^[yn]$/i.test(text) && !['yes', 'no'].every(label => menu.items.some(item => new RegExp(`^${label}\\b`, 'i').test(item.label)))) return false;
-    const index = /^\d+$/.test(text) ? Number(text) - 1 : menu.items.findIndex(item =>
-      new RegExp(text.toLowerCase() === 'y' ? '^yes\\b' : '^no\\b', 'i').test(item.label));
+    const index = /^\d+$/.test(text) ? menu.items.findIndex((item, i) => (item.key ?? String(i + 1)) === text) :
+      menu.items.findIndex(item => new RegExp(text.toLowerCase() === 'y' ? '^yes\\b' : '^no\\b', 'i').test(item.label));
     if (index < 0 || index >= menu.items.length) return false;
     let current = this.store.binding(binding.chatId, binding.topicId);
     if (!current.menuCardId) {
@@ -1068,7 +1086,7 @@ export class Bridge {
         current = this.store.binding(current.chatId, current.topicId);
       }
     }
-    const key = menu.kind === 'numbered' ? String(index + 1) :
+    const key = menu.kind === 'numbered' ? menu.items[index].key ?? String(index + 1) :
       `menu:${current.menuConfirm?.index === index ? 'confirm' : 'select'}:${index}`;
     await this.button({ ...event, kind: 'button', messageId: current.menuCardId, nonce: current.menuNonce, key }, current);
     return true;
