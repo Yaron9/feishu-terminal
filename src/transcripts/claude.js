@@ -1,6 +1,7 @@
-import { readFile, stat, readdir } from 'node:fs/promises';
+import { readFile as procReadFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, basename } from 'node:path';
+import { localFiles } from './files.js';
 import { probeClaude, lookupCli } from '../cli-table.js';
 import { paneProcess } from './proc.js';
 import { readJsonl } from './jsonl.js';
@@ -36,7 +37,8 @@ export function claudeItems(record, offset = 0) {
 }
 
 export class ClaudeTranscript {
-  constructor({ home = homedir(), procRoot = '/proc', cacheLimit = 512 } = {}) {
+  constructor({ home = homedir(), files, procRoot = '/proc', cacheLimit = 512 } = {}) {
+    this.files = files ?? localFiles({ home });
     Object.assign(this, { home, procRoot, cacheLimit }); this.transcriptTurns = true; this.backgrounds = new Map(); this.sessions = new Map();
   }
   remember(cache, path, value) {
@@ -51,7 +53,7 @@ export class ClaudeTranscript {
     // exact session JSON, with the environment-based legacy lookup as fallback.
     let pid = pane.foreground?.pid ?? pane.foreground_pid;
     if (pid) {
-      try { if ((await readFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() !== 'claude') pid = null; }
+      try { if ((await procReadFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() !== 'claude') pid = null; }
       catch { pid = null; }
     }
     if (!pid) pid = await paneProcess(pane.pane_id, 'claude', this.procRoot);
@@ -63,13 +65,13 @@ export class ClaudeTranscript {
     if (!pid) return null;
     try {
       // Exact .json filename only. Never enumerate or open the adjacent *.key files.
-      const { sessionId, cwd, pid: sessionPid } = JSON.parse(await readFile(join(this.home, '.claude', 'sessions', `${pid}.json`), 'utf8'));
+      const { sessionId, cwd, pid: sessionPid } = JSON.parse(await this.files.readFile(join(this.home, '.claude', 'sessions', `${pid}.json`)));
       if (Number(sessionPid) !== pid || typeof cwd !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return null;
       const path = join(this.home, '.claude', 'projects', projectDirectory(cwd), `${sessionId}.jsonl`);
       // Validate the actual escaped directory/file rather than guessing another project.
-      if (!(await stat(path)).isFile()) return null;
+      if (!(await this.files.stat(path)).isFile) return null;
       const previous = this.sessions.get(path);
-      const restartedAt = new Date((await stat(join(this.home, '.claude', 'sessions', `${pid}.json`))).mtimeMs).toISOString();
+      const restartedAt = new Date((await this.files.stat(join(this.home, '.claude', 'sessions', `${pid}.json`))).mtimeMs).toISOString();
       this.remember(this.sessions, path, { sessionId, pid, restartedAt, restarted: previous?.restarted || Boolean(previous && previous.pid !== pid) });
       return path;
     } catch { return null; }
@@ -78,15 +80,15 @@ export class ClaudeTranscript {
     const session = this.sessions.get(path);
     if (!session) return [];
     const directory = join(this.home, '.claude', 'sessions');
-    let names;
-    try { names = await readdir(directory); } catch { return []; }
+    let entries;
+    try { entries = await this.files.list(directory); } catch { return []; }
     const duplicates = [];
-    for (const name of names.filter(name => /^\d+\.json$/.test(name))) {
+    for (const entry of entries.filter(entry => /^\d+\.json$/.test(entry.name))) {
       try {
         // Project only these two fields; never retain or log session payloads.
-        const { pid, sessionId } = JSON.parse(await readFile(join(directory, name), 'utf8'));
-        if (!Number.isSafeInteger(pid) || pid <= 0 || name !== `${pid}.json` || pid === session.pid || sessionId !== session.sessionId) continue;
-        if ((await readFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() === 'claude') duplicates.push(pid);
+        const { pid, sessionId } = JSON.parse(await this.files.readFile(join(directory, entry.name)));
+        if (!Number.isSafeInteger(pid) || pid <= 0 || entry.name !== `${pid}.json` || pid === session.pid || sessionId !== session.sessionId) continue;
+        if ((await procReadFile(join(this.procRoot, String(pid), 'comm'), 'utf8')).trim() === 'claude') duplicates.push(pid);
       } catch { /* Exited, inaccessible or invalid session. */ }
     }
     return duplicates.sort((a, b) => a - b);
@@ -100,12 +102,12 @@ export class ClaudeTranscript {
     // tracker cursor is independent of the delivery cursor (pending retries).
     for (;;) {
       const next = await readJsonl(path, entry.scan, record => { trackBackground(entry.background, record); return []; },
-        { onReset: () => { entry.background = emptyBackground(); } });
+        { onReset: () => { entry.background = emptyBackground(); }, files: this.files });
       const done = next.cursor.offset === entry.scan?.offset;
       entry.scan = next.cursor;
       if (done) break;
     }
-    const result = await readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd) });
+    const result = await readJsonl(path, cursor?.atEnd ? null : cursor, claudeItems, { end: Boolean(cursor?.atEnd), files: this.files });
     const session = this.sessions.get(path);
     const restartedAt = session && (session.restarted || (cursor?.pid != null && cursor.pid !== session.pid))
       ? session.restartedAt : cursor?.restartedAt;

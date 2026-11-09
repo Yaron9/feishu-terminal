@@ -1,15 +1,19 @@
-import { readdir, readFile, open } from 'node:fs/promises';
+import { readFile, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { localFiles } from './transcripts/files.js';
 import { lookupCli, resumeSessionId } from './cli-table.js';
 
 // All OS effects are injectable. Only numeric *.json session files are opened;
 // session payloads are projected immediately and never retained or audited.
+// Session files and directories are read through the file port; /proc lookups
+// stay local-only (a remote machine's /proc is a different namespace).
 export class SessionFollow {
-  constructor({ home = homedir(), procRoot = '/proc', read = readFile, names = readdir,
+  constructor({ home = homedir(), files, procRoot = '/proc', read = readFile,
     kill = (pid, signal) => process.kill(pid, signal), sleep = ms => new Promise(r => setTimeout(r, ms)),
     now = Date.now, waitMs = 10000 } = {}) {
-    Object.assign(this, { home, procRoot, read, names, kill, sleep, now, waitMs });
+    this.files = files ?? localFiles({ home });
+    Object.assign(this, { home, procRoot, read, kill, sleep, now, waitMs });
     this.textMatches = new Map();
   }
   async describe(terminal) {
@@ -64,7 +68,7 @@ export class SessionFollow {
   async sessionIdOf(pid) {
     try {
       if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-      const { pid: savedPid, sessionId } = JSON.parse(await this.read(join(this.home, '.claude', 'sessions', `${pid}.json`), 'utf8'));
+      const { pid: savedPid, sessionId } = JSON.parse(await this.files.readFile(join(this.home, '.claude', 'sessions', `${pid}.json`)));
       return savedPid === pid && typeof sessionId === 'string' && /^[a-zA-Z0-9_-]+$/.test(sessionId) ? sessionId : null;
     } catch { return null; }
   }
@@ -79,7 +83,7 @@ export class SessionFollow {
         const value = Number(fields[19]); return Number.isSafeInteger(value) && value > 0 ? value : null;
       };
       const first = await start(); if (!first) return null;
-      const { pid: savedPid, sessionId: savedId } = JSON.parse(await this.read(join(this.home, '.claude', 'sessions', `${pid}.json`), 'utf8'));
+      const { pid: savedPid, sessionId: savedId } = JSON.parse(await this.files.readFile(join(this.home, '.claude', 'sessions', `${pid}.json`)));
       if (savedPid !== pid || savedId !== sessionId || (await this.read(join(base, 'comm'), 'utf8')).trim() !== 'claude') return null;
       const env = Object.fromEntries((await this.read(join(base, 'environ'), 'utf8')).split('\0').filter(x => x.includes('='))
         .map(x => { const i = x.indexOf('='); return [x.slice(0, i), x.slice(i + 1)]; }));
@@ -88,11 +92,11 @@ export class SessionFollow {
     } catch { return portable ? (await this.hcCandidates(sessionId)).find(p => p.pid === pid) ?? null : null; }
   }
   async candidates(sessionId) {
-    let names;
-    try { names = await this.names(join(this.home, '.claude', 'sessions')); } catch { names = []; }
+    let entries;
+    try { entries = await this.files.list(join(this.home, '.claude', 'sessions')); } catch { entries = []; }
     const result = [];
-    for (const name of names.filter(n => /^\d+\.json$/.test(n))) {
-      const candidate = await this.process(Number(name.slice(0, -5)), sessionId, false);
+    for (const entry of entries.filter(e => /^\d+\.json$/.test(e.name))) {
+      const candidate = await this.process(Number(entry.name.slice(0, -5)), sessionId, false);
       if (candidate) result.push(candidate);
     }
     for (const candidate of await this.hcCandidates(sessionId)) {

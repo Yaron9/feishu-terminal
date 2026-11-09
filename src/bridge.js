@@ -8,6 +8,7 @@ import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outpu
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
 import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
+import { hcFiles } from './transcripts/files.js';
 import { bridgeBackend } from './backends/index.js';
 import { SessionFollow } from './session-follow.js';
 import { Wake } from './wake.js';
@@ -42,7 +43,7 @@ const selectedMenuSignature = menu => JSON.stringify([menu.kind, menu.title, men
   menu.items.map(item => item.label.replace(/^\d+\s*(?:s|m|h|d|seconds?|minutes?|hours?|days?)\s+ago\b/i, '<age>'))]);
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, registry, wakeOptions, reapOptions }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters, sessionFollow, registry, wakeOptions, reapOptions }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
@@ -54,7 +55,30 @@ export class Bridge {
     this.registry = registry ?? createConfigRegistry(config);
     this.picker = new PanePicker(this);
     this.tree = new TerminalTree(this);
-    this.adapters = adapters;
+    this.adapters = adapters ?? this.createAdapters();
+  }
+  // One adapter set per machine: a remote hc terminal reads its transcripts
+  // through hc (hc:mac/t42 -> mac); a local terminal keeps the local port.
+  createAdapters() {
+    const local = transcriptAdapters();
+    const sets = new Map();
+    const bridge = this;
+    return {
+      forPane(paneId) {
+        const machine = /^hc:([^/]+)\//.exec(String(paneId ?? ''))?.[1];
+        if (!machine) return local;
+        let set = sets.get(machine);
+        if (!set) {
+          const client = bridge.backend.backends?.get('hc')?.client;
+          set = client ? transcriptAdapters({ files: hcFiles(machine, client) }) : local;
+          sets.set(machine, set);
+        }
+        return set;
+      },
+    };
+  }
+  adaptersFor(paneId) {
+    return typeof this.adapters?.forPane === 'function' ? this.adapters.forPane(paneId) : this.adapters;
   }
   get queue() { return Promise.all([...this.queues.values()]); }
   enqueue(fn, key = 'control') {
@@ -700,7 +724,7 @@ export class Bridge {
     const state = this.state(binding);
     try {
       if (!pane) pane = await this.readVerified(binding, () => this.backend.get(binding.paneId));
-      const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adapters[key];
+      const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adaptersFor(pane.pane_id)[key];
       if (!adapter) { state.transcriptSource = null; return; }
       const path = await this.readVerified(binding, () => adapter.locate(pane, this.store.binding(binding.chatId, binding.topicId), this.store.list(), this.now()));
       if (!path) { state.transcriptSource = null; return; }
