@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, open } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { lookupCli, resumeSessionId } from './cli-table.js';
@@ -10,6 +10,7 @@ export class SessionFollow {
     kill = (pid, signal) => process.kill(pid, signal), sleep = ms => new Promise(r => setTimeout(r, ms)),
     now = Date.now, waitMs = 10000 } = {}) {
     Object.assign(this, { home, procRoot, read, names, kill, sleep, now, waitMs });
+    this.textMatches = new Map();
   }
   async describe(terminal) {
     const row = lookupCli(terminal), cwd = terminal.foreground?.cwd ?? terminal.foreground_cwd ?? terminal.cwd;
@@ -33,8 +34,18 @@ export class SessionFollow {
       .map(input => JSON.stringify(input.prefix).slice(1, -1)).filter(Boolean);
     if (!needles.length) return false;
     try {
-      const raw = await this.read(candidate.source, 'utf8');
-      return needles.some(needle => raw.includes(needle));
+      const file = await open(candidate.source, 'r');
+      try {
+        const stat = await file.stat();
+        const key = JSON.stringify([candidate.source, stat.size, stat.mtimeMs, needles]);
+        if (this.textMatches.has(key)) return this.textMatches.get(key);
+        const bytes = Buffer.alloc(4 * 1024 * 1024), { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+        const raw = bytes.subarray(0, bytesRead).toString('utf8');
+        const match = needles.some(needle => raw.includes(needle));
+        this.textMatches.set(key, match);
+        if (this.textMatches.size > 128) this.textMatches.delete(this.textMatches.keys().next().value);
+        return match;
+      } finally { await file.close(); }
     } catch { return false; }
   }
   async hcCandidates(sessionId) {

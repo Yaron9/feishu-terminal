@@ -27,6 +27,7 @@ export async function locateSession(pane, binding, bindings, sessions, config, n
     const paneId = pane.labels?.session ?? resumeSessionId(row, pane.foreground?.argv) ?? resumeSessionId(row, pane.argv);
     const id = validId(paneId) ? paneId : (['verified', 'probe'].includes(binding.sessionSource) && validId(binding.sessionId) && !bindings.some(b => (b.topicId !== binding.topicId || b.chatId !== binding.chatId) && b.sessionId === binding.sessionId) ? binding.sessionId : null);
     const cwd = pane.foreground?.cwd ?? pane.foreground_cwd ?? pane.cwd ?? binding.cwd;
+    const probeFresh = !savedValid && id && binding.sessionSource === 'probe' && binding.topicRoot?.type === 'user' && !binding.inputTranscriptSeen;
     const command = (binding.sentInputs ?? []).findLast(i => i.hash && binding.cliCommand && i.hash === inputHash(binding.cliCommand));
     const since = binding.cliCommandSentAt ?? command?.sentAt;
     if (!savedValid && !id && !Number.isFinite(since)) return null;
@@ -47,6 +48,7 @@ export async function locateSession(pane, binding, bindings, sessions, config, n
             if (!meta && config.meta(record)) meta = config.meta(record);
             if (!first) first = config.items(record).find(item => item.role === 'user');
             if (savedValid && promptOffset === undefined && config.items(record).some(item => item.role === 'user' && Date.parse(item.ts) >= pending.sentAt && echoIndex(item, [pending], now, binding.identity?.terminalId) === 0)) promptOffset = offset;
+            if (probeFresh && promptOffset === undefined && config.items(record).some(item => item.role === 'user' && echoIndex(item, binding.sentInputs ?? [], now, binding.identity?.terminalId) >= 0)) promptOffset = offset;
             return [];
             });
             scanCursor = scan.cursor;
@@ -54,6 +56,10 @@ export async function locateSession(pane, binding, bindings, sessions, config, n
           const sessionId = meta?.id;
           if (!validId(sessionId) || !config.matchesId(basename(file), sessionId) || (!savedValid && id && sessionId !== id) || !sameCwd(cwd, meta.cwd)) continue;
           if (savedValid) {
+            if (promptOffset !== undefined) matches.push({ file, sessionId, cursor: await cursorAt(file, promptOffset) });
+            continue;
+          }
+          if (probeFresh) {
             if (promptOffset !== undefined) matches.push({ file, sessionId, cursor: await cursorAt(file, promptOffset) });
             continue;
           }

@@ -171,10 +171,33 @@ test('each concurrent fresh topic claims its own probed session', async t => {
   assert.equal(h.store.binding('oc_test', 'root-b').sessionSource, 'probe');
 });
 
+test('fresh topic does not claim a sole unrelated rollout and retries a negative text match', async t => {
+  const h = await harness(t); h.onRun = term => h.ready(term);
+  await h.bridge.handle(message('只回复 A1', 'root-a'));
+  const binding = () => h.store.binding('oc_test', 'root-a');
+  const pane = await h.backend.get('hc:t1'); let match = false;
+  h.bridge.sessionFollow.describe = async () => ({ cli: 'codex', cwd: h.cwd, sessionId: 'candidate',
+    sessionVerified: false, probeCandidates: [{ sessionId: 'candidate', source: 'fixture' }] });
+  h.bridge.sessionFollow.sentTextMatch = async () => match;
+  h.advance(2000); await h.bridge.wake.observe(binding(), pane);
+  assert.equal(binding().sessionId ?? null, null);
+  match = true; h.advance(2000); await h.bridge.wake.observe(binding(), pane);
+  assert.equal(binding().sessionId, 'candidate');
+});
+
+test('text match cache notices a rollout that grows after the first probe', async t => {
+  const h = await harness(t), file = join(h.home, 'rollout.jsonl');
+  const input = [{ prefix: '只回复 B2' }];
+  await writeFile(file, '{}\n');
+  assert.equal(await h.bridge.sessionFollow.sentTextMatch({ source: file }, input), false);
+  await writeFile(file, JSON.stringify({ text: '只回复 B2' }) + '\n');
+  assert.equal(await h.bridge.sessionFollow.sentTextMatch({ source: file }, input), true);
+});
+
 test('identical texts never let one topic claim the other pane session', async t => {
   const h = await twoTopicSessions(t, '相同的问题文本', '相同的问题文本');
   const [a, b] = ['root-a', 'root-b'].map(id => h.store.binding('oc_test', id).sessionId ?? null);
-  assert.ok(a !== b, 'a session must never be attributed to both concurrent topics');
+  assert.deepEqual([a, b], [null, null], 'identical inputs cannot safely identify either session');
 });
 
 // /engine switches the binding's cli and goes dormant until the new CLI's

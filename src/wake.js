@@ -35,14 +35,19 @@ export class Wake {
     // candidate by the exact text ft sent into this binding's own pane: only
     // that binding can match it, so concurrent topics each claim their own
     // session instead of blocking each other. Identical texts stay unclaimed.
-    const ownInputs = (current.sentInputs ?? []).filter(input => current.identity?.terminalId && input.terminalId === current.identity.terminalId);
+    const ownInputs = (current.sentInputs ?? []).filter(input => current.identity?.terminalId && input.terminalId === current.identity.terminalId &&
+      !b.store.list().some(other => other !== current && (other.chatId !== current.chatId || other.topicId !== current.topicId) &&
+        (other.sentInputs ?? []).some(sent => sent.prefix === input.prefix && sent.length === input.length)));
     let sentMatch = null;
-    if (!facts.sessionVerified && !soleTerminal && !current.sessionId && !current.dormant && !current.wakePending && !current.wakeAttempt && ownInputs.length) {
+    if (!facts.sessionVerified && (!soleTerminal || current.topicRoot?.type === 'user') && !current.sessionId && !current.dormant && !current.wakePending && !current.wakeAttempt && ownInputs.length) {
       const cache = state.sentTextCandidates ??= new Map();
-      for (const candidate of facts.probeCandidates ?? []) {
+      for (const candidate of (facts.probeCandidates ?? []).slice(-128)) {
         if (!candidate.source) continue;
-        if (!cache.has(candidate.source)) cache.set(candidate.source, b.sessionFollow.sentTextMatch(candidate, ownInputs));
-        if (await cache.get(candidate.source)) { sentMatch = candidate.sessionId; break; }
+        if (!cache.has(candidate.source)) {
+          const match = await b.sessionFollow.sentTextMatch(candidate, ownInputs);
+          if (match) cache.set(candidate.source, true);
+        }
+        if (cache.get(candidate.source)) { sentMatch = candidate.sessionId; break; }
       }
     }
     await b.store.transaction(data => {
@@ -62,7 +67,7 @@ export class Wake {
       } else if (facts.sessionVerified) { id = facts.sessionId; source = 'verified'; }
       else {
         const claim = facts.sessionId ?? sentMatch;
-        if (claim && (sentMatch === claim || soleTerminal || (Number.isFinite(facts.sessionStartedAt) &&
+        if (claim && (sentMatch === claim || (soleTerminal && item.topicRoot?.type !== 'user') || (Number.isFinite(facts.sessionStartedAt) &&
           (item.sentInputs ?? []).some(input => input.terminalId === item.identity?.terminalId && input.sentAt <= facts.sessionStartedAt &&
             /^(codex|pi)(?:\s|$)/i.test(input.prefix ?? '')))) &&
           !data.bindings.some(other => other !== item && other.sessionId === claim)) {

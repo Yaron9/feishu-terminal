@@ -45,6 +45,17 @@ test('locates matching prompt, excludes held rollouts and refuses ambiguity', as
   assert.equal(await adapter.locate(pane, { ...binding, transcript: { adapter: 'codex', path } }, [binding]), path);
 });
 
+test('a freshly probed session starts at its own input even when the answer already exists', async t => {
+  const { home, path } = await fixture(t, 'own');
+  const adapter = new CodexTranscript({ home }), pane = { pane_id: 'p', cwd: '/tmp', created_ms: 0 };
+  const binding = { chatId: 'a', topicId: 'b', sessionId: 'own', sessionSource: 'probe',
+    topicRoot: { type: 'user' }, sentInputs: [input('hello')] };
+  assert.equal(await adapter.locate(pane, binding, [binding], 2000), path);
+  const found = adapter.sessions.get(path);
+  assert.ok(found.cursor);
+  assert.deepEqual((await adapter.read(path, found.cursor)).items.map(item => item.role), ['user', 'assistant', 'turn_end']);
+});
+
 test('full screen startup and two prompts use one clean turn card per prompt', async t => {
   const home = await mkdtemp(join(tmpdir(), 'w7n-flow-')); t.after(() => rm(home, { recursive: true, force: true }));
   const adapter = new CodexTranscript({ home }); const h = await legacyHarness(t, { adapters: { codex: adapter } });
