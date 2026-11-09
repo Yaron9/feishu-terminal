@@ -3,20 +3,6 @@ import { CLI_TABLE, lookupCli, sameCwd, instructionsArg, modelArgs } from './cli
 import { screenCard } from './render.js';
 import { topicTitle } from './topics.js';
 
-// Pass caller identity to CLI descendants without exposing it to the shell parser.
-export function callerCommand(command, binding, group, platform = process.platform) {
-  if (!group?.project) return command;
-  const env = { METAME_FT_CHAT: binding.chatId, METAME_FT_TOPIC: binding.topicId,
-    METAME_PROJECT: group.project, METAME_MEMBER: binding.member ?? '' };
-  if (platform === 'win32') {
-    const quote = value => `'${String(value).replaceAll("'", "''")}'`;
-    const script = Object.entries(env).map(([key, value]) => `$env:${key}=${quote(value)}`).join('; ') + `; ${command}`;
-    return `powershell.exe -NoProfile -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
-  }
-  const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
-  return `env ${Object.entries(env).map(([key, value]) => `${key}=${quote(value)}`).join(' ')} ${command}`;
-}
-
 const ended = error => ['pane_not_found', 'terminal_finished', 'not_found'].includes(error.code);
 
 // Topic input is serialized by Bridge; session locks also cover different topics.
@@ -214,8 +200,7 @@ export class Wake {
         const remembered = resume || launch === row.launch || launch === row.cli ? b.modelFor?.(binding) ?? null : null;
         const rememberedArgs = modelArgs(row, remembered);
         const command = rememberedArgs ? `${base} ${rememberedArgs}` : base;
-        const launchCommand = instructions ? `${command} ${instructions}` : command;
-        terminal = await b.backend.backends.get('hc').create(callerCommand(launchCommand, binding, b.registry?.get(binding.chatId)), binding.cwd,
+        terminal = await b.backend.backends.get('hc').create(instructions ? `${command} ${instructions}` : command, binding.cwd,
           { labels: { 'ft.woken': '1', ...(binding.sessionId ? { session: binding.sessionId } : {}) }, ...(parentId ? { parent: parentId } : {}) });
         await b.store.transaction(data => { (data.createdTerminals ??= []).push(terminal.terminal_id); });
       }
