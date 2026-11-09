@@ -58,7 +58,7 @@ test('late shared binding keeps its id and both wakes use one launch', async t =
     sessionFollow: { candidates: async () => live.map(() => ({ terminalId: 'hc:new' })), terminal: () => terminal },
     backend: { backends: new Map([['hc', { list: async () => live, create: async () => { launches++; live.push(terminal); return terminal; } }]]),
       identity: () => ({ terminalId: 'new' }), get: async () => terminal },
-    runtime: new Map(), verify: async () => {}, resubscribe: () => {}, input: async () => true };
+    runtime: new Map(), verify: async () => {}, resubscribe: () => {}, input: async (binding, text, staged, first, claim) => { await claim(); await store.update(binding.chatId, binding.topicId, { needs_check: false }); return true; } };
   const wake = new Wake(b); await Promise.all(store.list().map(binding => wake.ensure(binding)));
   assert.equal(launches, 1); assert.deepEqual(store.list().map(x => x.sessionId), ['shared', 'shared']);
   assert.equal(store.binding('c', 't2').queuedInputs.length, 1);

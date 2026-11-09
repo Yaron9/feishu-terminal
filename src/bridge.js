@@ -922,7 +922,7 @@ export class Bridge {
       return pending.card.header.title.content;
     }, `card:${binding.topicId}`);
   }
-  async input(binding, text, staged = false, firstInput = false) {
+  async input(binding, text, staged = false, firstInput = false, claim = null) {
     this.reap.input(binding.topicId);
     await this.verify(binding);
     if (this.store.binding(binding.chatId, binding.topicId).needs_check && !staged) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
@@ -954,7 +954,8 @@ export class Bridge {
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
     await this.updateGeneration(binding, { menuTurnContinuation: false });
     const inputId = await this.rememberInput(binding, text);
-    await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
+    if (claim) await claim();
+    else await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
     try {
       await this.backend.sendText(binding.paneId, text, { submit: true, beforeSubmit: () => this.verify(binding) });
       await this.updateGeneration(binding, { needs_check: false });

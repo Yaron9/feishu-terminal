@@ -221,6 +221,20 @@ test('portable follow uses hc identity/process facts without /proc and terminate
   assert.equal((await h.follow.candidates('same')).length, 1);
 });
 
+test('queued input survives a failure before the send starts', async t => {
+  const h = await harness(t); await h.dormant(); h.onRun = term => h.ready(term);
+  const original = h.bridge.initializeTranscript.bind(h.bridge);
+  h.bridge.initializeTranscript = async () => { throw Object.assign(new Error('read failed'), { code: 'backend_unavailable' }); };
+  await h.send('retained');
+  assert.equal(h.sends().length, 0);
+  assert.equal(h.binding().queuedInputs[0]?.text, 'retained');
+  assert.notEqual(h.binding().needs_check, true);
+  h.bridge.initializeTranscript = original;
+  h.advance(); await h.bridge.tick();
+  assert.deepEqual(h.sends().map(c => c.params.text), ['retained']);
+  assert.equal(h.binding().queuedInputs.length, 0);
+});
+
 test('queued input is not replayed after an ambiguous send', async t => {
   const h = await harness(t); await h.dormant(); h.onRun = term => h.ready(term);
   const send = h.backend.sendText.bind(h.backend);

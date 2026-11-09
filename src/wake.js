@@ -238,16 +238,23 @@ export class Wake {
       const item = binding?.queuedInputs?.[0];
       if (!item || binding.dormant || binding.frozen || binding.wakePending || binding.needs_check) return;
       await b.verify(binding);
-      // Remove BEFORE entering the existing write path. An uncertain delivery
-      // uses needs_check and is never replayed after a crash or a second event.
-      await b.updateGeneration(binding, { queuedInputs: binding.queuedInputs.slice(1), needs_check: true });
+      // Claim immediately before the input send. An uncertain delivery uses
+      // needs_check and is never replayed after a crash or a second event.
+      const claim = async () => {
+        const claimed = await b.store.transaction(data => {
+          const current = data.bindings.find(x => x.chatId === binding.chatId && x.topicId === binding.topicId);
+          if (!b.sameGeneration(binding, current) || current.needs_check || current.queuedInputs?.[0]?.id !== item.id) return false;
+          current.queuedInputs = current.queuedInputs.slice(1); current.needs_check = true; return true;
+        });
+        if (!claimed) throw Object.assign(new Error('Queued input changed'), { code: 'binding_changed' });
+      };
       if (item.type === 'input') {
-        if (await b.input(binding, item.text, true) === false) {
+        if (await b.input(binding, item.text, true, false, claim) === false) {
           const current = b.store.binding(binding.chatId, binding.topicId);
           await b.updateGeneration(binding, { queuedInputs: [item, ...(current.queuedInputs ?? [])] });
           return;
         }
-      } else await b.writeInput(binding, item.type === 'raw' ? 'text' : 'keys', item.type === 'raw' ? { text: item.text } : { keys: item.keys }, false, true);
+      } else { await claim(); await b.writeInput(binding, item.type === 'raw' ? 'text' : 'keys', item.type === 'raw' ? { text: item.text } : { keys: item.keys }, false, true); }
     }
   }
   async screen(binding) {
