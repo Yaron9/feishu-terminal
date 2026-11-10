@@ -152,7 +152,14 @@ test('topic pickers survive maintenance and management history pressure; stale t
 test('a synthetic binding migrates without losing pending payloads, cursors, timestamps or menu state', async t => {
   const dir = await mkdtemp(new URL('../.test-hotfix-state-', import.meta.url));
   t.after(() => rm(dir, { recursive: true, force: true }));
-const binding = { chatId: 'oc_fixture', topicId: 'om_fixture', paneId: 'hc:t1', identity: { terminalId: 'fixture-terminal' }, generation: 'fixture-generation', nonce: 'fixture-nonce', cli: 'claude', sessionId: 'fixture-session', claudeSessionId: 'fixture-session', topicRoot: { type: 'text', text: 'Synthetic topic', createdAt: 1700000000000 }, transcript: { adapter: 'claude', path: '/tmp/fixture.jsonl', cursor: { offset: 42, atEnd: false, background: { finished: [{ id: 'job1', description: 'Synthetic job', status: 'completed' }] } } }, pendingCard: { uuid: 'fixture-uuid', card: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: 'Synthetic output' }] } } }, lastTranscript: 'Synthetic prior output', menuSignature: 'synthetic-menu' };
+  const binding = { chatId: 'oc_fixture', topicId: 'om_fixture', paneId: 'hc:t1',
+    identity: { terminalId: 'fixture-terminal' }, generation: 'fixture-generation', nonce: 'fixture-nonce',
+    cli: 'claude', sessionId: 'fixture-session', claudeSessionId: 'fixture-session',
+    topicRoot: { type: 'text', text: 'Synthetic topic', createdAt: 1700000000000 },
+    transcript: { adapter: 'claude', path: '/tmp/fixture.jsonl', cursor: { offset: 42, atEnd: false,
+      background: { finished: [{ id: 'job1', description: 'Synthetic job', status: 'completed' }] } } },
+    pendingCard: { uuid: 'fixture-uuid', card: { schema: '2.0', body: { elements: [{ tag: 'markdown', content: 'Synthetic output' }] } } },
+    lastTranscript: 'Synthetic prior output', menuSignature: 'synthetic-menu' };
   for (const version of [1, 2]) {
     const file = join(dir, `v${version}.json`), data = { version, bindings: [binding], seen: ['event:existing'] };
     await writeFile(file, JSON.stringify(data));
@@ -168,7 +175,8 @@ const binding = { chatId: 'oc_fixture', topicId: 'om_fixture', paneId: 'hc:t1', 
 test('the standalone CLI starts with a synthetic legacy config shape and safe defaults', async t => {
   const dir = await mkdtemp(new URL('../.test-hotfix-cli-', import.meta.url));
   t.after(() => rm(dir, { recursive: true, force: true }));
-const config = { chatIds: ['oc_fixture'], operatorOpenIds: ['ou_fixture'], defaultCwd: dir, stateFile: join(dir, 'bridge.json'), auditFile: join(dir, 'audit.jsonl'), backends: ['hc'], newTerminalBackend: 'hc' };
+  const config = { chatIds: ['oc_fixture'], operatorOpenIds: ['ou_fixture'], defaultCwd: dir,
+    stateFile: join(dir, 'bridge.json'), auditFile: join(dir, 'audit.jsonl'), backends: ['hc'], newTerminalBackend: 'hc' };
   Object.assign(config, { defaultCwd: dir, stateFile: join(dir, 'bridge.json'), auditFile: join(dir, 'audit.jsonl') });
   const file = join(dir, 'config.json'); await writeFile(file, JSON.stringify(config));
   const env = { ...process.env, FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture', FEISHU_TERMINAL_CONFIG: file,
