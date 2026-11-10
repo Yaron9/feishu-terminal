@@ -7,9 +7,15 @@ import { FeishuWSClient } from '../src/feishu-ws.js';
 import { acquireLock } from '../src/instance-lock.js';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { prepareEnvironment } from '../src/runtime.js';
+import { prepareEnvironment, runtimePaths } from '../src/runtime.js';
+import { createUsageReader } from '../src/usage.js';
+import { createStatusReader } from '../src/status-commands.js';
+import { startHealthMonitor } from '../src/vps-health.js';
+import { startQuotaMonitor } from '../src/quota-alert.js';
+import { createOperatorNotifier } from '../src/notify-operator.js';
 
 let bridge, transport, releaseLock, commandAbort, stopHerdrProbe;
+const integratedMonitors = [];
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === '--help' || command === '-h') {
@@ -47,11 +53,29 @@ async function main() {
   await backend.list(); // Safe startup probe; one backend may be unavailable.
   const credentials = { appId: process.env.FEISHU_APP_ID, appSecret: process.env.FEISHU_APP_SECRET };
   transport = new Feishu({ ...credentials, ws: new FeishuWSClient(credentials) });
+  const usageReader = createUsageReader();
+  const monitoring = process.env.FEISHU_VPS_MONITOR === '1' ? { health: 'starting', quota: 'starting' } : null;
+  const statusReader = createStatusReader(usageReader, () => monitoring);
   // The standalone host may run long-lived commander sessions.
   bridge = createBridge({ reapOptions: { reapCreated: false }, config, transport, registry: createConfigRegistry(config), backends: backend,
-    storeFile: config.stateFile, auditFile: config.auditFile, log: code => console.error(code) });
+    storeFile: config.stateFile, auditFile: config.auditFile, log: code => console.error(code), usageReader, statusReader });
   await bridge.start();
   await transport.start(raw => bridge.accept(raw), code => console.error(code), { rawEvents: true });
+  if (monitoring) {
+    const notify = createOperatorNotifier(transport, config.operatorOpenIds[0]);
+    const send = async text => { try { await notify(text); } catch { console.error('integrated_alert_send_failed'); throw new Error('notification failed'); } };
+    const options = { send, stateDir: runtimePaths().stateDir };
+    try { integratedMonitors.push(await startHealthMonitor({ ...options,
+      onError: code => { monitoring.health = 'unavailable'; console.error(code); },
+      onHealthy: () => { monitoring.health = 'running'; } }));
+      monitoring.health = 'running'; console.log('integrated_health_monitor_started'); }
+    catch { monitoring.health = 'unavailable'; console.error('integrated_health_monitor_unavailable'); }
+    try { integratedMonitors.push(await startQuotaMonitor({ ...options, usageReader,
+      onError: code => { monitoring.quota = 'unavailable'; console.error(code); },
+      onHealthy: () => { monitoring.quota = 'running'; } }));
+      monitoring.quota = 'running'; console.log('integrated_quota_monitor_started'); }
+    catch { monitoring.quota = 'unavailable'; console.error('integrated_quota_monitor_unavailable'); }
+  }
   console.log('feishu-terminal running');
 }
 let stopping = false;
@@ -60,7 +84,7 @@ async function stop(exitCode) {
   stopHerdrProbe?.();
   if (commandAbort) { commandAbort.abort(); process.exitCode = exitCode; return; }
   const deadline = setTimeout(() => process.exit(exitCode), 15000); deadline.unref();
-  try { transport?.close(); await bridge?.stop(); }
+  try { await Promise.allSettled(integratedMonitors.map(m => m.stop())); transport?.close(); await bridge?.stop(); }
   finally {
     if (releaseLock) await releaseLock();
     process.exitCode = exitCode;

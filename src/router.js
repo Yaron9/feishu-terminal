@@ -9,6 +9,7 @@ export function validKeys(keys) {
 }
 
 export const HELP = '在群里新发一条消息（如 claude 或 cd ~/proj && claude），即可新开终端；在话题内回复，会发到同一终端。\n' +
+  '/状态 或 /health 查看内存、流量和额度；/usage 查看 Claude 额度。\n' +
   '/t ls 查看终端，点 [打开] 同步到话题；原话题找不到时点 [移到新话题]，也可在已绑定话题发送 /t move。\n' +
   '/t close 选择仅解绑或关闭终端；仅解绑会保留运行，关闭会结束程序。\n' +
   '/t info 查看会话标题和完整会话编号，可复制用于恢复。\n' +
@@ -17,7 +18,7 @@ export const HELP = '在群里新发一条消息（如 claude 或 cd ~/proj && c
   '/t screen 看完整屏幕；/t k enter 手动回车（/t k 可发 1–8 个按键）；/t raw 内容 只输入不回车；/t ok 确认已检查输入。\n' +
   '按编号操作：/t open 终端编号；/t move 终端编号；/t close --kill 直接关闭当前终端，不可恢复。';
 
-// Nothing except the exact /t token is reserved. Payload whitespace is data.
+// System status commands are intercepted by the bridge before routing. Payload whitespace is data.
 export function route(text, bound = false) {
   if (typeof text !== 'string') return { type: 'error', message: '目前只支持文字消息，请发送文字或命令。' };
   if (!/^\/t(?:\s|$)/u.test(text)) {

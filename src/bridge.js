@@ -23,6 +23,8 @@ import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings,
 import { lookupCli, CLI_TABLE } from './cli-table.js';
 import { modelKey, cleanModel, sameModel } from './group-model.js';
 import { matchMember } from './members.js';
+import { createUsageReader } from './usage.js';
+import { createStatusReader, isSystemCommand, isSystemOperator, isUsageCommand } from './status-commands.js';
 
 function screenBody(binding, pane, current, visible, limit = 20000) {
   const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
@@ -46,8 +48,10 @@ const selectedMenuSignature = menu => JSON.stringify([menu.kind, menu.title, men
   menu.items.map(item => item.label.replace(/^\d+\s*(?:s|m|h|d|seconds?|minutes?|hours?|days?)\s+ago\b/i, '<age>'))]);
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters, sessionFollow, registry, wakeOptions, reapOptions }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters, sessionFollow, registry, wakeOptions, reapOptions, usageReader, statusReader }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
+    this.readUsage = usageReader ?? createUsageReader();
+    this.readStatus = statusReader ?? createStatusReader(this.readUsage);
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
     this.sessionFollow.backend = this.backend;
@@ -339,13 +343,23 @@ export class Bridge {
     if (this.stopped) return;
     if (event.kind === 'message' && event.senderType !== 'user') return; // never loop on bot output
     const group = this.registry.get(event.chatId);
-    if (!group) return;
-    if (!(group.isOperator ? group.isOperator(event.openId) : (group.operatorOpenIds ?? this.config.operatorOpenIds ?? []).includes(event.openId))) {
-      await this.refuse(event); return;
+    const systemCommand = isSystemCommand(event);
+    if (!group && !(systemCommand && event.chatType === 'p2p')) return;
+    if (!isSystemOperator(event, group, this.registry, this.config)) {
+      if (group) await this.refuse(event); return;
     }
-    let binding = this.store.binding(event.chatId, event.topicId);
+    let binding = group ? this.store.binding(event.chatId, event.topicId) : null;
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
+      if (systemCommand) {
+        await this.log(event, binding, isUsageCommand(event) ? 'usage' : 'health');
+        let text;
+        try { text = await (isUsageCommand(event) ? this.readUsage() : this.readStatus()); } catch { /* sanitized */ }
+        if (typeof text !== 'string' || !text.trim()) text = '状态暂时无法读取，请稍后再试。';
+        if (event.isReply) await this.feishu.reply(event.topicId, text);
+        else await this.feishu.send(event.chatId, text);
+        return;
+      }
       if (await this.pointToTopic(event)) return;
       const action = route(event.text, Boolean(binding));
       await this.log(event, binding, action.type, event.text ?? '');

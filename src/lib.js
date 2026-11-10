@@ -2,6 +2,7 @@ import { Bridge } from './bridge.js';
 import { Store } from './store.js';
 import { bridgeTransport } from './transport.js';
 import { normalizeEvent } from './events.js';
+import { isSystemCommand } from './status-commands.js';
 export { createConfigRegistry } from './registry.js';
 export { createBackends } from './backends/index.js';
 
@@ -15,14 +16,14 @@ export { createBackends } from './backends/index.js';
  * storeFile: string, auditFile: string, log?: Function, clock?: Function}} options
  * @returns {{start: Function, handle: (rawEvent: Object) => Promise<boolean>, stop: Function, accept: Function}}
  */
-export function createBridge({ config, transport, registry, backends, storeFile, auditFile, log = () => {}, clock = Date.now }) {
+export function createBridge({ config, transport, registry, backends, storeFile, auditFile, log = () => {}, clock = Date.now, usageReader, statusReader }) {
   if (!storeFile || !auditFile || !backends || !registry) throw new TypeError('storeFile, auditFile, backends and registry are required');
   const edge = bridgeTransport(transport);
   let core, starting, stopping, stopped = false;
   const dispatch = async (raw, wait) => {
     if (!core || stopped) return false;
     const event = normalizeEvent(raw, transport.botOpenId ?? config.botOpenId);
-    if (!event || !registry.get(event.chatId)) return false;
+    if (!event || (!registry.get(event.chatId) && !(event.chatType === 'p2p' && isSystemCommand(event)))) return false;
     if (event.kind === 'button' && !core.store.data.cardSchemas?.[event.messageId] &&
         !core.store.actionCard(event.messageId)) return false;
     // Reject before durable deduplication, ACL notices, audit or backend work.
@@ -36,7 +37,7 @@ export function createBridge({ config, transport, registry, backends, storeFile,
       return starting ??= (async () => {
         const store = await new Store(storeFile, { now: clock }).load();
         core = new Bridge({ config: { ...config, auditFile }, registry, backend: backends,
-          feishu: edge, store, now: clock, onError: log });
+          feishu: edge, store, now: clock, onError: log, usageReader, statusReader });
         await core.start(options);
       })();
     },
