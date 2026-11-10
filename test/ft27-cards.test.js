@@ -106,12 +106,13 @@ test('blocked/menu cards show only their button explanation; errors/frozen state
     assert.match(text(card), /点按钮等于在终端里按对应的键/);
     assert.doesNotMatch(text(card), /\/t |直接在本话题/);
   }
-  const menu = turnCard({ turn: turn({ text: 'Allow?\n1. Yes\n2. No' }), tip: WELCOME_TIP });
+  const menu = turnCard({ turn: turn({ settled: false, status: 'blocked' }),
+    screen: 'Allow?\n❯ 1. Yes\n2. No\nEsc to cancel', tip: WELCOME_TIP });
   assert.match(text(menu), /点选项按钮即可选择/);
   assert.doesNotMatch(text(menu), /\/t /);
   for (const status of ['error', 'failed', 'frozen']) {
     for (const card of [turnCard({ turn: turn({ status, truncated: true }), tip: WELCOME_TIP }), screenCard({ text: 'bad', status })]) {
-      assert.ok(text(card).includes(RECOVERY_TIP));
+      assert.equal(text(card).includes(RECOVERY_TIP), status === 'frozen');
       assert.ok(!text(card).includes(CLIPPED_TIP));
     }
   }

@@ -1,7 +1,7 @@
 // Message cards cannot change JSON schema after delivery. Keep rendering
 // independent of the current terminal mode, which can change across restarts.
 export const cardVersion = card => card.schema === '2.0' ? '2.0' : '1.0';
-export const kindVersion = kind => ({ status: '1.0', picker: '1.0', turn: '2.0', menu: '2.0', root: '2.0' })[kind];
+export const kindVersion = kind => ({ status: '1.0', picker: '1.0', turn: '2.0', menu: '2.0', root: '2.0', tree: '2.0' })[kind];
 
 export function renderSchema(card, version) {
   if (cardVersion(card) === version && version === '1.0') return card;
@@ -47,7 +47,7 @@ export async function patchStoredCard({ store, feishu }, id, card, kind) {
   let version = known?.schemaVersion ?? inferred ?? '1.0';
   const remember = () => store.transaction(data => {
     if (data.cardSchemas) delete data.cardSchemas[id];
-    (data.cardSchemas ??= {})[id] = { schemaVersion: version, kind: known?.kind ?? kind ?? null, updatedAt: store.now() };
+    (data.cardSchemas ??= {})[id] = { ...known, schemaVersion: version, kind: known?.kind ?? kind ?? null, updatedAt: store.now() };
   });
   // Unknown legacy IDs get one v2 attempt on the specific schema error.
   // Persist before that attempt so a reboot cannot repeat the v1 probe.

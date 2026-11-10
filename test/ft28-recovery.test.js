@@ -24,13 +24,14 @@ for (const code of ['unavailable', 'ECONNREFUSED', 'connection_closed', 'timeout
 }
 
 for (const mode of ['missing', 'terminal', 'workspace', 'tab']) {
-  test(`successful backend evidence of ${mode} freezes and cannot auto-heal`, async t => {
+  test(`successful backend evidence of ${mode} distinguishes dormancy from replacement`, async t => {
     const h = await legacyHarness(t); await h.bridge.handle(message('pwd'));
     if (mode === 'missing') h.fake.panes.clear();
     else h.fake.panes.get('w1:p1')[{ terminal: 'terminal_id', workspace: 'workspace_id', tab: 'tab_id' }[mode]] = 'changed';
-    await h.restart(); assert.equal(h.bridge.store.list()[0].frozen, true);
+    await h.restart(); assert.equal(h.bridge.store.list()[0].frozen, mode !== 'missing');
+    assert.equal(Boolean(h.bridge.store.list()[0].dormant), mode === 'missing');
     h.advance(2000); await h.bridge.tick();
-    assert.equal(h.bridge.store.list()[0].frozen, true);
+    assert.equal(h.bridge.store.list()[0].frozen, mode !== 'missing');
     assert.ok(!JSON.stringify(h.feishu.calls).includes('已恢复同步'));
     if (mode === 'missing') assert.ok(h.fake.calls.some(c => c.method === 'pane.list'));
   });

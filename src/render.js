@@ -1,9 +1,10 @@
+import { CLI_TABLE, lookupCli } from './cli-table.js';
 import { stripVTControlCharacters } from './ansi.js';
 import { detectMenu, menuControls } from './menus.js';
 import { CLIPPED_TIP, RECOVERY_TIP } from './card-tips.js';
 
 export function clean(text) {
-  return stripVTControlCharacters(String(text)).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+  return stripVTControlCharacters(String(text ?? '')).replace(/\r\n/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
 
 export function stripChrome(text) {
@@ -37,6 +38,12 @@ const CLIPPED = '内容较长，仅显示末尾约 1500 字';
 const tipLine = text => ({ ...markdown(accent(text)), text_size: 'notation' });
 const roleCard = (title, template, elements) => ({ schema: '2.0', config: { update_multi: true },
   header: { template, title: { tag: 'plain_text', content: title } }, body: { elements } });
+
+export function withSessionHeader(card, { title, sessionId }) {
+  const line = markdown("<font color='grey'>" + literal(`会话：${String(title).replace(/\s+/g, ' ')} · ${sessionId ? sessionId.slice(0, 8) : '编号未知'}`) + '</font>');
+  return card.body ? { ...card, body: { ...card.body, elements: [line, ...card.body.elements] } } :
+    { ...card, elements: [line, ...card.elements] };
+}
 
 export function assistantCard(text, tools = [], agent = 'Claude') {
   text = stripChrome(text);
@@ -110,6 +117,11 @@ export function splitText(text, maxBytes = 12000) {
   return parts;
 }
 
+export function yesNoPrompt(text = '') {
+  const line = clean(text).split('\n').findLast(line => line.trim()) ?? '';
+  return /(?:\(\s*y(?:es)?\s*\/\s*n(?:o)?\s*\)|\[\s*y(?:es)?\s*\/\s*n(?:o)?\s*\]|\byes\s*\/\s*no)\s*[:：?？]?\s*$/i.test(line);
+}
+
 export function screenControls(text = '') {
   const lines = clean(text).split('\n');
   const options = lines.flatMap(line => {
@@ -117,8 +129,9 @@ export function screenControls(text = '') {
     return match ? [[`${match[1]} ${short(match[2], 60)}`, match[1]]] : [];
   }).filter((item, i, all) => all.findIndex(other => other[1] === item[1]) === i);
   const enter = !options.length && /(?:press\s+(?:the\s+)?enter|enter\s+to\s+(?:confirm|continue|proceed|submit)|按\s*(?:下\s*)?(?:Enter|回车)|↵)/i.test(text);
+  const yesNo = yesNoPrompt(text);
   return [...(enter ? [['Enter 继续', 'enter']] : []), ['Esc 取消', 'esc'], ...options,
-    ['y 同意', 'y'], ['n 拒绝', 'n'], ['Ctrl-C 中断', 'ctrl+c'], ['刷新', 'refresh']];
+    ...(yesNo ? [['y 同意', 'y'], ['n 拒绝', 'n']] : []), ['Ctrl-C 中断', 'ctrl+c'], ['刷新', 'refresh']];
 }
 
 function blockedPrompt(text) {
@@ -128,14 +141,14 @@ function blockedPrompt(text) {
   return markdown('**等待你确认：** ' + literal(short(prompt || lines.at(-1) || '请查看终端中的确认提示', 300)) + '\n' + accent('点按钮等于在终端里按对应的键'));
 }
 
-function menuPrompt(menu, menuUI) {
+function menuPrompt(menu, menuUI, agent = 'Claude') {
   const warning = menuUI?.confirm ? '\n⚠️ 此会话已在其他终端运行，同时恢复可能损坏会话记录。确定仍要恢复？' : '';
-  return markdown('**Claude 正在等你从菜单里选择**' + (menu.title ? ' · ' + literal(short(menu.title, 100)) : '') +
+  return markdown((menu.context ? codeBlock(menu.context) + '\n' : '') + `**${literal(short(agent, 40))} 正在等你从菜单里选择**` + (menu.title ? ' · ' + literal(short(menu.title, 300)) : '') +
     '\n' + accent('点选项按钮即可选择，无需输入文字。') + warning);
 }
 
 export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, suppressMenu = false, tip = '' }) {
-  const menu = detectMenu(suppressMenu ? '' : screen || turn.text);
+  const menu = detectMenu(suppressMenu ? '' : screen, { status: turn.status, cli: turn.adapter });
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   const preview = stripChrome(turn.text);
   const elements = [markdown((turn.truncated || Array.from(preview).length > 1500 ? accent(CLIPPED) + '\n\n' : '') + prose(tail(preview, 1500) || (turn.settled ? '（本轮结束）' : '（等待回复）')))];
@@ -168,7 +181,7 @@ export function turnCard({ turn, topicId, nonce, note, screen = '', menuUI, supp
   });
   const failed = ['error', 'failed', 'frozen'].includes(turn.status);
   const activity = failed ? '出错' : turn.settled ? (running.length ? `本轮完成 · 后台 ${running.length} 个任务运行中` : '已完成') : blocked ? '等待你确认' : '工作中';
-  const contextual = failed ? RECOVERY_TIP : blocked ? '' :
+  const contextual = turn.status === 'frozen' ? RECOVERY_TIP : failed || blocked ? '' :
     turn.truncated || turn.toolsTruncated || Array.from(preview).length > 1500 ? CLIPPED_TIP : tip;
   if (contextual) elements.push(tipLine(contextual));
   return roleCard(`🤖 ${String(turn.agent).slice(0, 40)} · ${activity}`,
@@ -207,15 +220,38 @@ export function pickerCard(card, result) {
     header: { template: result ? 'grey' : card.kind === 'confirm' ? 'red' : card.kind === 'close' ? 'orange' : 'blue', title: { tag: 'plain_text', content: ['list', 'recovered'].includes(card.kind) ? `终端列表（共 ${card.entries.length} 个）` : '关闭终端' } }, elements };
 }
 
-export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, note, menuUI, suppressMenu = false }) {
-  const menu = detectMenu(suppressMenu ? '' : text);
+// /engine action card: one switch button per CLI table row, same callback
+// shape as picker cards (topic_id + nonce + key), guarded via actionCards.
+export function engineCard({ topicId, nonce, current, group }) {
+  const label = cli => ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' })[String(cli).toLowerCase()] ?? String(cli ?? '');
+  const text = content => ({ tag: 'div', text: { tag: 'plain_text', content } });
+  const actions = CLI_TABLE.map(row => ({ tag: 'button',
+    text: { tag: 'plain_text', content: label(row.cli) + (row.cli === current ? '（当前）' : row.cli === group ? '（本群默认）' : '') },
+    type: row.cli === current ? 'primary' : 'default',
+    value: { topic_id: topicId, nonce, key: `engine:${row.cli}` } }));
+  return { config: { wide_screen_mode: true, update_multi: true },
+    header: { template: 'blue', title: { tag: 'plain_text', content: '话题引擎' } },
+    elements: [text(`当前话题 CLI：${current ? label(current) : '未设置'}｜本群默认 CLI：${group ? label(group) : '未设置'}`),
+      { tag: 'action', actions },
+      text('点按钮切换：本话题立即改用新引擎，本群新话题也沿用新引擎。')] };
+}
+// Terminal result of one /engine switch. Exactly one card per prompt, never two.
+export function engineResultCard(text, ok = true, title = ok ? '引擎已切换' : '引擎切换未完成') {
+  return { config: { wide_screen_mode: true, update_multi: true },
+    header: { template: ok ? 'green' : 'red', title: { tag: 'plain_text', content: title } },
+    elements: [{ tag: 'div', text: { tag: 'plain_text', content: text } }] };
+}
+
+export function screenCard({ paneId, label = '终端', agent, topicId, nonce, status = 'unknown', text, output, note, menuUI, suppressMenu = false }) {
+  const menu = detectMenu(suppressMenu ? '' : text, { status, cli: agent });
   if (menu.kind) return menuCard({ menu, topicId, nonce, menuUI });
   // Escaped HTML avoids terminal output creating mentions/card markup. The
   // zero-width separator prevents terminal backticks ending the code fence.
   const lines = stripChrome(text).split('\n').filter(line => line.trim());
   const preview = lines.slice(-10).join('\n');
-  const clipped = lines.length > 10 || lines.some(line => Array.from(line).length > 120);
-  const elements = [markdown(codeBlock(screenText(preview, 10)))];
+  const clipped = !output && (lines.length > 10 || lines.some(line => Array.from(line).length > 120));
+  const display = output || screenText(preview, 10);
+  const elements = [markdown(lookupCli({ agent }) ? prose(stripChrome(display)) : codeBlock(display))];
   if (note) elements.unshift({ tag: 'div', text: { tag: 'plain_text', content: note } });
   if (status === 'blocked') {
     elements.push(blockedPrompt(text));
@@ -228,44 +264,57 @@ export function screenCard({ paneId, label = '终端', agent, topicId, nonce, st
     });
   }
   const shell = agent === null || (agent === undefined && status === 'unknown');
-  const activity = shell ? (status === 'working' ? '运行中' : '空闲') :
+  const activity = shell ? (status === 'blocked' ? '等待你确认' : status === 'working' ? '运行中' : '空闲') :
     ({ working: '工作中', idle: '空闲', done: '已完成', blocked: '等待你确认', error: '出错', failed: '出错' }[status] ?? '状态待更新');
-  if (['error', 'failed', 'frozen'].includes(status)) elements.push(tipLine(RECOVERY_TIP));
+  if (status === 'frozen') elements.push(tipLine(RECOVERY_TIP));
   else if (status !== 'blocked' && clipped) elements.push(tipLine(CLIPPED_TIP));
   if (paneId) elements.push({ tag: 'note', elements: [{ tag: 'lark_md', content: accent(short(paneId)) }] });
-  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'blocked' ? 'orange' : status === 'done' ? 'green' : 'blue',
-    title: { tag: 'plain_text', content: `${shell ? '命令行' : '●'} · ${activity} · ${short(label)}` } }, elements };
+  return { config: { wide_screen_mode: true, update_multi: true }, header: { template: status === 'blocked' ? 'orange' : shell ? 'grey' : ['error', 'failed'].includes(status) ? 'red' : status === 'done' ? 'green' : 'blue',
+    title: { tag: 'plain_text', content: `${shell ? '命令行' : '🤖 ' + ({ claude: 'Claude', 'claude-code': 'Claude', codex: 'Codex', pi: 'Pi' }[String(agent).toLowerCase()] ?? 'Claude')} · ${activity}` } }, elements };
 }
 
 // JSON 2.0: one full-width interactive container per menu item. No text limits:
 // Markdown wraps naturally; callbacks carry only the index and safety identity.
-export function menuCard({ menu, topicId, nonce, menuUI = {}, result }) {
+export function menuCard({ menu, topicId, nonce, menuUI = {}, result, agent = 'Claude' }) {
   if (result !== undefined) return roleCard('菜单', result ? 'green' : 'grey',
     [markdown(result ? "<font color='green'>已选择：" + literal(result) + '</font>' : accent('菜单已关闭'))]);
-  const controls = menu.kind === 'list' ? menuControls(menu, menuUI) :
-    [...menu.items.map((item, i) => [item.label, String(i + 1)]), ['Esc 取消', 'esc'], ['刷新', 'refresh']];
-  const value = key => ({ topic_id: topicId, nonce, key });
-  const elements = [menuPrompt(menu, menuUI)];
-  for (const [label, key] of controls) {
-    const match = /^menu:(?:select|confirm):(\d+)$/.exec(key);
-    const index = match ? Number(match[1]) : menu.kind === 'numbered' && /^\d$/.test(key) ? Number(key) - 1 : -1;
-    if (index < 0) continue;
-    const item = menu.items[index] ?? { label, sublabel: '' };
-    const warning = menuUI.warnings?.[index];
-    const text = (index === menu.cursorIndex ? '▶ ' : '') + literal(item.label) +
-      (item.sublabel ? '\n' + "<font color='grey'>" + literal(item.sublabel) + '</font>' : '') +
-      (warning?.length ? '\n' + literal('⚠️ 已在 ' + warning.map(w => w.label).join('、') + ' 运行') : '') +
-      (key.startsWith('menu:confirm:') ? '\n**确定恢复**' : '');
-    elements.push({ tag: 'interactive_container', width: 'fill', height: 'auto',
-      has_border: true, border_color: 'grey', corner_radius: '8px',
-      behaviors: [{ type: 'callback', value: value(key) }], elements: [markdown(text)] });
-  }
-  for (const [label, key] of controls) {
-    if (/^menu:(?:select|confirm):/.test(key) || (menu.kind === 'numbered' && /^\d$/.test(key))) continue;
-    elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(label, 60) },
-      type: 'default', behaviors: [{ type: 'callback', value: value(key) }] });
-  }
-  const card = roleCard('Claude · 等待菜单选择', 'orange', elements);
+  const elements = menuElements({ menu, topicId, nonce, menuUI, agent });
+  const card = roleCard(`${short(agent, 40)} · 等待菜单选择`, 'orange', elements);
   if (Buffer.byteLength(JSON.stringify(card)) >= 28000) throw new Error('Menu item exceeds card size limit');
   return card;
+}
+
+export function menuElements({ menu, topicId, nonce, menuUI = {}, agent = 'Claude' }) {
+  const options = menu.kind === 'list' ? menuControls(menu, menuUI).map(([label, key]) => {
+    const match = /^menu:(?:select|confirm):(\d+)$/.exec(key);
+    return { label, key, index: match ? Number(match[1]) : -1, confirm: key.startsWith('menu:confirm:') };
+  }) : [
+    ...menu.items.map((item, i) => ({ label: item.label, key: item.key ?? String(i + 1), index: i, confirm: false })),
+    { label: 'Esc 取消', key: 'esc', index: -1, confirm: false },
+    { label: '刷新', key: 'refresh', index: -1, confirm: false },
+  ];
+  const value = key => ({ topic_id: topicId, nonce, key });
+  const elements = [menuPrompt(menu, menuUI, agent)];
+  for (const control of options) {
+    if (control.index < 0) continue;
+    const item = menu.items[control.index] ?? { label: control.label, sublabel: '' };
+    const warning = menuUI.warnings?.[control.index];
+    // Numbered and survey options carry their own key, and the screen shows that
+    // key too: the card has to repeat it, or an option called just "Yes" reads
+    // like a bare confirm button instead of choice 1 of 3.
+    const number = menu.kind === 'numbered' && /^[0-9]$/.test(String(control.key)) ? `${control.key}. ` : '';
+    const text = (control.index === menu.cursorIndex ? '▶ ' : '') + literal(number + item.label) +
+      (item.sublabel ? '\n' + "<font color='grey'>" + literal(item.sublabel) + '</font>' : '') +
+      (warning?.length ? '\n' + literal('⚠️ 已在 ' + warning.map(w => w.label).join('、') + ' 运行') : '') +
+      (control.confirm ? '\n**确定恢复**' : '');
+    elements.push({ tag: 'interactive_container', width: 'fill', height: 'auto',
+      has_border: true, border_color: 'grey', corner_radius: '8px',
+      behaviors: [{ type: 'callback', value: value(control.key) }], elements: [markdown(text)] });
+  }
+  for (const control of options) {
+    if (control.index >= 0) continue;
+    elements.push({ tag: 'button', width: 'fill', text: { tag: 'plain_text', content: short(control.label, 60) },
+      type: 'default', behaviors: [{ type: 'callback', value: value(control.key) }] });
+  }
+  return elements;
 }

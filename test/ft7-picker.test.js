@@ -110,12 +110,12 @@ test('picker callback ACL, message, topic, nonce, action and index reject forged
   await click(h, 'open'); assert.equal(h.store.list().length, 1);
 });
 
-test('picker cards expire at ten minutes, including after restart, with buttons removed', async t => {
+test('an unused topic picker remains valid after a day and restart', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); await closeCard(h);
-  const event = pickerEvent(h, 'kill'); h.advance(600000); await h.restart(); await h.subscribed();
-  const before = h.fake.calls.length; await h.bridge.handle(event);
-  assert.equal(h.fake.calls.length, before); assert.equal(kills(h).length, 0);
-  assert.match(result(h), /卡片已过期/); noButtons(h);
+  const event = pickerEvent(h, 'kill'); h.advance(86400000); await h.restart();
+  await h.bridge.handle(event);
+  assert.equal(kills(h).length, 1);
+  assert.match(result(h), /已关闭/); noButtons(h);
 });
 
 test('pending picker remains usable across restart before expiry', async t => {
@@ -178,12 +178,12 @@ test('explicit close --kill remains immediate for desktop and working agents', a
   assert.ok(!h.feishu.calls.some(c => c.msgType === 'interactive'));
 });
 
-test('screen buttons also expire after ten minutes and never send a terminal key', async t => {
+test('screen buttons remain valid after ten minutes when the approval is unchanged', async t => {
   const h = await harness(t); await h.bridge.handle(message('pwd')); h.fake.status('w1:p1', 'blocked'); await h.bridge.tick();
   const b = h.store.binding('oc_test', 'm1'), before = h.fake.calls.length; h.advance(600000);
   await h.bridge.handle({ kind: 'button', eventId: 'expired-screen', chatId: 'oc_test', openId: 'ou_test',
     topicId: 'm1', messageId: b.cardId, nonce: b.nonce, key: 'enter' });
-  assert.equal(h.fake.calls.length, before); assert.match(h.feishu.calls.at(-1).content, /卡片已过期/);
+  assert.equal(h.fake.calls.slice(before).filter(c => c.method === 'pane.send_keys').length, 1);
 });
 
 test('picker binds desktop workspaces with exact identity checks while text open keeps its workspace restriction', async t => {

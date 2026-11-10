@@ -6,14 +6,14 @@ import { spawn } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
 import { acquireLock } from '../src/instance-lock.js';
 
-test('config fails closed for missing credentials, empty/multiple chats, invalid ACLs/cwd and embedded secrets', async t => {
+test('config fails closed for missing credentials, empty/invalid chats, invalid ACLs/cwd and embedded secrets', async t => {
   const dir = await mkdtemp(new URL('../.test-config-', import.meta.url));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'config.json');
   const base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: dir };
   const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'secret-fixture', FEISHU_TERMINAL_CONFIG: file };
   await assert.rejects(loadConfig({}));
-  for (const invalid of [{ chatIds: [] }, { chatIds: ['oc_a', 'oc_b'] }, { operatorOpenIds: [] }, { defaultCwd: 'relative' }, { appSecret: 'embedded' }]) {
+  for (const invalid of [{ chatIds: [] }, { chatIds: ['invalid'] }, { operatorOpenIds: [] }, { defaultCwd: 'relative' }, { appSecret: 'embedded' }]) {
     await writeFile(file, JSON.stringify({ ...base, ...invalid })); await assert.rejects(loadConfig(env));
   }
   await writeFile(file, JSON.stringify(base));
@@ -65,4 +65,18 @@ test('instance lock refuses a live owner, releases cleanly, recovers a terminate
   await writeFile(file, String(child.pid));
   const recovered = await acquireLock(file); await recovered();
   await writeFile(file, 'corrupt'); await assert.rejects(acquireLock(file), /Invalid instance lock/);
+});
+
+test('idleMinutes defaults to ten and accepts positive finite durations only', async t => {
+  const dir = await mkdtemp(new URL('../.test-config-idle-', import.meta.url));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'config.json'), base = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: dir };
+  const env = { FEISHU_APP_ID: 'fixture', FEISHU_APP_SECRET: 'fixture', FEISHU_TERMINAL_CONFIG: file };
+  await writeFile(file, JSON.stringify(base)); assert.equal((await loadConfig(env)).idleMinutes, 10);
+  for (const idleMinutes of [1, 0.5, 30]) {
+    await writeFile(file, JSON.stringify({ ...base, idleMinutes })); assert.equal((await loadConfig(env)).idleMinutes, idleMinutes);
+  }
+  for (const idleMinutes of [0, -1, '1', false, null]) {
+    await writeFile(file, JSON.stringify({ ...base, idleMinutes })); await assert.rejects(loadConfig(env), /idleMinutes/);
+  }
 });

@@ -128,10 +128,12 @@ export function mockFeishu(now) {
 // and explicit screen cards are deliberately excluded from output assertions.
 export function outputReplies(feishu) {
   return feishu.calls.filter(c => c.type === 'reply' && (c.msgType === 'text' ||
-    (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content))))
+    (c.content.schema === '2.0' && /^(🤖 |💻 命令输出$)/u.test(c.content.header.title.content) && !/<font color='grey'>(?:w\d+:p\d+|hc:[^<]+)<\/font>/.test(c.content.body.elements.at(-1)?.content ?? ''))))
     .map(c => {
       if (c.msgType === 'text') return c;
-      let text = c.content.body.elements[0].content.replace(/^(?:<font[^>]*>[^<]*<\/font>|（仅显示末尾）)\n\n?/, '');
+      const elements = c.content.body.elements;
+      const first = /^<font color='grey'>会话：/.test(elements[0].content) ? elements[1] : elements[0];
+      let text = first.content.replace(/^(?:<font[^>]*>[^<]*<\/font>|（仅显示末尾）)\n\n?/, '');
       if (text.startsWith('```text\n')) text = text.slice(8, -4).replace(/`\u200b/g, '`');
       return { ...c, card: c.content, content: text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&') };
     });
@@ -172,7 +174,7 @@ export async function harness(t, { BridgeClass = Bridge, ...bridgeOptions } = {}
   const config = { chatIds: ['oc_test'], operatorOpenIds: ['ou_test'], defaultCwd: '/tmp', stateFile: store.file, auditFile: join(temp, 'audit.jsonl') };
   const makeBridge = state => new BridgeClass({ herdr: new HerdrClient({ endpoint: fake.endpoint, timeoutMs: 300, reconnectMs: 10 }), feishu,
     store: state, config, now, audit: async record => audits.push(record), onError: code => errors.push(code), ...bridgeOptions });
-  let bridge = makeBridge(store); await bridge.start({ timers: false });
+  let bridge = makeBridge(store); feishu.deliver = event => bridge.accept(event); await bridge.start({ timers: false });
   t.after(async () => { await bridge.stop(); await fake.close(); await rm(temp, { recursive: true, force: true }); });
   return { fake, store, feishu, audits, errors, now, config,
     get bridge() { return bridge; },

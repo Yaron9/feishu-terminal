@@ -38,7 +38,7 @@ test('screen clamps rows and width, strips controls, escapes markup, and exposes
   assert.ok(card.elements[0].content.includes('&lt;at'));
   assert.ok(card.elements[0].content.includes('`\u200b'));
   const buttons = card.elements.flatMap(e => e.actions ?? []);
-  assert.deepEqual(buttons.map(b => b.text.content), ['Esc 取消', 'y 同意', 'n 拒绝', 'Ctrl-C 中断', '刷新']);
+  assert.deepEqual(buttons.map(b => b.text.content), ['Esc 取消', 'Ctrl-C 中断', '刷新']);
   assert.ok(buttons.every(b => b.value.topic_id === 'm1' && b.value.nonce === 'nonce'));
   assert.equal(screenCard({ paneId: 'x', topicId: 'y', nonce: 'z', text: '', status: 'idle' }).elements.length, 2);
 });
@@ -46,4 +46,9 @@ test('emoji replacement and rolling overlap preserve whole Unicode code points',
   assert.equal(newOutput('😀', '😁'), '😁');
   assert.equal(newOutput('x😀', '😀😁'), '😁');
   assert.equal(newOutput('x\ud83d', '😀ok'), '😀ok');
+});
+
+test('screen card offers yes and no for a real y/n prompt', () => {
+  const card = screenCard({ paneId: 'x', topicId: 'y', nonce: 'z', status: 'blocked', text: 'Continue? (y/n)' });
+  assert.deepEqual(card.elements.flatMap(e => e.actions ?? []).map(b => b.value.key).filter(key => ['y', 'n'].includes(key)), ['y', 'n']);
 });

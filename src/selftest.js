@@ -104,7 +104,7 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       const body = JSON.parse(message.body?.content || '{}');
       if (message.msg_type !== 'interactive' || message.thread_id !== threadId ||
           (body.title ?? body.header?.title?.content) !== card.header.title.content) return false;
-      if (!cardBodyNote) {
+      if (card.schema === '2.0' && !cardBodyNote) {
         print('NOTE card body not readable via API (schema 2.0); verified sent payload + delivered message id');
         cardBodyNote = true;
       }
@@ -123,32 +123,28 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
           print('NOTE history list needs im:message.group_msg (pending) — verified by message id instead');
         }
       }
-      // Only settled Bridge output replies count, never the live preview,
-      // the echo command, synthetic input label or an on-demand screen card.
-      return messages.some(m => {
-        if (!replies.has(m.message_id)) return false;
-        const card = sentCards.get(m.message_id);
-        if (card?.schema === '2.0') {
-          return card.header.title.content === '[selftest] 💻 命令输出' &&
-            card.body?.elements?.[0]?.content?.split(/\r?\n/).some(line => line.trim() === text) &&
-            deliveredCard(byId.get(m.message_id), card);
-        }
-        const body = JSON.parse(m.body?.content || '{}');
-        const output = m.msg_type === 'text' ? body.text :
-          m.msg_type === 'interactive' && body.header?.title?.content === '[selftest] 💻 命令输出'
-            ? body.body?.elements?.[0]?.content : '';
-        return output?.split(/\r?\n/).some(line => line.replace(/^\[selftest\] /, '').trim() === text);
-      });
+      // Verify the interaction card for this input by its delivered id. The
+      // schema-2 fallback has no body, so validate its identity and the exact
+      // line in the payload that was successfully patched.
+      const binding = store.binding(config.chatIds[0], root);
+      const id = binding?.cardId, card = sentCards.get(id), message = byId.get(id);
+      if (!id || !card || !message) return false;
+      const hasLine = value => typeof value === 'string' &&
+        value.split(/\r?\n/).some(line => line.trim() === text);
+      const payloadHasLine = (card.body?.elements ?? card.elements ?? []).some(element => hasLine(element.content));
+      if (!payloadHasLine || !deliveredCard(message, card)) return false;
+      const body = JSON.parse(message.body?.content || '{}');
+      if (body.schema === '2.0' || body.header) return (body.body?.elements ?? body.elements ?? []).some(element => hasLine(element.content));
+      return card.schema === '2.0' && Boolean(body.title && Array.isArray(body.elements));
+
     };
     await runStep('top-level post -> topic and pane', async () => {
       const command = ": '[selftest]'; echo selftest-ready";
       root = await feishu.send(config.chatIds[0], command);
       await deliver(command, root, false);
       check((await feishu.getMessage(root))?.message_id === root);
-      const pointer = store.data.topicPointers?.find(p => p.oldTopicId === root);
-      check(pointer && pointer.topicId !== root); root = pointer.topicId;
       const binding = store.binding(config.chatIds[0], root);
-      check(binding && owned.has(binding.paneId)); paneId = binding.paneId;
+      check(binding && binding.topicRoot?.type === 'user' && owned.has(binding.paneId)); paneId = binding.paneId;
       const message = await feishu.getMessage(root); threadId = message.thread_id;
       check(threadId);
       check((await herdr.request('pane.get', { pane_id: paneId })).pane?.pane_id === paneId);
@@ -162,17 +158,16 @@ export async function selftest({ config, socket, env = process.env, stateDir = r
       await waitFor(() => readback(marker));
     });
     await runStep('card patch and changed screen read back', async () => {
-      const before = patches;
       await input(`: '[selftest]'; echo ${patchMarker}`);
+      await waitFor(() => readback(patchMarker));
+      const binding = store.binding(config.chatIds[0], root), before = patches;
+      await bridge.handle(actionEvent({ schema: '2.0', header: { event_id: randomUUID(), event_type: 'card.action.trigger' },
+        event: { operator: { open_id: config.operatorOpenIds[0] }, token: randomUUID(),
+          context: { open_chat_id: config.chatIds[0], open_message_id: binding.cardId },
+          action: { tag: 'button', value: { topic_id: root, nonce: binding.nonce, key: 'refresh' } } } }));
       await waitFor(async () => {
         await bridge.tick();
-        const binding = store.binding(config.chatIds[0], root);
-        if (patches <= before || !patchIds.includes(binding.cardId)) return false;
-        const card = await feishu.getMessage(binding.cardId);
-        const payload = sentCards.get(binding.cardId);
-        if (payload?.schema === '2.0') return card.message_id === binding.cardId &&
-          JSON.stringify(payload).includes(patchMarker) && deliveredCard(card, payload);
-        return card.msg_type === 'interactive' && JSON.stringify(card.body).includes(patchMarker);
+        return patches > before && patchIds.includes(binding.cardId) && await readback(patchMarker);
       });
     });
     await runStep('/t screen', async () => {

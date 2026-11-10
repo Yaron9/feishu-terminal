@@ -22,11 +22,11 @@ test('screen and topic headers use pane summaries and ownership persists after u
   Object.assign(h.fake.panes.get('w1:p1'), { terminal_title_stripped: 'My shell', foreground_cwd: '/tmp' });
   await h.bridge.tick();
   const card = h.feishu.calls.find(c => c.msgType === 'interactive').content;
-  assert.match(card.header.title.content, /命令行 · 空闲 · My shell · 命令行 · 目录 \/tmp · 从飞书新开 · 已绑定话题$/);
+  assert.match(card.header.title.content, /命令行 · 空闲$/);
   assert.ok(!card.header.title.content.includes('w1:p1'));
-  assert.match(card.elements.at(-1).elements[0].content, /<font color='grey'>w1:p1<\/font>/);
+  assert.match(card.body.elements.at(-1).content, /<font color='grey'>w1:p1<\/font>/);
   h.fake.panes.get('w1:p1').terminal_title_stripped = 'New title'; h.advance(1000); await h.bridge.tick();
-  assert.match(h.feishu.calls.findLast(c => c.type === 'patch').card.header.title.content, /New title/);
+  assert.equal(h.feishu.calls.findLast(c => c.type === 'patch').card.header.title.content, '命令行 · 空闲');
   await h.store.unbind('oc_test', 'm1');
   await h.restart();
   assert.match(h.bridge.label(h.fake.panes.get('w1:p1')), /从飞书新开 · 未绑定/);

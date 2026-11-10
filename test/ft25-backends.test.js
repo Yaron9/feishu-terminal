@@ -59,7 +59,7 @@ test('hc reported status wins; unreported screens use menus, spinners and prompt
   assert.equal(b.status({}, '❯ '), 'idle');
   assert.equal(b.status({}, 'something'), 'unknown');
   b.dispose();
-  assert.equal(hcEndpoint({ XDG_RUNTIME_DIR: '/run/user/77' }).path.replaceAll('\\', '/'), '/run/user/77/herdr-core/default.sock');
+  assert.equal(hcEndpoint({ XDG_RUNTIME_DIR: '/run/user/77' }, 'linux').path.replaceAll('\\', '/'), '/run/user/77/herdr-core/default.sock');
 });
 
 test('hc quiet delay and started:false acknowledge once; lost responses are not retried', async t => {
@@ -69,4 +69,28 @@ test('hc quiet delay and started:false acknowledge once; lost responses are not 
   assert.equal((await b.sendText('hc:t1', 'once', { submit: true })).started, false);
   fake.drop('terminal.send'); await assert.rejects(b.sendText('hc:t1', 'ambiguous', { submit: true }));
   assert.equal(fake.calls.filter(c => c.method === 'terminal.send').length, 2);
+});
+
+test('hc isolates a dropped send from concurrent create and remains usable', async t => {
+  const fake = await fakeHc(); fake.create(); fake.drop('terminal.send');
+  const b = new HcBackend(new HcClient({ endpoint: fake.endpoint, timeoutMs: 300 }));
+  t.after(async () => { b.dispose(); await fake.close(); });
+  const [created, sent] = await Promise.allSettled([b.create('pi', '/tmp'), b.sendText('hc:t1', 'hello', { submit: true })]);
+  assert.equal(created.status, 'fulfilled'); assert.equal(sent.status, 'rejected');
+  assert.ok((await b.list()).some(item => item.pane_id === created.value.pane_id));
+  assert.equal((await b.sendText('hc:t1', 'next', { submit: true })).turn, 0);
+});
+
+test('hc named creation, finished inspection and removal preserve terminal identity', async t => {
+  const fake = await fakeHc(), b = new HcBackend(new HcClient({ endpoint: fake.endpoint, timeoutMs: 300 }));
+  t.after(async () => { b.dispose(); await fake.close(); });
+  const terminal = await b.create('pi', '/tmp', { name: 'w2-fixture', labels: { 'ft.woken': '1', session: 'fixture' } });
+  const run = fake.calls.find(c => c.method === 'terminal.run');
+  assert.equal(run.params.name, 'w2-fixture'); assert.equal(run.params.labels['ft.woken'], '1');
+  await assert.rejects(b.remove(terminal.pane_id), { code: 'live' });
+  await b.close(terminal.pane_id);
+  await assert.rejects(b.get(terminal.pane_id), { code: 'terminal_finished' });
+  const finished = await b.inspect(terminal.pane_id);
+  assert.equal(finished.state, 'finished'); assert.deepEqual(b.identity(finished), b.identity(terminal));
+  await b.remove(terminal.pane_id); await assert.rejects(b.inspect(terminal.pane_id), { code: 'not_found' });
 });

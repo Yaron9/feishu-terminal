@@ -48,6 +48,12 @@ async function run(t, { badReadback = false, missedInterrupt = false, wsFailed =
       if (validateDelivery && message.root_id && invalidDelivery === 'type') message.msg_type = 'text';
       if (validateDelivery && message.root_id && invalidDelivery === 'id') message.message_id = 'om_other';
     }
+    if (validateDelivery && message.root_id && message.msg_type === 'interactive' && invalidDelivery) {
+      if (invalidDelivery === 'title') { const body = JSON.parse(message.body.content); body.header.title.content = 'wrong'; message.body.content = JSON.stringify(body); }
+      if (invalidDelivery === 'thread') message.thread_id = 'omt_other';
+      if (invalidDelivery === 'type') message.msg_type = 'text';
+      if (invalidDelivery === 'id') message.message_id = 'om_other';
+    }
     if (badReadback) message.body.content = '{}';
     return message;
   };
@@ -94,10 +100,9 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
   assert.equal(r.calls.filter(c => c.method === 'pane.close').length, 1);
   for (const message of r.messages.values()) assert.ok(message.body.content.includes('[selftest]'));
   assert.ok(r.historyCalls > 0);
-  const roots = [...r.messages.values()].filter(m => m.msg_type === 'interactive' && !m.root_id);
+  const roots = [...r.messages.values()].filter(m => m.msg_type === 'text' && !m.root_id);
   assert.equal(roots.length, 1);
-  assert.equal(JSON.parse(roots[0].body.content).schema, '2.0');
-  assert.ok([...r.messages.values()].some(m => m.root_id === roots[0].message_id));
+  assert.ok([...r.messages.values()].some(m => m.root_id === roots[0].message_id && m.msg_type === 'interactive'));
   const readIds = new Set(r.readCalls.filter(([method]) => method === 'get').map(([, id]) => id));
   for (const message of r.messages.values()) {
     if (!message.body.content.includes('模拟输入：')) assert.ok(readIds.has(message.message_id));
@@ -105,17 +110,17 @@ test('selftest uses real Bridge and socket schema, reads output back, patches ca
 });
 
 for (const historyDenied of [undefined, 230027, 99991672, 99991676]) {
-  test(`selftest verifies schema-2.0 fallback cards with history denial ${historyDenied}`, async t => {
+  test(`selftest verifies interaction cards with history denial ${historyDenied}`, async t => {
     const r = await run(t, { schema2Fallback: true, historyDenied });
     assert.equal(r.code, 0, r.logs.join('\n'));
     assert.equal(r.logs.filter(line => line.startsWith('PASS')).length, 10);
-    assert.equal(r.logs.filter(line => line === 'NOTE card body not readable via API (schema 2.0); verified sent payload + delivered message id').length, 1);
+    assert.ok(r.readCalls.some(([method, id]) => method === 'get' && r.messages.get(id)?.root_id));
     if (historyDenied) assert.equal(r.historyCalls, 1);
   });
 }
 
 for (const invalidDelivery of ['title', 'thread', 'type', 'id']) {
-  test(`selftest rejects schema-2.0 fallback with incorrect delivered ${invalidDelivery}`, async t => {
+  test(`selftest rejects interaction card with incorrect delivered ${invalidDelivery}`, async t => {
     const r = await run(t, { schema2Fallback: true, invalidDelivery });
     assert.equal(r.code, 1);
     assert.ok(r.logs.includes('FAIL echo -> topic output read back'));

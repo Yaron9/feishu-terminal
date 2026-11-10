@@ -1,21 +1,44 @@
-import { mkdir, open, readFile, rename, appendFile, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, appendFile, unlink, copyFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 
 export class Store {
   constructor(file, { dedupeLimit = 10000, cardSchemaLimit = 4096, now = Date.now } = {}) {
     Object.assign(this, { file, dedupeLimit, cardSchemaLimit, now });
-    this.data = { version: 1, bindings: [], seen: [] }; this.queue = Promise.resolve();
+    this.data = { version: 2, bindings: [], seen: [] }; this.queue = Promise.resolve();
   }
   async load() {
     try {
       const data = JSON.parse(await readFile(this.file, 'utf8'));
-      if (data.version !== 1 || !Array.isArray(data.bindings) || !Array.isArray(data.seen)) throw new Error('Invalid bridge state');
+      if (![1, 2].includes(data.version) || !Array.isArray(data.bindings) || !Array.isArray(data.seen)) throw new Error('Invalid bridge state');
       const topics = new Set(), panes = new Set();
       for (const b of data.bindings) {
         if (!b.chatId || !b.topicId || !b.paneId || topics.has(b.topicId) || panes.has(b.paneId)) throw new Error('Invalid bindings');
         topics.add(b.topicId); panes.add(b.paneId);
       }
+      if (data.version === 1) {
+        // Never overwrite the first pre-migration snapshot on subsequent loads.
+        try { await copyFile(this.file, this.file + '.v1.bak', constants.COPYFILE_EXCL); }
+        catch (error) { if (error.code !== 'EEXIST') throw error; }
+        data.version = 2;
+        for (const b of data.bindings) {
+          b.dormant ??= false;
+          b.cli ??= null;
+          b.cwd ??= null;
+          b.sessionId ??= b.claudeSessionId ?? null;
+        }
+        await this.write(data);
+      }
+      let sanitized = false;
+      const unsafe = new Set(data.bindings.filter(b => ['codex', 'pi'].includes(b.cli) && b.sessionId && b.sessionSource !== 'verified' &&
+        data.bindings.some(other => other !== b && ['codex', 'pi'].includes(other.cli) && other.sessionId === b.sessionId && other.sessionSource !== 'verified') &&
+        !data.bindings.some(other => other.sessionId === b.sessionId && other.sessionSource === 'verified')).map(b => b.sessionId));
+      for (const b of data.bindings) if (['codex', 'pi'].includes(b.cli) && b.sessionId &&
+        unsafe.has(b.sessionId)) {
+        b.sessionId = null; b.sessionSource = null; b.sessionVerified = false; b.sessionHandoff = null; b.sessionReplay = true; sanitized = true;
+      }
+      if (sanitized) await this.write(data);
       this.data = data;
       this.prune(this.data);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -35,7 +58,11 @@ export class Store {
   }
   prune(data) {
     data.seen = data.seen.slice(-this.dedupeLimit);
-    if (data.actionCards) data.actionCards = data.actionCards.slice(-512);
+    if (data.actionCards) {
+      const inTopic = card => !card.spent && (card.inTopic || data.bindings.some(b => b.chatId === card.chatId && b.topicId === card.topicId));
+      const management = new Set(data.actionCards.filter(card => !inTopic(card)).slice(-512));
+      data.actionCards = data.actionCards.filter(card => inTopic(card) || management.has(card));
+    }
     if (data.topicPointers) data.topicPointers = data.topicPointers.slice(-10000);
     if (data.createdTerminals) {
       // Forgetting old ownership only restores desktop-close confirmation.
@@ -69,9 +96,7 @@ export class Store {
     }
   }
   maintain(actionNow) {
-    return this.transaction(data => {
-      if (data.actionCards) data.actionCards = data.actionCards.filter(card => actionNow - card.createdAt < 600000);
-    });
+    return this.transaction(() => {});
   }
   async write(data) {
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -94,6 +119,9 @@ export class Store {
   // history, including crashes; ambiguous/failed input is never replayed.
   claim(ids) {
     const keys = [...new Set(ids.filter(Boolean))];
+    // A known rejection needs no write. In particular, a loaded observer must
+    // not replace newer persisted state just to reject an already claimed ID.
+    if (!keys.length || keys.some(id => this.data.seen.includes(id))) return Promise.resolve(false);
     return this.transaction(data => {
       if (!keys.length || keys.some(id => data.seen.includes(id))) return false;
       data.seen.push(...keys); data.seen = data.seen.slice(-this.dedupeLimit); return true;
@@ -103,6 +131,7 @@ export class Store {
     return this.transaction(data => {
       if (data.bindings.some(b => b.topicId === binding.topicId || b.paneId === binding.paneId)) throw new Error('Topic or pane already bound');
       data.bindings.push({ ...binding, generation: randomUUID(), nonce: randomUUID() });
+      if (binding.tree) data.treeSeen = [...new Set([...(data.treeSeen ?? []), binding.identity.terminalId])];
     });
   }
   update(chatId, topicId, patch) {
@@ -123,15 +152,15 @@ export class Store {
   actionCard(messageId) { return structuredClone(this.data.actionCards?.find(c => c.messageId === messageId)); }
   saveActionCard(card, now) {
     return this.transaction(data => {
-      data.actionCards = (data.actionCards ?? []).filter(c => c.messageId !== card.messageId && now - c.createdAt < 600000);
+      data.actionCards = (data.actionCards ?? []).filter(c => c.messageId !== card.messageId);
       data.actionCards.push(card);
     });
   }
   consumeActionCard(card) {
     return this.transaction(data => {
       const index = (data.actionCards ?? []).findIndex(c => c.messageId === card.messageId && c.nonce === card.nonce);
-      if (index < 0) return false;
-      data.actionCards.splice(index, 1); return true;
+      if (index < 0 || data.actionCards[index].spent) return false;
+      data.actionCards[index].spent = true; return true;
     });
   }
   unbind(chatId, topicId) {

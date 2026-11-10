@@ -7,7 +7,7 @@
 - Node.js >= 22、npm。
 - 允许创建应用、机器人和群的飞书租户，必要时由管理员审批权限。Lark 租户目前会被 setup 明确拒绝，尚不支持。
 - 至少一个已安装并运行的终端后端：首选 herdr-core（`hc`，0.1.16+，需兼容 generation 1 协议），或 legacy herdr 0.9.5（protocol 22）。桥接不会安装或升级后端。
-- 生产部署使用 Linux；Claude 自动会话跟随依赖本机 `/proc`、同用户的 `~/.claude/sessions/<pid>.json`。Windows 可运行开发测试。
+- hc 的唤醒与会话跟随使用本机进程事实及同用户的 CLI 会话文件，可在 Windows、macOS、Linux 上运行；Linux `/proc` 额外支持识别普通 SSH 中的 Claude 进程。安装脚本和 systemd 部署面向 Linux。
 
 ## 安装与机器人配置
 
@@ -43,9 +43,15 @@ journalctl --user -u feishu-terminal.service -n 30
 hc run --bg --name <name> --cwd <dir> claude
 ```
 
-`<dir>` 使用项目的真实目录。Codex 同理可在 hc 终端中运行 `codex`；Claude 的会话跟随规则不适用于 Codex。仍使用 legacy herdr 的机器，也可在其终端中直接运行 `claude`。
+`<dir>` 使用项目的真实目录。Codex 和 pi 同理可在 hc 终端中运行 `codex`、`pi`。仍使用 legacy herdr 的机器，也可在其终端中直接运行 `claude`。
 
 手机发送 `/t ls`，在列表中点「打开」：未绑定终端建立新话题，已绑定终端在原话题发送新屏幕卡片，使话题回到列表顶部。电脑端输入与 agent 输出在对应话题同步；话题内回复发到同一终端。读取已有会话从当前检查点开始，不回放全部历史。Claude 的 `/resume`、`/model`、`/config` 菜单可直接点击选项，无法可靠解析时使用方向键与 Enter。
+
+话题标题优先使用 CLI 会话标题，没有标题时依次使用 hc 终端名、agent/前台进程名；不会只显示 herdr 的位置标签。卡片首行显示 `会话：<标题> · <编号前 8 位>`，未知编号会明确标出。在话题内发送 `/t info` 可复制完整会话编号。标题、编号变化会合并更新原话题卡片。
+
+已绑定到注册群的 hc 父终端启动子终端后，桥接会自动在同群建立 `└ <子终端名或标题> · <父会话标题>` 话题；孙终端引用自己的直接父终端。未绑定父终端的子终端不会自动建话题。父话题中的一张 `子终端 (n)` 卡片列出子终端名、会话标题、短编号、状态及存活时间，状态变化合并修改原卡片。`待审批` 以橙色突出显示，其他状态为 `工作中`、`已空闲`、`已结束`、`状态未知`。
+
+子话题卡片包含 `└ <名称> · 父：<父标题> [返回]`；父卡片的 `[打开]` 跳到对应子话题。宿主无法提供飞书话题位置时，按钮在目标话题发一条定位消息，使其回到列表顶部。导航不会发送终端输入或唤醒会话。子终端结束时发送一张结束卡片并更新父卡片，原话题和会话编号保留。手动仅解绑仍在运行的子终端后，不会自动重新绑定。
 
 恢复既有 Claude 会话时，在同一项目目录的 hc/herdr 终端运行：
 
@@ -53,7 +59,21 @@ hc run --bg --name <name> --cwd <dir> claude
 claude --resume <sessionId>
 ```
 
-默认每秒检查本机同会话进程，以启动时间最新的进程为准：先将原话题指向新终端、持久保存新绑定，再重新核实新旧进程的 Claude 名称、会话 ID 和启动时间，向经核实的旧进程发送 SIGTERM。最多等待 10 秒，不发送 SIGKILL；未退出或无法核实的 PID 会提示检查。新进程只在普通 SSH 中时，仅警告，不终止进程；目标终端已绑定其他话题时不抢占。远程 hc 终端可控制，但自动跟随只检查本机进程。
+默认每秒检查本机同会话进程：先持久保存新绑定，再重新核实新旧进程。hc 使用终端身份、前台 PID、会话证据和创建时间，经核实后通过 `terminal.kill` 结束旧终端；Linux 额外校验 Claude 的 `/proc` 启动时间并发送 SIGTERM。最多等待 10 秒；未退出或无法核实的 PID 会提示检查。新进程只在普通 SSH 中时，仅警告，不终止进程；目标终端已绑定其他话题时不抢占。远程 hc 终端可控制，自动跟随和唤醒只检查本机。
+
+终端结束或消失后，原话题进入 `dormant`，保留 CLI、目录和会话编号，不发送「终端已变化」。在该话题回复文字或点击有效卡片会提示「正在唤醒…」，使用下表恢复同一会话。最多等待 90 秒，`idle`、`done` 都算就绪；随后更换绑定身份及 generation，并通过原输入路径发送排队内容。
+
+| CLI | hc 标识（agent / status.app） | 恢复命令 | 空闲退出按键 |
+| --- | --- | --- | --- |
+| Claude | `claude` / `claude-code` | `claude --resume <id>` | `/ e x i t Enter` |
+| Codex | `codex` | `codex resume <id> --no-daemon` | Ctrl-C；未退出时最多 3 次 |
+| pi | `pi` | `pi --session <id>` | Ctrl-D |
+
+定义集中在 `src/cli-table.js`，包括就绪状态、退出按键及会话文件探针。会话不明时不猜测编号，只提示一次并保留消息。启动对话框超过等待时间会显示屏幕与按键卡片，原消息仍排队；处理对话框后刷新或等待下一次检查即可继续。唤醒按会话互斥，先检查现有进程；已经运行的会话会复用。无法核实的同目录终端会阻止新启动。丢失启动响应时只按标签查找结果，不重复执行启动。
+
+自动回收仅处理带 `ft.woken=1`、且本实例有绑定或创建记录的本机 hc 终端。连续就绪达到 `idleMinutes`（默认 10 分钟），没有等待确认的菜单、任何 `herdr.*` 桌面标签、排队输入或待核查写入时，按表发送退出按键。确认进程结束后才执行 `hc rm`，原话题静默进入 dormant；下一条消息仍可恢复同一会话。普通用户终端不会自动回收。工作状态、轮次变化、输入、绑定变化、桌面放置或连接故障会重新计算等待时间；桥接重启后重新等待完整时长。
+
+父终端退出会连带结束子终端，因此父终端还必须等待所有存活子孙终端各自连续空闲满 `idleMinutes`，包括没有飞书话题的子终端。子孙终端工作中、状态未知、等待审批、有桌面标签或待处理输入时，父终端保持运行；退出前重新检查实际终端树和屏幕。子终端仍可按上述规则单独回收。父话题再次唤醒时不会批量恢复子会话；各子话题收到输入后才恢复自己的会话。父终端已经存活时恢复原生父子关系；父终端仍休眠时，子会话可独立恢复。
 
 本仓库未附带 `skills/hc/SKILL.md`。向 Claude Code / Codex 的项目说明加入以下操作约束即可：
 
@@ -74,6 +94,7 @@ claude --resume <sessionId>
   "backends": ["hc", "herdr"],
   "newTerminalBackend": "hc",
   "sessionFollow": "newest",
+  "idleMinutes": 10,
   "stateFile": "./state/bridge.json",
   "auditFile": "./state/audit.jsonl"
 }
@@ -81,9 +102,11 @@ claude --resume <sessionId>
 
 `chatIds` 必须只有一个群，`operatorOpenIds` 至少一个；`defaultCwd` 必须是存在的绝对目录。省略 `backends`、`newTerminalBackend`、`sessionFollow` 时，默认分别为 `["hc", "herdr"]`、`"hc"`、`"newest"`。`sessionFollow: "warn"` 关闭自动迁移和终止，仅保留重复会话警告。`newTerminalBackend` 必须在 `backends` 中；仅使用 legacy herdr 时同时设置 `["herdr"]` 和 `"herdr"`。仅使用 hc 时设 `["hc"]`，避免探测不存在的旧后端。
 
+`idleMinutes` 是大于 0 的有限数字，可使用小数，默认 10；只影响自动唤醒终端的空闲回收。hc 的 `waiting_for_person`（有输入正等待人的草稿）也会阻止回收。
+
 | 后端 | 端点配置 |
 | --- | --- |
-| herdr-core | `HC_TERMINAL_SOCKET` 优先于 `HC_SOCKET_PATH`；默认 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/herdr-core/default.sock` |
+| herdr-core | `HC_TERMINAL_SOCKET`、`HC_SOCKET_PATH`、`HC_SOCKET` 依次优先，其后使用 hc 配置的根级 `socket`；`HC_SESSION` 默认 `default`。Windows 默认当前账户的 `\\.\pipe\herdr-core-<user>-<session>.sock`；Unix 优先 XDG runtime / 现有 `/run/user/<uid>`，否则使用 XDG state 下的会话 socket |
 | legacy herdr | `HERDR_SOCKET_PATH`，默认 `~/.config/herdr/herdr.sock`；测试专用 `HERDR_TCP=127.0.0.1:49450` 优先于 socket |
 
 hc 编号如 `hc:t1`，远程如 `hc:host/t3`，legacy 编号如 `w1:p2`。一个后端不可用不阻断另一个后端。普通 hc 屏幕读取使用 `terminal.read` 的 `lines: 0`，不会滚动或改变终端尺寸。hc 写操作等待窗口为 60 秒；返回 `started: false/null` 不代表输入失败。`/t raw` 使用短暂 framed attach 发送带括号粘贴的文字，不追加 Enter；确认仅表示 core 处理了输入帧，不保证程序执行完成。
@@ -92,7 +115,8 @@ hc 编号如 `hc:t1`，远程如 `hc:host/t3`，legacy 编号如 `w1:p2`。一�
 
 | 输入 | 行为 |
 | --- | --- |
-| `/usage` | 查看运行本桥接的机器上 cswap 已登记的 Claude 账号额度；授权私聊、群顶层及话题内均由机器人处理，不发送到终端 |
+| `/状态`、`/health` | 查看桥接所在 VPS 的可用内存、磁盘、本月网卡流量及 Claude 额度；授权私聊、群顶层和话题均可使用 |
+| `/usage` | 查询本机 cswap 已登记账号的 Claude 五小时和每周额度 |
 | `/t ls` | 列出终端，点「打开」「关闭」或「移到新话题」 |
 | `/t open <终端编号>` | 打开未绑定终端或恢复原话题；legacy 文本命令仅允许 `feishu` workspace，列表可选择桌面终端 |
 | `/t screen` | 在绑定话题刷新状态，发送完整当前视口的屏幕卡片（长屏分片） |
@@ -104,7 +128,9 @@ hc 编号如 `hc:t1`，远程如 `hc:host/t3`，legacy 编号如 `w1:p2`。一�
 | `/t ok` | 检查过不确定输入结果后解除输入保护 |
 | 其他文字，包括 `/compact`、`/help` | 在绑定话题原样转发；群顶层创建新终端并发送首条输入 |
 
-`/usage` 在桥接运行的机器上执行 `cswap list --json`，要求该机器已安装 cswap 并登记 Claude 账号。VPS 部署读取 VPS 的账号；win2 上运行则读取 win2 自己的账号，不跨机复制凭据。仅允许配置的操作者查询；每次只展示脱敏账号、五小时／每周剩余百分比、读取和重置时间，未返回的时间显示未知。进程内合并并缓存 60 秒内的并发查询；陈旧、失效及读取失败会标明或提示，低内存时不启动新查询。该命令只查询，不开启自动切号；后台提醒仍由已部署的定时任务负责。
+`状态` 在授权私聊和群顶层也可使用；话题中单独的“状态”仍发送给终端，显式 `/状态` 不发送到终端。状态中的网卡月流量来自本机现有 vnStat，统计起点和更新时间同时显示，与 AWS 计费不一定一致；缺少账单授权时，套餐余额和真实到期日显示未接入，不推算。Claude 额度显示 cswap 返回的窗口重置时间，不能当成订阅到期日。
+
+Linux 上设置 `FEISHU_VPS_MONITOR=1` 后，飞书终端主进程内启用内存、OOM、磁盘、僵尸进程及 Claude 低额度提醒，并沿用原状态去重；不需要独立内存守护或额度定时器。内存压力以进程内采样检查 10 秒窗口，可能与内核事件边界相差一个采样周期；本月网卡统计依赖原有 vnStat 服务。进程完全停止时不能由自身发出停机提醒；systemd 可负责重启。未提供真实的套餐或订阅到期数据时，不发送虚构的到期提醒。
 
 按键允许：`enter esc tab up down left right ctrl+c ctrl+u y n 1`–`9 shift+tab home end backspace delete pageup pagedown`。未绑定话题里的回复不会自动新建终端。只支持文字消息，图片、文件和富文本不会作为终端输入。
 
@@ -147,6 +173,12 @@ systemctl --user start feishu-terminal.service
 
 同一状态/群只运行一个实例。状态文件系统需支持 hard link；实例锁校验 PID 和启动时间，不因锁年龄抢占活实例。遇到损坏的锁，停服务检查进程后处理，不能直接删除仍在使用的锁。
 
+首次读取 version 1 状态会保留 `<stateFile>.v1.bak` 并迁移到 version 2；原备份不会覆盖。绑定中新增的 CLI、cwd、sessionId 和 dormant 字段由验证过程补齐。唤醒将排队输入、启动意图及目标身份写入状态；备份时也要保留这些字段。`needs_check` 仍保护结果不确定的写入。
+
+回收退出意图保存在状态的 `reaps` 中；确认完成后清除。退出按键结果不确定时不重发，若随后证实进程结束则继续移除；正常退出后暂时无法 rm，可在后续检查中补齐。退出按键用尽仍存活的终端会保留，不强制 kill。检查 `reap_failed` 日志、实际屏幕和桌面标签后再手动处理，保留原状态记录。
+
+备份还须保留绑定的 `tree`、`childrenCard`、`topicNavigation`，以及状态中的 `childTopics`、`treeSeen`：这些记录保存父子关系、已发布/待确认卡片及创建 UUID，避免重启后重复建话题或重复发结束卡片。不要通过删状态或重新绑定来处理暂时的消息发布故障。未使用的菜单、屏幕及终端选择卡片不按固定年龄过期；点击时核实当前内容和身份，已消费的 nonce 始终无效。投递 UUID 的安全重试窗口仍然保留。
+
 ## 安全边界
 
 机器人相当于服务用户的本地 shell。只有 `operatorOpenIds` 白名单内操作者可以驱动，群也必须匹配配置。使用专用群；授权操作者的普通文字就是可执行输入，后端 socket 不应共享给不可信用户。
@@ -161,7 +193,8 @@ systemctl --user start feishu-terminal.service
 | --- | --- |
 | `backend_unreachable <backend> ...` | 后端不可达或响应不可用；检查 core/legacy 服务、socket 路径、版本及同用户访问权限；不要重发不确定输入 |
 | `暂时连不上终端服务，正在重试` | 不可用超过 120 秒；退避重试至多间隔 30 秒，保留绑定、检查点与待发输出；恢复并验证身份后继续 |
-| `终端已变化` | 终端不存在或身份确实不匹配，暂停同步；先 `/t ls` 检查并点「打开」；相同身份重新出现可自动恢复，新身份需明确重新绑定 |
+| `终端已变化` | 有证据表明终端身份不匹配，暂停同步；先 `/t ls` 检查并点「打开」；相同身份重新出现可自动恢复，新身份需明确重新绑定。正常结束或消失会进入 dormant |
+| `无法唤醒：没有可靠的会话编号` | 保留输入，不猜测会话；手动检查 CLI 会话及 `/t ls`，同一绑定只通知一次 |
 | `card_retirement_failed` | 新卡片产生但旧卡片退役编辑失败；按日志 `code` 检查权限、编辑时限或网络。瞬时网络失败总计最多 3 次尝试，其后放弃退役；使用最新卡片 |
 | `startup_failed` | 检查参数、凭据、配置、cwd、状态权限及实例锁；前台与 systemd 必须选择同一配置 |
 | setup 权限 not granted | 检查权限、版本发布及租户审批；全群消息待批时每条消息 @机器人 |
@@ -184,3 +217,48 @@ node --test test/router.test.js
 `src/router.js` 解析命令，`src/backends/` 统一后端，`src/feishu*.js` 处理 API/长连接，`src/store.js` 保存状态和审计，`src/session-follow.js` 校验 Claude 进程，`src/bridge.js` 编排输入、话题与卡片，`src/transcripts/` 读取本机会话日志。
 
 需真实端到端检查时，可显式运行 `feishu-terminal selftest --herdr-socket /absolute/path/to/isolated.sock`。此命令面向 legacy herdr，需要已配置的真实应用/群，会发送 `[selftest]` 消息、操作本次创建的测试终端，不代表 hc 后端或真实入站消息/按钮投递已验收。同一应用多条长连接可能分摊事件，应选择无用户输入时段，最后从手机实际验证。
+
+## 作为库嵌入
+
+宿主独占飞书长连接时，可把事件交给同一个桥接核心；库不会连接飞书、加载 `.env`、读取配置文件或获取实例锁。
+
+```js
+import { createBridge, createConfigRegistry, createBackends } from 'feishu-terminal';
+
+const registry = createConfigRegistry(config); // 也可注入自己的 get(chatId) / list()
+const backends = createBackends(config);
+// config.idleMinutes 默认为 10；例如设为 1，空闲一分钟后回收自动唤醒终端。
+const bridge = createBridge({
+  config, transport, registry, backends,
+  storeFile: '/private/state/bridge.json',
+  auditFile: '/private/state/audit.jsonl',
+  log: code => console.error(code),
+  clock: Date.now,
+});
+await bridge.start();
+const used = await bridge.handle(rawEvent);
+// used === false 时，由宿主继续路由事件。
+await bridge.stop();
+```
+
+`backends` 使用现有后端接口，负责终端操作及订阅；`stop()` 会释放这些后端。`transport` 提供异步方法
+`send(chatId, content, uuid?)`、`reply(topicId, content, type?, uuid?)`、`patch(messageId, card)`、
+`getMessage(messageId)`，具体约定见 `src/transport.js`。其中 `send` 创建话题根消息，`reply` 在线程内回复，
+`patch` 同时负责卡片更新和旧卡片停用。宿主可通过 `transport.botOpenId` 提供机器人身份以移除自身 @ 标记。
+
+内置 hc 后端提供 `inspect(id)`（含 finished 状态）和 `remove(id)`，供回收器先确认退出、再移除。注入的 hc 后端若缺少这两个方法，会跳过自动回收。宿主应保留桥接计时器，并使用同一份私有状态保存唤醒队列及退出意图；无需另建空闲回收任务。
+
+同一计时器也处理子话题发现、父卡片更新及父子空闲约束。hc 的 `create(cmd, cwd, { parent })` 可在按需恢复子会话时指定已核实的存活父终端；不传 parent 时保留独立终端行为。`transport.getMessage` 若提供 `thread_id`、`thread_message_position` 或 `message_position`，可生成话题直达链接，否则使用定位按钮。
+
+`handle(rawEvent)` 返回 `Promise<boolean>`，接收含 `header.event_type` / `event` 的原始事件，
+也接受 SDK 展平后的 `event_type` / `event_id` 字段；支持 `im.message.receive_v1` 和 `card.action.trigger`。
+未知群、非本桥接卡片、未知事件类型均返回 `false`，不写状态、不发消息。已接管的重复事件和无权限操作返回 `true`。
+卡片回调按群路由，并核对本地卡片记录、nonce 和操作权限；升级前未标记的旧卡片也可使用。
+独立运行入口使用 `accept(rawEvent)`，仅等待本地持久化去重，后台排队执行，以满足飞书回调时限。
+
+Registry groups may provide `isOperator(openId) => boolean` to decide operator access for messages and card actions. When present, this synchronous predicate overrides `operatorOpenIds`; otherwise the existing group/global list fallback applies.
+
+`registry.get(chatId)` 返回 `{chatId, project, cwd, machine, operatorOpenIds}` 或 `null`，`list()` 返回群条目数组。
+内置 registry 合并 `config.chatIds` 和可选的 `config.groups`；每群可配置 `project`、`cwd`、`machine`、
+`operatorOpenIds`，未配置的目录和权限继承全局值，显式空权限数组表示禁止控制。
+原有单群配置保持兼容；version 1 状态首次读取时自动备份并迁移。库包含上述 dormant、按需唤醒和空闲回收流程，使用 hc 启动恢复命令，标签为 `ft.woken=1` 和 `session=<id>`。恢复现有用户终端时保留原标签，不会将其标记为可回收。

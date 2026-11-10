@@ -9,7 +9,7 @@ const STALE_MS = 45 * 60 * 1000;
 const MIN_AVAILABLE_BYTES = 450 * 1024 * 1024;
 const windows = [['fiveHour', '五小时'], ['sevenDay', '每周']];
 
-async function memoryAvailable() {
+export async function memoryAvailable() {
   if (platform() !== 'linux') return freemem() >= MIN_AVAILABLE_BYTES;
   try {
     const text = await readFile('/proc/meminfo', 'utf8');
@@ -18,10 +18,10 @@ async function memoryAvailable() {
   } catch { return false; }
 }
 
-async function runCswap() {
+export async function runCswap({ timeoutMs = 20000 } = {}) {
   const command = platform() === 'win32' ? 'cswap.exe' : join(homedir(), '.local', 'bin', 'cswap');
   const { stdout } = await exec(command, ['list', '--json'], {
-    timeout: 20000, maxBuffer: 1024 * 1024, windowsHide: true,
+    timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true,
   });
   return JSON.parse(stdout);
 }
@@ -78,20 +78,22 @@ export function formatUsage(payload, now = Date.now(), forceStale = false) {
 export function createUsageReader({ run = runCswap, now = Date.now, memory = memoryAvailable,
   cacheMs = 60000 } = {}) {
   let cached = null, fetchedAt = -Infinity, pending = null;
-  return async function readUsage() {
-    if (cached && now() - fetchedAt >= 0 && now() - fetchedAt < cacheMs) return formatUsage(cached, now());
+  async function raw(options = {}) {
+    if (cached && now() - fetchedAt >= 0 && now() - fetchedAt < cacheMs) return cached;
     if (pending) return pending;
     pending = (async () => {
-      try {
-        if (!await memory()) throw new Error('insufficient memory');
-        const payload = await run();
-        const text = formatUsage(payload, now());
-        cached = payload; fetchedAt = now();
-        return text;
-      } catch {
-        return cached ? formatUsage(cached, now(), true) : 'Claude 额度暂时无法读取，请稍后重试或检查 cswap。';
-      }
+      if (!await memory()) throw new Error('insufficient memory');
+      const payload = await run(options);
+      formatUsage(payload, now()); // validate before caching
+      cached = payload; fetchedAt = now();
+      return payload;
     })();
     try { return await pending; } finally { pending = null; }
-  };
+  }
+  async function readUsage() {
+    try { return formatUsage(await raw(), now()); }
+    catch { return cached ? formatUsage(cached, now(), true) : 'Claude 额度暂时无法读取，请稍后重试或检查 cswap。'; }
+  }
+  readUsage.raw = raw;
+  return readUsage;
 }

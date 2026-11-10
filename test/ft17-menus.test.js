@@ -54,15 +54,14 @@ test('ft17 idle list taps send exactly the arrows needed and Enter, including up
   }
 });
 
-test('ft17 changed cursor/items/title refuse without sending any movement and offer a refreshed card', async t => {
-  for (const changed of [config.replace('› Language', '  Language').replace('  Theme', '› Theme'),
-    config.replace('Notifications', 'Privacy'), config.replace('Settings', 'Configuration')]) {
+test('ft17 changed items/title refuse without sending any movement and offer a refreshed card', async t => {
+  for (const changed of [config.replace('Notifications', 'Privacy'), config.replace('Settings', 'Configuration')]) {
     const { h, pane } = await openMenu(t, config);
     pane.visible = changed;
     const before = keys(h).length;
     await click(h, 'menu:select:2');
     assert.equal(keys(h).length, before);
-    assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，请刷新'));
+    assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，已更新卡片。'));
     h.advance(1000); await h.bridge.tick();
     assert.deepEqual(binding(h).cardMenu, detectMenu(changed));
   }
@@ -78,10 +77,10 @@ test('ft17 rechecks a menu changed during the duplicate lookup immediately befor
   };
   await click(h, 'menu:select:2');
   assert.equal(keys(h).length, 0);
-  assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，请刷新'));
+  assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，已更新卡片。'));
 });
 
-test('ft17 nonce is single-use across new event IDs and restart; ACL, topic/card identity and expiry still apply', async t => {
+test('ft17 nonce is single-use across new event IDs and restart; ACL and topic/card identity still apply without age expiry', async t => {
   const { h } = await openMenu(t);
   const old = binding(h);
   for (const override of [{ openId: 'unauthorized' }, { topicId: 'foreign' }, { messageId: 'foreign' }, { nonce: 'old' }, { key: 'menu:select:999' }, { key: 'menu:confirm:1' }]) {
@@ -95,8 +94,8 @@ test('ft17 nonce is single-use across new event IDs and restart; ACL, topic/card
   await h.restart();
   await click(h, 'menu:select:1', replay);
   assert.equal(keys(h).length, 1);
-  h.advance(600000); await click(h, 'menu:select:1');
-  assert.equal(keys(h).length, 1);
+  h.advance(600000); await h.bridge.tick(); await click(h, 'menu:select:1');
+  assert.equal(keys(h).length, 2);
 });
 
 test('ft17 resume duplicate title warning requires a fresh second tap, persists across restart, then selects once', async t => {
@@ -142,7 +141,7 @@ test('ft17 a moved cursor invalidates duplicate confirmation and a reused pane i
     else other.terminal_id = 'replacement-terminal';
     await click(h, 'menu:confirm:0');
     assert.equal(keys(h).length, 0);
-    if (changed === 'cursor') assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，请刷新'));
+    if (changed === 'cursor') assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，已更新卡片。'));
     else assert.equal(binding(h).menuConfirm.warnings[0].terminalId, 'replacement-terminal');
   }
 });
@@ -175,7 +174,7 @@ test('ft17 fallback menus reject a changed raw screen even when the parsed empty
   pane.visible = 'Select model\nOptions have changed…\nEsc to cancel';
   assert.deepEqual(detectMenu(pane.visible), menu);
   await click(h, 'enter'); assert.equal(keys(h).length, 0);
-  assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，请刷新'));
+  assert.ok(h.feishu.calls.some(call => call.content === '菜单已变化，已更新卡片。'));
 });
 
 test('ft17 fallback Enter also warns about a live resume duplicate and requires a second tap', async t => {

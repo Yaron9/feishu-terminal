@@ -6,46 +6,8 @@ import { randomUUID } from 'node:crypto';
 // Neither native transport logs request bodies, credentials or terminal data.
 export const quietLogger = { error() {}, warn() {}, info() {}, debug() {}, trace() {} };
 
-export function messageEvent(raw, botOpenId) {
-  const event = raw.event ?? raw;
-  const message = event.message ?? {};
-  let text;
-  if (message.message_type === 'text') {
-    try { text = JSON.parse(message.content).text; } catch { /* unsupported */ }
-  }
-  if (botOpenId && typeof text === 'string') {
-    const mentions = (message.mentions ?? []).filter(m => typeof m.key === 'string' && m.key);
-    const ownKeys = new Set(mentions.filter(m => m.id?.open_id === botOpenId).map(m => m.key));
-    if (ownKeys.size) {
-      // Match all entities longest-first so another user's key cannot match a bot-key prefix.
-      const keys = [...new Set(mentions.map(m => m.key))].sort((a, b) => b.length - a.length).map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-      const matches = [...text.matchAll(new RegExp(keys.join('|'), 'g'))].filter(match => ownKeys.has(match[0]));
-      for (const match of matches.reverse()) {
-        let left = match.index, right = left + match[0].length;
-        while (left > 0 && /[ \t]/.test(text[left - 1])) left--;
-        while (right < text.length && /[ \t]/.test(text[right])) right++;
-        const separator = left > 0 && right < text.length && (left < match.index || right > match.index + match[0].length) ? ' ' : '';
-        text = text.slice(0, left) + separator + text.slice(right);
-      }
-    }
-  }
-  return { kind: 'message', eventId: raw.header?.event_id ?? raw.event_id,
-    messageId: message.message_id, chatId: message.chat_id, chatType: message.chat_type,
-    openId: event.sender?.sender_id?.open_id, senderType: event.sender?.sender_type,
-    topicId: message.root_id || message.parent_id || message.message_id,
-    isReply: Boolean(message.root_id || message.parent_id), text,
-    ...(message.create_time ? { createdAt: Number(message.create_time) } : {}) };
-}
-
-export function actionEvent(raw) {
-  const event = raw.event ?? raw;
-  return { kind: 'button', eventId: raw.header?.event_id ?? raw.event_id,
-    // A callback token identifies a delivery if a platform event_id is absent.
-    callbackToken: event.token,
-    openId: event.operator?.open_id, chatId: event.context?.open_chat_id ?? event.open_chat_id,
-    messageId: event.context?.open_message_id ?? event.open_message_id,
-    topicId: event.action?.value?.topic_id, nonce: event.action?.value?.nonce, key: event.action?.value?.key };
-}
+import { messageEvent, actionEvent } from './events.js';
+export { messageEvent, actionEvent } from './events.js';
 
 export class FeishuError extends Error {
   constructor(code, retryAfterMs = 1000, detail) {
@@ -61,7 +23,7 @@ export class Feishu {
     this.ws = ws ?? new FeishuWSClient({ appId, appSecret, logger });
     this.sendQueue = Promise.resolve(); this.nextSend = 0;
   }
-  async start(onEvent, onError = () => {}) {
+  async start(onEvent, onError = () => {}, { rawEvents = false } = {}) {
     const deliver = async event => {
       try { await onEvent(event); }
       catch (error) { onError('event_failed'); throw error; } // no successful ACK if the claim failed
@@ -81,10 +43,10 @@ export class Feishu {
             }
           } catch { onError('bot_identity_failed'); throw new FeishuError('bot_identity_failed'); }
         }
-        await deliver(messageEvent(raw, this.botOpenId));
+        await deliver(rawEvents ? raw : messageEvent(raw, this.botOpenId));
       },
       'card.action.trigger': async raw => {
-        await deliver(actionEvent(raw));
+        await deliver(rawEvents ? raw : actionEvent(raw));
         // Only the local claim is awaited inside Feishu's callback deadline.
         return { toast: { type: 'info', content: '已收到，处理中…' } };
       },

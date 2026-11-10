@@ -46,9 +46,9 @@ test('many tool batches share one turn card with bounded cumulative text and pat
   assert.equal(replies(h).length, 1); assert.equal(binding().cardId, id);
   assert.equal(binding().turn.toolCount, 24);
   const card = patches(h, id).at(-1).card;
-  assert.match(card.body.elements[0].content, /Start[\s\S]*Step 23/);
-  assert.equal(card.body.elements[1].header.title.content, '🔧 工具调用 (24)');
-  assert.equal(card.body.elements[1].expanded, false);
+  assert.match(card.body.elements[1].content, /Start[\s\S]*Step 23/);
+  assert.equal(card.body.elements[2].header.title.content, '🔧 工具调用 (24)');
+  assert.equal(card.body.elements[2].expanded, false);
   const times = [replies(h)[0].time, ...patches(h, id).map(c => c.time)];
   assert.ok(times.length > 2);
   assert.ok(times.slice(1).every((time, i) => time - times[i] >= 2000), times.join(','));
@@ -61,11 +61,11 @@ test('blocked buttons are on the turn card, consume a nonce once, and rotate aft
   pane.agent_status = 'blocked'; await poll(2000);
   const old = binding(), card = patches(h, old.cardId).at(-1).card;
   assert.equal(card.header.title.content, '🤖 Claude · 等待你确认');
-  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 5);
+  assert.equal(card.header.template, 'orange'); assert.equal(buttons(card).length, 3);
   assert.ok(buttons(card).every(b => b.behaviors[0].value.nonce === old.nonce));
   const writes = () => h.fake.calls.filter(c => c.method === 'pane.send_keys').length;
   const before = writes(); await h.bridge.handle(click(old)); await h.bridge.handle(click(old));
-  assert.equal(writes(), before + 1); assert.equal(patches(h, old.cardId).length, 1);
+  assert.equal(writes(), before + 1); assert.equal(patches(h, old.cardId).length, 2);
   await h.restart(); await h.bridge.handle(click(old)); assert.equal(writes(), before + 1);
   await poll(2000);
   const current = binding(); assert.notEqual(current.nonce, old.nonce);
@@ -85,7 +85,7 @@ test('settle finalizes the same card without controls and the next assistant ite
   await poll(10000); assert.equal(replies(h).length, 1);
   records.push({ role: 'assistant', text: 'Second answer' }); await poll();
   assert.equal(replies(h).length, 2); assert.notEqual(binding().cardId, first.cardId);
-  assert.equal(replies(h)[1].content.body.elements[0].content, 'Second answer');
+  assert.equal(replies(h)[1].content.body.elements[1].content, 'Second answer');
 });
 
 test('a user turn does not settle on the previous idle sample before its first assistant output', async t => {
@@ -226,7 +226,7 @@ test('move carries the live turn into a new topic without replaying text, tools 
   assert.notEqual(moved.generation, old.generation); assert.equal(replies(h)[1].topicId, moved.topicId);
   await h.restart(); records.push({ role: 'tool', text: 'Second tool' }); await poll(2000);
   assert.equal(replies(h).length, 2); assert.equal(binding().turn.toolCount, 2);
-  assert.equal(patches(h, moved.cardId).at(-1).card.body.elements[1].header.title.content, '🔧 工具调用 (2)');
+  assert.equal(patches(h, moved.cardId).at(-1).card.body.elements[2].header.title.content, '🔧 工具调用 (2)');
 });
 
 test('move preserves a throttled output batch and completes it in the old topic before moving', async t => {
@@ -259,13 +259,13 @@ test('ft13 state and pending legacy output migrate without dropping UUIDs or rep
   await h.restart(); await poll(2000); assert.equal(replies(h).length, 1);
 });
 
-test('expired blocked controls refuse keys, /t screen renews them and still sends the full viewport', async t => {
+test('unchanged blocked controls remain actionable after ten minutes, and /t screen still sends the full viewport', async t => {
   const { h, pane, records, binding, poll } = await setup(t);
   pane.agent_status = 'blocked'; pane.visible = 'Full viewport with terminal chrome';
   records.push({ role: 'assistant', text: 'Waiting' }); await poll(); const old = binding();
   h.advance(600000); await h.bridge.handle(click(old));
-  assert.ok(h.feishu.calls.some(c => typeof c.content === 'string' && c.content.includes('卡片已过期')));
-  assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 0);
+  assert.ok(!h.feishu.calls.some(c => typeof c.content === 'string' && c.content.includes('卡片已过期')));
+  assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 1);
   await h.bridge.handle(message('/t screen', 'screen', old.topicId));
   assert.notEqual(binding().nonce, old.nonce); assert.equal(binding().cardId, old.cardId);
   assert.equal(replies(h).length, 1);
@@ -282,7 +282,7 @@ test('turn text, tools and worst-case escaped blocked cards stay bounded and ret
     assert.ok(Array.from(turn.tools).length <= 1500); assert.equal(turn.truncated, true);
     const card = turnCard({ turn, topicId: 'topic', nonce: 'nonce' });
     assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000, char);
-    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 5);
+    assert.match(card.body.elements[0].content, /仅显示末尾/); assert.equal(buttons(card).length, 3);
     assert.equal(JSON.stringify(card).includes('\ufffd'), false);
   }
 });

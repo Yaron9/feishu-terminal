@@ -70,7 +70,7 @@
       "template": "blue",
       "title": {
         "tag": "plain_text",
-        "content": "● · 工作中 · 项目 · Claude"
+        "content": "🤖 Claude · 工作中"
       }
     },
     "elements": [
@@ -98,7 +98,7 @@
       "template": "orange",
       "title": {
         "tag": "plain_text",
-        "content": "● · 等待你确认 · 项目 · Claude"
+        "content": "🤖 Claude · 等待你确认"
       }
     },
     "elements": [
@@ -313,7 +313,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "▶ 是，执行"
+              "content": "▶ 1. 是，执行"
             }
           ]
         },
@@ -337,7 +337,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "始终允许"
+              "content": "2. 始终允许"
             }
           ]
         },
@@ -361,7 +361,7 @@
           "elements": [
             {
               "tag": "markdown",
-              "content": "否，取消"
+              "content": "3. 否，取消"
             }
           ]
         },
@@ -507,62 +507,6 @@
                   "tag": "button",
                   "text": {
                     "tag": "plain_text",
-                    "content": "y 同意"
-                  },
-                  "type": "default",
-                  "behaviors": [
-                    {
-                      "type": "callback",
-                      "value": {
-                        "topic_id": "topic",
-                        "nonce": "nonce",
-                        "key": "y"
-                      }
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "tag": "column_set",
-          "flex_mode": "none",
-          "columns": [
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
-                    "content": "n 拒绝"
-                  },
-                  "type": "default",
-                  "behaviors": [
-                    {
-                      "type": "callback",
-                      "value": {
-                        "topic_id": "topic",
-                        "nonce": "nonce",
-                        "key": "n"
-                      }
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "tag": "column",
-              "width": "weighted",
-              "weight": 1,
-              "elements": [
-                {
-                  "tag": "button",
-                  "text": {
-                    "tag": "plain_text",
                     "content": "Ctrl-C 中断"
                   },
                   "type": "default",
@@ -578,7 +522,13 @@
                   ]
                 }
               ]
-            },
+            }
+          ]
+        },
+        {
+          "tag": "column_set",
+          "flex_mode": "none",
+          "columns": [
             {
               "tag": "column",
               "width": "weighted",
@@ -679,11 +629,6 @@
               "content": "<font color='grey'>🔧 Bash: 运行测试</font>"
             }
           ]
-        },
-        {
-          "tag": "markdown",
-          "content": "<font color='grey'>终端已变化，请重新 /t ls</font>",
-          "text_size": "notation"
         }
       ]
     }
@@ -780,7 +725,7 @@
       "template": "grey",
       "title": {
         "tag": "plain_text",
-        "content": "命令行 · 空闲 · 项目命令行"
+        "content": "命令行 · 空闲"
       }
     },
     "elements": [
@@ -808,7 +753,7 @@
       "template": "grey",
       "title": {
         "tag": "plain_text",
-        "content": "命令行 · 运行中 · 项目命令行"
+        "content": "命令行 · 运行中"
       }
     },
     "elements": [
@@ -836,13 +781,13 @@
       "template": "blue",
       "title": {
         "tag": "plain_text",
-        "content": "● · 空闲 · 项目 · Claude"
+        "content": "🤖 Claude · 空闲"
       }
     },
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n等待下一条消息。\n```"
+        "content": "等待下一条消息。"
       },
       {
         "tag": "note",
@@ -864,13 +809,13 @@
       "template": "green",
       "title": {
         "tag": "plain_text",
-        "content": "● · 已完成 · 项目 · Claude"
+        "content": "🤖 Claude · 已完成"
       }
     },
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n任务已完成。\n```"
+        "content": "任务已完成。"
       },
       {
         "tag": "note",
@@ -892,18 +837,13 @@
       "template": "red",
       "title": {
         "tag": "plain_text",
-        "content": "● · 出错 · 项目 · Claude"
+        "content": "🤖 Claude · 出错"
       }
     },
     "elements": [
       {
         "tag": "markdown",
-        "content": "```text\n错误：连接已断开。\n```"
-      },
-      {
-        "tag": "markdown",
-        "content": "<font color='grey'>终端已变化，请重新 /t ls</font>",
-        "text_size": "notation"
+        "content": "<font color='red'>错误：连接已断开。</font>"
       },
       {
         "tag": "note",

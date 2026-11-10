@@ -1,42 +1,217 @@
+import { createConfigRegistry } from './registry.js';
 import { cardVersion, renderSchema, patchStoredCard, retirementCard } from './card-schema.js';
 import { backgroundView, screenActivity, refreshBackgroundTails } from './transcripts/background.js';
 import { planTurnTip } from './card-tips.js';
 import { randomUUID, createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { route, validKeys } from './router.js';
-import { clean, screenCard, screenText, newOutput, splitText, stripChrome, assistantCard, outputCard, turnCard, menuCard } from './render.js';
+import { clean, screenCard, screenText, newOutput, splitText, stripChrome, outputCard, turnCard, userCard, menuCard, menuElements, withSessionHeader, engineCard, engineResultCard } from './render.js';
 import { turnChunks, turnSignature, freshTurn } from './turns.js';
+import { inputHash, normalizeInput } from './input-echo.js';
 import { transcriptAdapters } from './transcripts/index.js';
+import { hcFiles } from './transcripts/files.js';
 import { bridgeBackend } from './backends/index.js';
 import { SessionFollow } from './session-follow.js';
+import { Wake } from './wake.js';
+import { Reap } from './reap.js';
+import { TerminalTree } from './terminal-tree.js';
 import { auditRecord, appendAudit } from './store.js';
-import { cleanTitle, topicCard, topicTitle } from './topics.js';
+import { topicTitle, sessionTitle, cleanTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
-import { detectMenu, sameMenu, resumeWarnings, menuControls, menuPageSize } from './menus.js';
+import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
+import { lookupCli, CLI_TABLE } from './cli-table.js';
+import { modelKey, cleanModel, sameModel } from './group-model.js';
+import { matchMember } from './members.js';
 import { createUsageReader } from './usage.js';
+import { createStatusReader, isSystemCommand, isSystemOperator, isUsageCommand } from './status-commands.js';
+
+function screenBody(binding, pane, current, visible, limit = 20000) {
+  const body = lookupCli(pane) ? stripChrome(visible).split('\n').filter(line => line.trim()).join('\n') :
+    stripChrome(newOutput(binding.lastTranscript ?? '', current));
+  if (Buffer.byteLength(body, 'utf8') <= limit) return body;
+  const chars = Array.from(body);
+  let start = chars.length, bytes = 0;
+  while (start > 0) {
+    const nextBytes = Buffer.byteLength(chars[start - 1], 'utf8');
+    const note = `… 前面 ${start - 1} 字已折叠，发送 /t screen 查看\n`;
+    if (bytes + nextBytes + Buffer.byteLength(note, 'utf8') > limit) break;
+    bytes += nextBytes;
+    start--;
+  }
+  return `… 前面 ${start} 字已折叠，发送 /t screen 查看\n${chars.slice(start).join('')}`;
+}
 
 const menuScreenHash = (menu, text) => menu.kind === 'list' && !menu.items.length ?
   createHash('sha256').update(clean(text)).digest('hex') : null;
+const selectedMenuSignature = menu => JSON.stringify([menu.kind, menu.title, menu.context ?? '',
+  menu.items.map(item => item.label.replace(/^\d+\s*(?:s|m|h|d|seconds?|minutes?|hours?|days?)\s+ago\b/i, '<age>'))]);
 
 export class Bridge {
-  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters = transcriptAdapters(), sessionFollow, readUsage }) {
+  constructor({ backend, herdr, feishu, store, config, now = Date.now, audit, onError = () => {}, adapters, sessionFollow, registry, wakeOptions, reapOptions, usageReader, statusReader }) {
     Object.assign(this, { herdr, feishu, store, config, now, onError });
-    this.readUsage = readUsage ?? createUsageReader();
+    this.readUsage = usageReader ?? createUsageReader();
+    this.readStatus = statusReader ?? createStatusReader(this.readUsage);
     this.backend = bridgeBackend(backend, herdr, onError);
     this.sessionFollow = sessionFollow ?? new SessionFollow();
+    this.sessionFollow.backend = this.backend;
+    this.wake = new Wake(this, wakeOptions);
     this.audit = audit ?? (record => appendAudit(config.auditFile, record));
-    this.queues = new Map(); this.runtime = new Map(); this.stopped = false;
-    this.chatId = config.chatIds[0];
+    this.deliveryChains = new Map(); this.deliveryEvents = new EventEmitter().setMaxListeners(0);
+    this.queues = new Map(); this.runtime = new Map(); this.pendingInputs = new Map(); this.stopped = false;
+    this.reap = new Reap(this, reapOptions);
+    this.registry = registry ?? createConfigRegistry(config);
     this.picker = new PanePicker(this);
-    this.adapters = adapters;
+    this.tree = new TerminalTree(this);
+    this.adapters = adapters ?? this.createAdapters();
+  }
+  // One adapter set per machine: a remote hc terminal reads its transcripts
+  // through hc (hc:mac/t42 -> mac); a local terminal keeps the local port.
+  createAdapters() {
+    const local = transcriptAdapters();
+    const sets = new Map();
+    const bridge = this;
+    return {
+      forPane(paneId) {
+        const machine = /^hc:([^/]+)\//.exec(String(paneId ?? ''))?.[1];
+        if (!machine) return local;
+        let set = sets.get(machine);
+        if (!set) {
+          const client = bridge.backend.backends?.get('hc')?.client;
+          set = client ? transcriptAdapters({ files: hcFiles(machine, client) }) : local;
+          sets.set(machine, set);
+        }
+        return set;
+      },
+    };
+  }
+  adaptersFor(paneId) {
+    return typeof this.adapters?.forPane === 'function' ? this.adapters.forPane(paneId) : this.adapters;
   }
   get queue() { return Promise.all([...this.queues.values()]); }
   enqueue(fn, key = 'control') {
     const result = (this.queues.get(key) ?? Promise.resolve()).then(fn);
-    const tail = result.catch(() => this.onError('bridge_operation_failed'));
+    const tail = result.catch(error => this.reportFailure('bridge_operation_failed', error));
     this.queues.set(key, tail);
     tail.then(() => { if (this.queues.get(key) === tail) this.queues.delete(key); });
     return result;
+  }
+  // A delivery is addressed by topic, or by member: `member` names a team
+  // member's own topic (null = the group's own topics) and the topic is found
+  // — or opened — first. Resolution is serialized per group and member, so two
+  // concurrent member calls can never open two topics; the answer itself then
+  // belongs to the per-topic chain below.
+  deliver({ chatId, topicId, member = null, text, from, timeoutMs = 30 * 60e3 } = {}) {
+    if (topicId) return this.deliverTo({ chatId, topicId, text, from, timeoutMs });
+    const key = JSON.stringify([chatId, member, 'target']);
+    const task = (this.deliveryChains.get(key) ?? Promise.resolve()).catch(() => {})
+      .then(() => this.deliverTarget({ chatId, member, text, from }));
+    this.deliveryChains.set(key, task);
+    const forget = () => { if (this.deliveryChains.get(key) === task) this.deliveryChains.delete(key); };
+    task.then(forget, forget);
+    return task.then(resolved => this.deliverTo({ chatId, topicId: resolved, text, from, timeoutMs }));
+  }
+  // The target of a member delivery: the member's most recent non-frozen topic,
+  // or a brand-new one. Rejections happen before anything is posted.
+  async deliverTarget({ chatId, member, text, from }) {
+    const fail = code => Object.assign(new Error(code), { code });
+    const group = this.registry.get(chatId);
+    if (!group) throw fail('no_group');
+    const owner = member === null ? null : (group.members ?? []).find(item => item?.key === member);
+    if (member !== null && !owner) throw fail('no_member');
+    const recent = this.recentMemberTopic(chatId, member);
+    if (recent) return recent.topicId;
+    return this.createDeliverTopic({ chatId, member: owner, group, text, from });
+  }
+  // "Most recent" is the binding's own activity time, last input first.
+  recentMemberTopic(chatId, member) {
+    let best = null, at = -Infinity;
+    for (const binding of this.store.list()) {
+      if (binding.chatId !== chatId || binding.frozen || (binding.member ?? null) !== member) continue;
+      const when = binding.lastInputAt ?? binding.topicRoot?.createdAt ?? 0;
+      if (when >= at) { at = when; best = binding; }
+    }
+    return best;
+  }
+  // A member with no topic yet gets one: the bot posts a NEW root message and
+  // the same creation path a person's root message takes runs with it as the
+  // topic root and NO queued prompt (the CLI starts and waits). The input then
+  // goes through the ordinary delivery, so it shows as `[来自 <from>]`.
+  async createDeliverTopic({ chatId, member, group, text, from }) {
+    const label = member ? member.name ?? member.key : group.name ?? group.project ?? chatId;
+    const root = `📨 ${from} → ${label}：${[...String(text ?? '')].slice(0, 60).join('')}`;
+    const messageId = await this.feishu.send(chatId, root);
+    const action = { type: 'input', text: root };
+    const event = { kind: 'message', chatId, messageId, eventId: `deliver:${messageId}`,
+      topicId: messageId, isReply: false, senderType: 'user', text: root };
+    if (member) {
+      if (!await this.createMemberTopic(event, action, group, { member, prompt: '' }, { queue: false }))
+        throw Object.assign(new Error('no_cli'), { code: 'no_cli' });
+    } else {
+      const row = CLI_TABLE.find(item => item.cli === (this.store.data.groupEngines?.[chatId] ?? group.cli));
+      if (!row) throw Object.assign(new Error('no_cli'), { code: 'no_cli' });
+      await this.createDormantTopic(event, action, row, group, null, { queue: false });
+    }
+    return messageId;
+  }
+  // One delivery per topic is in flight at a time (the chain below), so the
+  // first turn that starts after the send is unmistakably this input's turn.
+  // The turn id read at send time, not a wall clock, is that boundary: turnChunks
+  // mints a fresh id for the delivered input, so it never equals the old one.
+  deliverTo({ chatId, topicId, text, from, timeoutMs = 30 * 60e3 } = {}) {
+    const key = JSON.stringify([chatId, topicId]);
+    const run = () => new Promise((resolve, reject) => {
+      let sent = false, oldTurn = null, submitting = false, finished = false;
+      const fail = code => Object.assign(new Error(code), { code });
+      const finish = (error, result) => {
+        if (finished) return;
+        finished = true; clearTimeout(timer);
+        this.deliveryEvents.off('tick', check);
+        this.deliveryEvents.off('turnSettled', settled);
+        if (error) reject(error); else resolve(result);
+      };
+      const busy = binding => Boolean(binding.turn && !binding.turn.settled) ||
+        Boolean(binding.queuedInputs?.length) || Boolean(binding.outputBatch);
+      const settled = event => {
+        if (!sent || !event.text?.trim() || event.chatId !== chatId || event.topicId !== topicId || event.turnId === oldTurn) return;
+        finish(null, { answer: event.text, sessionId: event.sessionId ?? null });
+      };
+      // An earlier open turn is waited out, never taken as this answer.
+      const check = () => {
+        if (finished || sent || submitting) return;
+        submitting = true;
+        this.enqueue(async () => {
+          if (finished) return;
+          const binding = this.store.binding(chatId, topicId);
+          if (!binding) throw fail('no_topic');
+          if (busy(binding)) return;
+          oldTurn = binding.turn?.id ?? null; sent = true;
+          const action = { type: 'input', text: `[来自 ${from}]\n${text}` };
+          await this.feishu.reply(topicId, userCard(action.text), 'interactive');
+          // The Feishu reply path: dormant topics wake and resume, live ones type.
+          if (binding.dormant || binding.wakePending) await this.wake.route(binding, action);
+          else await this.input(binding, action.text);
+        }, topicId).catch(error => finish(error)).finally(() => { submitting = false; });
+      };
+      const timer = setTimeout(() => finish(fail('timeout')), timeoutMs);
+      this.deliveryEvents.on('tick', check);
+      this.deliveryEvents.on('turnSettled', settled);
+      check();
+    });
+    const task = (this.deliveryChains.get(key) ?? Promise.resolve()).catch(() => {}).then(run);
+    this.deliveryChains.set(key, task);
+    const forget = () => { if (this.deliveryChains.get(key) === task) this.deliveryChains.delete(key); };
+    task.then(forget, forget);
+    return task;
+  }
+  reportFailure(operation, error) {
+    // verify() has already proved closure and made the binding dormant.
+    if (error?.code === 'binding_dormant') return;
+    // Upstream messages/details/stacks can contain terminal text or credentials.
+    const code = String(error?.code ?? '');
+    const type = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'AggregateError']
+      .find(name => name === error?.name) ?? 'unknown';
+    this.onError(`${operation} ${/^[a-zA-Z0-9_.-]{1,64}$/.test(code) ? code : type}`);
   }
   state(binding) {
     if (!this.runtime.has(binding.topicId)) this.runtime.set(binding.topicId, {
@@ -46,34 +221,48 @@ export class Bridge {
     });
     return this.runtime.get(binding.topicId);
   }
+  async observeBinding(binding, terminal) {
+    const state = this.state(binding), now = this.now();
+    if (this.tickPending && state.observeTick === this.observeTick) return;
+    if (state.observePromise) {
+      if (this.tickPending) state.observeTick = this.observeTick;
+      return state.observePromise;
+    }
+    if (now - (state.lastObserve ?? -Infinity) < 250) return;
+    state.lastObserve = now;
+    if (this.tickPending) state.observeTick = this.observeTick;
+    const observation = this.wake.observe(binding, terminal);
+    state.observePromise = observation;
+    try { await observation; } finally { if (state.observePromise === observation) state.observePromise = null; }
+  }
   async start({ timers = true } = {}) {
     this.starting = true;
     await this.scanSessions();
+    await this.tree.tick();
     for (const b of this.store.list()) {
       this.state(b);
-      if (b.chatId === this.chatId) await this.verify(b).catch(() => {});
-      if (b.chatId === this.chatId && this.state(b).verified)
+      if (this.registry.get(b.chatId)) await this.verify(b).catch(() => {});
+      if (this.registry.get(b.chatId) && this.state(b).verified)
         await this.initializeTranscript(b).catch(() => this.onError('transcript_unavailable'));
-      if (b.chatId === this.chatId && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
-        await this.refreshCard(b).catch(() => this.onError('card_refresh_failed'));
+      if (this.registry.get(b.chatId) && !this.store.binding(b.chatId, b.topicId).frozen && (b.pendingCard || b.retiredCardId))
+        await this.refreshCard(b).catch(error => this.reportFailure('card_refresh_failed', error));
     }
     this.starting = false;
     this.resubscribe();
-    await this.feishu.start(event => this.accept(event), this.onError);
     if (timers) this.timer = setInterval(() => { this.tick().catch(() => {}); }, 250);
   }
   async stop() {
     this.stopped = true; clearInterval(this.timer); this.unsubscribe?.();
-    this.feishu.close(); await this.queue; this.backend.dispose();
+    await this.queue; await this.backend.dispose();
   }
   resubscribe() {
     if (this.starting) return;
     this.unsubscribe?.();
-    const panes = this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(b => b.paneId);
+    const panes = this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && this.state(b).verified).map(b => b.paneId);
     if (panes.length) this.unsubscribe = this.backend.subscribe(panes, event => {
       const data = event.data ?? {};
       const binding = this.store.forPane(data.pane_id ?? data.pane?.pane_id);
-      if (!binding || binding.chatId !== this.chatId || binding.frozen || !this.state(binding).verified) return;
+      if (!binding || !this.registry.get(binding.chatId) || binding.frozen || !this.state(binding).verified) return;
       this.enqueue(async () => {
         const state = this.state(binding); state.dirty = true;
         if (data.agent_status) this.status(state, data.agent_status, data.agent);
@@ -97,10 +286,11 @@ export class Bridge {
     if (status !== 'blocked') state.blockedNotice = false;
     state.status = status; state.agent = agent;
   }
-  rememberCard(id, card, kind) {
+  rememberCard(id, card, kind, owner) {
     return this.store.transaction(data => {
       if (data.cardSchemas) delete data.cardSchemas[id];
-      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind, updatedAt: this.store.now() };
+      (data.cardSchemas ??= {})[id] = { schemaVersion: cardVersion(card), kind, updatedAt: this.store.now(),
+        ...(owner ? { chatId: owner.chatId, topicId: owner.topicId } : {}) };
     });
   }
   patchCard(id, card, kind) { return patchStoredCard(this, id, card, kind); }
@@ -115,11 +305,33 @@ export class Bridge {
     return this.store.claim(ids);
   }
   // SDK callbacks await only the local durable claim, never socket/API work.
+  trackInput(event) {
+    const id = event.topicId;
+    this.reap.input(id);
+    this.pendingInputs.set(id, (this.pendingInputs.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      const count = this.pendingInputs.get(id) - 1;
+      if (count) this.pendingInputs.set(id, count); else this.pendingInputs.delete(id);
+    };
+  }
   async accept(event) {
-    if (await this.claimEvent(event)) this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId).catch(() => {});
+    const release = this.trackInput(event);
+    try {
+      if (await this.claimEvent(event)) {
+        this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId)
+          .finally(release).catch(() => {});
+        return;
+      }
+    } catch (error) { release(); throw error; }
+    release();
   }
   async handle(event) {
-    if (await this.claimEvent(event)) return this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId);
+    const release = this.trackInput(event);
+    try {
+      if (await this.claimEvent(event)) return await this.enqueue(() => this.receive(event), event.key?.startsWith('picker:') ? 'picker' : event.topicId);
+    } finally { release(); }
   }
   async refuse(event) {
     if (event.chatId && event.openId && await this.store.claim([`refusal:${event.chatId}:${event.openId}`])) {
@@ -130,19 +342,20 @@ export class Bridge {
   async receive(event) {
     if (this.stopped) return;
     if (event.kind === 'message' && event.senderType !== 'user') return; // never loop on bot output
-    const usageCommand = event.kind === 'message' && typeof event.text === 'string' && event.text.trim() === '/usage';
-    const privateUsage = usageCommand && event.chatType === 'p2p';
-    if (!event.chatId || !event.openId || (!privateUsage && event.chatId !== this.chatId) || !this.config.operatorOpenIds.includes(event.openId)) {
-      await this.refuse(event); return;
+    const group = this.registry.get(event.chatId);
+    const systemCommand = isSystemCommand(event);
+    if (!group && !(systemCommand && event.chatType === 'p2p')) return;
+    if (!isSystemOperator(event, group, this.registry, this.config)) {
+      if (group) await this.refuse(event); return;
     }
-    const binding = this.store.binding(event.chatId, event.topicId);
+    let binding = group ? this.store.binding(event.chatId, event.topicId) : null;
     try {
       if (event.kind === 'button') { await this.button(event, binding); return; }
-      if (usageCommand) {
-        await this.log(event, binding, 'usage');
-        let result;
-        try { result = await this.readUsage(); } catch { /* Never expose upstream errors. */ }
-        const text = typeof result === 'string' && result.trim() ? result : 'Claude 额度暂时无法读取，请稍后重试或检查 cswap。';
+      if (systemCommand) {
+        await this.log(event, binding, isUsageCommand(event) ? 'usage' : 'health');
+        let text;
+        try { text = await (isUsageCommand(event) ? this.readUsage() : this.readStatus()); } catch { /* sanitized */ }
+        if (typeof text !== 'string' || !text.trim()) text = '状态暂时无法读取，请稍后再试。';
         if (event.isReply) await this.feishu.reply(event.topicId, text);
         else await this.feishu.send(event.chatId, text);
         return;
@@ -152,7 +365,17 @@ export class Bridge {
       await this.log(event, binding, action.type, event.text ?? '');
       if (action.type === 'error') { await this.feishu.reply(event.topicId, action.message); return; }
       if (action.type === 'list') { await this.list(event); return; }
+      if (action.type === 'info') {
+        if (!binding.dormant && !binding.frozen) {
+          try { await this.verify(binding); }
+          catch (error) { if (!['binding_dormant', 'backend_unavailable'].includes(error.code)) throw error; }
+        }
+        const current = this.store.binding(binding.chatId, binding.topicId), session = this.sessionIdentity(current);
+        await this.feishu.reply(binding.topicId, `会话：${session.title}\nCLI：${current.cli ?? '未知'}\n会话 ID：\n${session.sessionId ?? '未知，暂未取得可靠的会话编号'}`);
+        return;
+      }
       if (action.type === 'closePicker') { await this.picker.show(event, binding); return; }
+      if (action.type === 'engine') { await this.engine(event, binding, action.name); return; }
       if (action.type === 'open') { await this.open(event, action.paneId); return; }
       if (action.type === 'move') { await this.move(event, action.paneId ?? binding.paneId); return; }
       if (action.type === 'create') {
@@ -172,6 +395,14 @@ export class Bridge {
         await this.feishu.reply(binding.topicId, action.kill ? '终端已关闭，话题已停止同步。' : '话题已停止同步，终端仍在 VPS 上运行。');
         return;
       }
+      if (binding && ['input', 'raw', 'keys', 'screen', 'ok'].includes(action.type)) {
+        try { await this.verify(binding); }
+        catch (error) { if (error.code !== 'binding_dormant') throw error; }
+        binding = this.store.binding(binding.chatId, binding.topicId);
+        if (binding.dormant || binding.wakePending || binding.queuedInputs?.length) {
+          await this.wake.route(binding, action); return;
+        }
+      }
       if (action.type === 'screen') {
         this.state(binding).dirty = true; await this.refresh(binding, true);
         const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
@@ -188,9 +419,10 @@ export class Bridge {
       }
       if (action.type === 'keys') await this.writeInput(binding, 'keys', { keys: action.keys }, action.keys.length === 1 && action.keys[0] === 'ctrl+u');
       if (action.type === 'raw') await this.writeInput(binding, 'text', { text: action.text });
-      if (action.type === 'input') await this.input(binding, action.text);
+      if (action.type === 'input' && !await this.menuReply(binding, event, action.text)) await this.input(binding, action.text);
       this.state(binding).dirty = true;
     } catch (error) {
+      if (error.code === 'binding_dormant') return;
       if (error.code === 'backend_unavailable' && binding && !this.store.binding(binding.chatId, binding.topicId)?.frozen) {
         await this.outageNotice(binding); return;
       }
@@ -217,7 +449,7 @@ export class Bridge {
       this.store.list().find(b => b.chatId === event.chatId && b.claudeSessionId === sessionId);
     if (original) {
       await this.log(event, original, 'session_resume_input', action.text);
-      const pane = await this.backend.create(action.text, this.config.defaultCwd);
+      const pane = await this.backend.create(action.text, this.registry.get(event.chatId)?.cwd ?? this.config.defaultCwd);
       await this.store.transaction(data => {
         (data.createdTerminals ??= []).push(pane.terminal_id);
         (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId,
@@ -225,26 +457,247 @@ export class Bridge {
       });
       await this.pointToTopic(event); return;
     }
-    const pane = await this.createPane();
-    const identity = await this.identity(pane.pane_id);
-    const root = this.newRoot(pane, action.text);
-    const topicId = await this.feishu.send(event.chatId, root.card);
-    await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, topicRoot: root.metadata, welcomePending: true });
-    const created = this.store.binding(event.chatId, topicId);
-    await this.store.transaction(data => {
-      (data.topicPointers ??= []).push({ chatId: event.chatId, oldTopicId: event.messageId, topicId, title: root.metadata.text });
-    });
-    await this.verify(created); this.resubscribe();
-    try {
-      await this.log(event, created, 'first_input', action.text);
-      await this.input(created, action.text);
-    } finally {
-      // Setup normally assigns the operator as owner; claim setup omits owner_id.
-      // Official DELETE docs (230026) restrict bots to their own messages,
-      // so creator/owner status is not sufficient to recall this user message.
-      await this.pointToTopic(event).catch(() => {});
+    // A plain root message in a group with a default CLI skips the shell:
+    // the topic binds dormant and the wake path launches the CLI directly.
+    // /engine's stored group default wins over the static registry cli.
+    // Explicit CLI starts, / commands and the resume migration keep the old path.
+    const group = this.registry.get(event.chatId);
+    // A NEW root message that starts with a team member's name opens that
+    // member's own topic (their cwd, persona and CLI); the rest is the
+    // prompt. A name inside a topic is ordinary input, never a switch.
+    const call = this.memberCall(event, group, action.text);
+    if (call && await this.createMemberTopic(event, action, group, call)) return;
+    const defaultCli = this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
+    const defaultRow = defaultCli ? CLI_TABLE.find(row => row.cli === defaultCli) : null;
+    if (defaultRow && !/^\s*(?:codex|claude|pi)(?:\s|$)/i.test(action.text) && !/^\s*\//u.test(action.text)) {
+      await this.createDormantTopic(event, action, defaultRow, group); return;
     }
+    const pane = await this.createPane(event.chatId);
+    const identity = await this.identity(pane.pane_id);
+    const root = await this.newRoot(pane, action.text);
+    const topicId = event.messageId;
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: pane.pane_id, identity, ...root.session,
+      topicRoot: { type: 'user', text: action.text, createdAt: this.now() }, welcomePending: true });
+    const created = this.store.binding(event.chatId, topicId);
+    await this.verify(created); this.resubscribe();
+    await this.log(event, created, 'first_input', action.text);
+    await this.input(created, action.text, false, true);
+  }
+  // "甲，…" / "甲：…" / "甲 …" on a new root message = call that member.
+  memberCall(event, group, text) {
+    if (event.isReply || !Array.isArray(group?.members) || !group.members.length) return null;
+    if (/^\s*\//u.test(text)) return null;
+    const call = matchMember(text, group.members);
+    return call && call.member.key ? call : null;
+  }
+  // Every call opens a new session in the member's own topic: the binding
+  // carries the member key (so engine/model memory is group + member), the
+  // member's cwd, CLI row and persona; the stripped text is the first prompt.
+  async createMemberTopic(event, action, group, { member, prompt }, options = {}) {
+    const key = modelKey(event.chatId, { member: member.key });
+    const cli = this.store.data.groupEngines?.[key] ?? member.cli ?? this.store.data.groupEngines?.[event.chatId] ?? group?.cli;
+    const row = CLI_TABLE.find(item => item.cli === cli);
+    if (!row) return false;
+    // A bare nickname queues nothing; a delivery's 📨 root is the topic root
+    // only (`queue: false`), so the CLI starts and waits for the input.
+    await this.createDormantTopic(event, { ...action, text: options.queue === false ? action.text : prompt },
+      row, group, member, options);
+    return true;
+  }
+  async createDormantTopic(event, action, row, group, member = null, { queue = Boolean(action.text) } = {}) {
+    const cwd = member?.cwd ?? group?.cwd ?? this.config.defaultCwd;
+    const root = this.dormantRoot(action.text, row, cwd, member);
+    const topicId = event.messageId;
+    const name = member ? member.name ?? member.key : null;
+    // paneId is a placeholder until wake.rebind binds the launched terminal;
+    // it must stay unique and durable so a restart never rejects the state.
+    await this.store.bind({ chatId: event.chatId, topicId, paneId: `pending:${topicId}`, identity: null,
+      ...root.session, cliCommand: row.launch, freshLaunch: true, dormant: true,
+      ...(member ? { member: member.key, memberName: name } : {}),
+      instructionsFile: (member ? member.instructionsFile : group?.instructionsFile) ?? null,
+      // A bare nickname opens the topic with nothing queued: the CLI starts
+      // and waits for the user's next line in its own topic.
+      queuedInputs: queue ? [{ id: randomUUID(), type: 'input', text: action.text }] : [],
+      topicRoot: { type: 'user', text: action.text || (name ?? ''), createdAt: this.now() }, welcomePending: true });
+    const created = this.store.binding(event.chatId, topicId);
+    // A member topic opens with its identity card (`🤖 甲 · Codex`): the
+    // user's own message is the topic root, so this is the durable card that
+    // names who was called and which CLI runs in the topic.
+    if (member) {
+      const cardId = await this.feishu.reply(topicId, root.card, 'interactive');
+      await this.rememberCard(cardId, root.card, 'member', { chatId: event.chatId, topicId });
+      await this.updateGeneration(created, { memberCardId: cardId });
+    }
+    this.state(created); this.resubscribe();
+    await this.log(event, created, 'first_input', action.text);
+    await this.wake.ensure(created);
+  }
+  // Root card for a topic whose CLI has not launched yet: same shape as
+  // topicCard, but the grey label shows the agent starting instead of a pane.
+  dormantRoot(text, row, cwd, member = null) {
+    const title = this.memberTitle(member, row.cli) ?? (sessionTitle(cleanTitle(text)) || this.agentName(row.cli));
+    const card = withSessionHeader({ schema: '2.0', config: { update_multi: true },
+      header: { title: { tag: 'plain_text', content: title } },
+      body: { elements: [{ tag: 'markdown', content: `<font color='grey'>${this.agentName(row.cli)} · 启动中</font>` }] } },
+      { title, sessionId: null });
+    return { card, session: { cli: row.cli, cwd, sessionId: null, sessionSource: null, sessionTitle: title },
+      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
+        publishedSessionId: null, publishedTreeHeader: 'null', createdAt: this.now(), lastAttemptAt: null, stopped: false } };
+  }
+  // The root card of a member topic names the person, then the CLI it runs
+  // (`🤖 甲 · Codex`), so one group can host several members of one CLI.
+  memberTitle(member, cli) {
+    const name = String(member?.name ?? member?.key ?? '').trim().slice(0, 40);
+    return name && cli ? `🤖 ${name} · ${this.agentName(cli)}` : null;
+  }
+  memberOf(chatId, key) {
+    if (!key) return null;
+    return (this.registry.get(chatId)?.members ?? []).find(member => member?.key === key) ?? { key };
+  }
+  bindingMember(binding) { return binding?.member ? this.memberOf(binding.chatId, binding.member) : null; }
+  async setGroupEngine(chatId, cli, member = null) {
+    const key = modelKey(chatId, { member });
+    await this.store.transaction(data => { (data.groupEngines ??= {})[key] = cli; });
+  }
+  // Group memory of the model a CLI actually ran. The model is read from the
+  // transcript (not the screen) when a turn completes; a /model choice in the
+  // terminal is therefore reused by the next topic and by every resume.
+  modelFor(binding) {
+    const key = modelKey(binding?.chatId, binding), cli = binding?.cli;
+    if (!key || !cli) return null;
+    return cleanModel(this.store.data.groupModels?.[key]?.[cli]);
+  }
+  async rememberModel(binding, observed) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    const key = modelKey(current.chatId, current), cli = current.cli, value = cleanModel(observed);
+    if (!key || !cli || !value) return;
+    // An unchanged value needs no write; the model is re-observed every turn.
+    if (sameModel(this.store.data.groupModels?.[key]?.[cli], value)) return;
+    await this.store.transaction(data => { ((data.groupModels ??= {})[key] ??= {})[cli] = value; });
+  }
+  // /engine: without a name, show one action card (current topic CLI, group
+  // default, one button per CLI row). With a name, switch the group default
+  // and the current topic. Unknown names get the valid list as text.
+  async engine(event, binding, name) {
+    const group = this.registry.get(event.chatId), member = this.bindingMember(binding);
+    // Inside a member topic the stored default belongs to that member only.
+    const groupDefault = this.store.data.groupEngines?.[modelKey(event.chatId, binding)] ?? member?.cli ?? group?.cli ?? null;
+    if (!name) {
+      if (!group || !binding) {
+        await this.feishu.reply(event.topicId, groupDefault ? `本群默认 CLI：${this.agentName(groupDefault)}；这个话题还没有绑定终端。` : '该群没有默认 CLI。');
+        return;
+      }
+      const card = { kind: 'engine', chatId: event.chatId, topicId: event.topicId, inTopic: true,
+        createdAt: this.now(), nonce: randomUUID() };
+      const view = engineCard({ topicId: event.topicId, nonce: card.nonce, current: binding.cli ?? null, group: groupDefault });
+      card.messageId = await this.feishu.reply(event.topicId, view, 'interactive');
+      await this.rememberCard(card.messageId, view, 'engine', card);
+      await this.store.saveActionCard(card, this.now());
+      return;
+    }
+    const row = CLI_TABLE.find(r => r.cli === name);
+    if (!row) {
+      await this.feishu.reply(event.topicId, `未知引擎：${name}。可选：${CLI_TABLE.map(r => r.cli).join('、')}。也可发送 /engine 后点按钮选择。`);
+      return;
+    }
+    await this.switchEngine(event, binding, row);
+  }
+  // Button path: same nonce/ownership checks as other management cards, and
+  // the one-shot consume happens before any state change.
+  async engineButton(event) {
+    const card = this.store.actionCard(event.messageId);
+    const cli = /^engine:([a-z][a-z0-9-]*)$/.exec(event.key ?? '')?.[1];
+    const row = CLI_TABLE.find(r => r.cli === cli);
+    if (!card || card.kind !== 'engine' || card.spent || !row ||
+        card.chatId !== event.chatId || card.topicId !== event.topicId || card.nonce !== event.nonce ||
+        !await this.store.consumeActionCard(card)) {
+      await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效，请重新发送 /engine。'); return;
+    }
+    const binding = this.store.binding(card.chatId, card.topicId);
+    await this.log(event, binding, 'engine_button', cli);
+    await this.switchEngine(event, binding, row, card);
+  }
+  // One switch. The group default is remembered only once the change actually
+  // applies; if the old CLI refuses to exit, nothing is modified. card = the
+  // action card to patch (button path); text commands publish one result card.
+  async switchEngine(event, binding, row, card = null) {
+    const chatId = event.chatId;
+    // A member topic stores its engine under group + member, so switching one
+    // member's CLI never changes the group default or another member's row.
+    const member = binding?.member ?? null, where = member ? '该成员' : '本群';
+    const key = modelKey(chatId, { member });
+    const previous = binding?.cli ?? this.store.data.groupEngines?.[key] ?? this.memberOf(chatId, member)?.cli ?? this.registry.get(chatId)?.cli ?? null;
+    const done = async (text, ok = true, title) => {
+      const view = engineResultCard(text, ok, title);
+      if (card) await this.patchCard(card.messageId, view, 'engine');
+      else await this.feishu.reply(event.topicId, view, 'interactive');
+    };
+    if (binding && binding.cli === row.cli) {
+      await this.setGroupEngine(chatId, row.cli, member);
+      await done(`已经是 ${this.agentName(row.cli)}。`, true, '话题引擎');
+      return;
+    }
+    if (binding?.frozen) {
+      await this.setGroupEngine(chatId, row.cli, member);
+      await done(`已把${where}默认引擎设为 ${this.agentName(row.cli)}；这个话题已暂停同步，未做改动。`);
+      return;
+    }
+    if (binding && !binding.dormant && !binding.wakePending) {
+      const hc = this.backend.backends.get('hc');
+      if (!hc || !/^hc:/u.test(binding.paneId ?? '')) { await done('当前终端不在 hc 后端，暂不支持切换引擎。', false); return; }
+      if (!await this.exitEngineCli(binding, hc)) {
+        const running = lookupCli(await hc.inspect(binding.paneId).catch(() => null));
+        await done(`未能退出 ${this.agentName(running?.cli ?? binding.cli ?? '命令行')}，未做任何修改。请稍后重试。`, false);
+        return;
+      }
+    }
+    await this.setGroupEngine(chatId, row.cli, member);
+    if (!binding) {
+      await done(`✅ ${where}默认引擎已设为 ${this.agentName(row.cli)}；这个话题还没有绑定终端，新话题会直接使用。`);
+      return;
+    }
+    // Retarget the topic: the old session stays on disk and stays resumable
+    // via /t; the wake path performs a fresh launch of the new CLI here.
+    if (!await this.updateGeneration(binding, { cli: row.cli, sessionId: null, sessionSource: null, sessionVerified: false,
+      sessionHandoff: null, cliCommand: row.launch, freshLaunch: true, dormant: true, wakePending: false,
+      wakeTarget: null, wakeAttempt: null, wakeCardId: null, unknownSessionNotified: false, needs_check: false,
+      pendingCard: null, pendingMenuCard: null, outputBatch: null, recoveryPending: null })) {
+      throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+    }
+    await done(`✅ 引擎已切换：${previous ? this.agentName(previous) : '命令行'} → ${this.agentName(row.cli)}（${where}新话题也用 ${this.agentName(row.cli)}）`);
+    const current = this.store.binding(chatId, binding.topicId);
+    try { await this.wake.ensure(current); }
+    catch (error) { this.reportFailure('engine_wake_failed', error); }
+  }
+  // Retire the CLI that the live terminal actually runs, mirroring reap's
+  // finish(): send that row's exit keys, poll until the CLI is gone, then
+  // close a surviving wrapper shell. Returns false if the CLI never exits.
+  async exitEngineCli(binding, hc, timeoutMs = 15000) {
+    const gone = error => ['not_found', 'pane_not_found'].includes(error.code);
+    const exited = terminal => terminal.terminal_id !== binding.identity?.terminalId || terminal.state !== 'live' || !lookupCli(terminal);
+    let terminal;
+    try { terminal = await hc.inspect(binding.paneId); }
+    catch (error) { if (gone(error)) return true; throw error; }
+    if (terminal.terminal_id !== binding.identity?.terminalId) return true;
+    const row = lookupCli(terminal);
+    if (row) {
+      const deadline = this.now() + timeoutMs;
+      const attempts = Math.max(1, row.exit?.maxAttempts ?? 1);
+      const budget = Math.floor(timeoutMs / attempts);
+      for (let attempt = 0; attempt < attempts && !exited(terminal); attempt++) {
+        await hc.sendKeys(binding.paneId, row.exit.keys);
+        const until = Math.min(deadline, this.now() + budget);
+        while (this.now() < until && !exited(terminal)) {
+          await this.reap.sleep(100);
+          try { terminal = await hc.inspect(binding.paneId); }
+          catch (error) { if (gone(error)) return true; throw error; }
+        }
+      }
+      if (!exited(terminal)) return false;
+    }
+    // CLI gone: close the shell that wrapped it, if one survived.
+    if (terminal.state === 'live') { try { await hc.close(binding.paneId); } catch { /* reap reclaims it later */ } }
+    return true;
   }
   async pointToTopic(event) {
     const pointer = this.store.data.topicPointers?.find(p => p.chatId === event.chatId && p.oldTopicId === event.topicId);
@@ -253,9 +706,22 @@ export class Bridge {
     await this.feishu.reply(event.topicId, `已在新话题「${title}」打开，请到那里继续`);
     return true;
   }
-  newRoot(pane, fallback) {
-    const title = topicTitle(pane, fallback), card = topicCard(pane, title);
-    return { card, metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: title, publishedTitle: title,
+  sessionIdentity(binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    return { title: sessionTitle(current.sessionTitle || current.topicRoot?.publishedTitle || current.topicRoot?.text || '终端'),
+      sessionId: current.sessionId ?? current.claudeSessionId ?? null };
+  }
+  sessionCard(card, binding) {
+    const current = this.store.binding(binding.chatId, binding.topicId) ?? binding;
+    return this.tree.decorate(withSessionHeader(card, this.sessionIdentity(current)), current);
+  }
+  async newRoot(pane, fallback, known = {}) {
+    const title = topicTitle(pane, fallback), facts = await this.sessionFollow.describe(pane);
+    const sessionId = (facts.sessionVerified ? facts.sessionId : null) ?? known.sessionId ?? null;
+    const card = this.tree.root(pane, title, sessionId, known), publishedTitle = card.header.title.content;
+    return { card, session: { ...facts, sessionId, sessionSource: facts.sessionVerified ? 'verified' : known.sessionSource ?? null, sessionTitle: title },
+      metadata: { schemaVersion: cardVersion(card), type: 'interactive', text: publishedTitle, publishedTitle, publishedSessionId: sessionId,
+      publishedTreeHeader: JSON.stringify(this.tree.view({ ...known, sessionTitle: title }, pane)),
       createdAt: this.now(), lastAttemptAt: null, stopped: false } };
   }
   async syncTopicTitle(binding, pane) {
@@ -267,19 +733,19 @@ export class Bridge {
     if (now - root.createdAt >= 14 * 86400000) {
       await this.updateGeneration(binding, { topicRoot: { ...root, stopped: true } }); return;
     }
-    if (pane.terminal_title_stripped?.trim() && !cleanTitle(pane.terminal_title_stripped)) {
-      state.titleCandidate = null; return;
-    }
-    const title = topicTitle(pane);
-    if (state.titleCandidate !== title) { state.titleCandidate = title; state.titleSince = now; }
-    if (title === root.publishedTitle || now - state.titleSince < 10000 ||
+    const current = this.store.binding(binding.chatId, binding.topicId), session = this.sessionIdentity(current);
+    const ownTitle = topicTitle(pane, session.title), title = this.tree.title(pane, ownTitle, current), sessionId = session.sessionId;
+    const treeHeader = JSON.stringify(this.tree.view(current, pane));
+    const candidate = JSON.stringify([title, sessionId, treeHeader]);
+    if (state.titleCandidate !== candidate) { state.titleCandidate = candidate; state.titleSince = now; }
+    if ((title === root.publishedTitle && sessionId === (root.publishedSessionId ?? null) && treeHeader === (root.publishedTreeHeader ?? 'null')) || now - state.titleSince < 10000 ||
         (root.lastAttemptAt !== null && now - root.lastAttemptAt < 60000)) return;
     await this.verify(binding);
     const attempted = { ...root, lastAttemptAt: now };
     await this.updateGeneration(binding, { topicRoot: attempted });
     try {
-      await this.patchCard(binding.topicId, topicCard(pane, title), 'root');
-      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title } });
+      await this.patchCard(binding.topicId, this.tree.root(pane, ownTitle, sessionId, current), 'root');
+      await this.updateGeneration(binding, { topicRoot: { ...attempted, text: title, publishedTitle: title, publishedSessionId: sessionId, publishedTreeHeader: treeHeader } });
     } catch (error) {
       if (['230031', '230011', '230110'].includes(String(error.code)))
         await this.updateGeneration(binding, { topicRoot: { ...attempted, stopped: true } });
@@ -298,17 +764,20 @@ export class Bridge {
     const expected = binding;
     binding = this.store.binding(binding.chatId, binding.topicId);
     if (!this.sameGeneration(expected, binding)) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
+    if (binding.dormant) throw Object.assign(new Error('Binding dormant'), { code: 'binding_dormant' });
     if (binding.frozen || !binding.identity) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
     const state = this.state(binding);
     await this.outageNotice(binding);
     if (this.now() < (state.verifyRetryAt ?? 0)) throw Object.assign(new Error('Verification backing off'), { code: 'backend_unavailable' });
     try {
-      const current = await this.identity(binding.paneId, binding.allowDesktop);
+      const terminal = await this.backend.get(binding.paneId, { allowDesktop: binding.allowDesktop });
+      const current = this.backend.identity(terminal);
       const latest = this.store.binding(binding.chatId, binding.topicId);
       if (!this.sameGeneration(binding, latest) || latest.frozen) throw Object.assign(new Error('Binding changed'), { code: 'binding_changed' });
       if (Object.keys(current).some(key => current[key] !== binding.identity[key] || current[key] !== expected.identity?.[key] || current[key] !== latest.identity?.[key]))
         throw Object.assign(new Error('Identity mismatch'), { code: 'identity_mismatch', identityProof: true });
       Object.assign(state, { verified: true, verifyRetryAt: 0 });
+      await this.observeBinding(binding, terminal);
       if (!state.ioOutage) Object.assign(state, { outageSince: null, outageNotified: false, verifyAttempts: 0 });
     } catch (error) {
       if (error.code === 'binding_changed') throw error;
@@ -319,8 +788,12 @@ export class Bridge {
         try {
           const panes = await this.backend.backend(binding.paneId).list();
           const pane = panes.find(p => p.pane_id === binding.paneId);
+          if (!pane || pane.state === 'finished') {
+            await this.wake.dormant(binding);
+            throw Object.assign(new Error('Binding dormant'), { code: 'binding_dormant' });
+          }
           proven = !pane || !this.identitiesMatch(binding, pane);
-        } catch (listError) { error = listError; }
+        } catch (listError) { if (listError.code === 'binding_dormant') throw listError; error = listError; }
       }
       if (!proven) {
         return this.backendUnavailable(binding, error);
@@ -417,9 +890,10 @@ export class Bridge {
     await this.verify(binding);
     return result;
   }
-  async writeInput(binding, method, params, allowClear = false) {
+  async writeInput(binding, method, params, allowClear = false, staged = false) {
+    this.reap.input(binding.topicId);
     await this.verify(binding);
-    const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check;
+    const wasChecking = this.store.binding(binding.chatId, binding.topicId).needs_check && !staged;
     if (wasChecking && !allowClear) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     // Persist intent before the mutation, so a crash also requires inspection.
     await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
@@ -430,15 +904,17 @@ export class Bridge {
     await (method === 'text' ? this.backend.sendText(binding.paneId, params.text) : this.backend.sendKeys(binding.paneId, params.keys));
     if (!wasChecking) await this.store.update(binding.chatId, binding.topicId, { needs_check: false });
   }
-  agentName(agent) { return String(agent).toLowerCase() === 'claude' ? 'Claude' : String(agent).toLowerCase() === 'codex' ? 'Codex' : String(agent); }
-  inputHash(text) { return createHash('sha256').update(clean(text).trim()).digest('hex'); }
+  agentName(agent) { return ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' })[String(agent).toLowerCase()] ?? String(agent); }
+  inputHash(text) { return inputHash(text); }
   async rememberInput(binding, text) {
-    const id = randomUUID(), now = this.now();
+    const id = randomUUID(), now = this.now(), normalized = normalizeInput(text);
     await this.store.transaction(data => {
       const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
       if (!this.sameGeneration(binding, b)) throw new Error('Binding changed');
+      if (/^\s*(?:codex|pi)(?:\s|$)/i.test(text)) { b.cliCommand = text.trim(); b.cliCommandSentAt = now; }
       b.sentInputs = [...(b.sentInputs ?? []).filter(item => item.expires > now),
-        { id, hash: this.inputHash(text), expires: now + 600000 }].slice(-100);
+        { id, hash: this.inputHash(text), prefix: normalized.slice(0, 64), length: normalized.length,
+          sentAt: now, terminalId: binding.identity.terminalId, expires: now + 600000 }].slice(-100);
     });
     return id;
   }
@@ -446,9 +922,9 @@ export class Bridge {
     const state = this.state(binding);
     try {
       if (!pane) pane = await this.readVerified(binding, () => this.backend.get(binding.paneId));
-      const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adapters[key];
+      const key = String(pane.agent ?? '').toLowerCase(), adapter = this.adaptersFor(pane.pane_id)[key];
       if (!adapter) { state.transcriptSource = null; return; }
-      const path = await this.readVerified(binding, () => adapter.locate(pane));
+      const path = await this.readVerified(binding, () => adapter.locate(pane, this.store.binding(binding.chatId, binding.topicId), this.store.list(), this.now()));
       if (!path) { state.transcriptSource = null; return; }
       if (state.failedTranscript === path && this.now() < state.transcriptRetryAt) { state.transcriptSource = null; return; }
       const current = this.store.binding(binding.chatId, binding.topicId);
@@ -456,9 +932,11 @@ export class Bridge {
       // Legacy bindings and resumed sessions start at EOF: never replay history.
       // A pending batch owns its old checkpoint until delivery is reconciled.
       if ((!current.transcript || current.transcript.path !== path || current.transcript.adapter !== key) && !current.outputBatch?.transcript) {
-        const { cursor } = await this.readVerified(binding, () => adapter.read(path, { atEnd: true }));
+        const session = adapter.sessions?.get(path);
+        const cursor = session?.cursor ?? (['codex', 'pi'].includes(key) && session?.fresh
+          ? null : (await this.readVerified(binding, () => adapter.read(path, { atEnd: true }))).cursor);
         const patch = { transcript: { adapter: key, path, cursor, lastRecordAt: this.now() } };
-        if (!current.turn && cursor.background?.running?.length) {
+        if (!current.turn && cursor?.background?.running?.length) {
           patch.turn = freshTurn({ key, path }, this.agentName(key), state.status);
           if (['idle', 'done'].includes(state.status)) { patch.turn.settled = true; patch.turn.status = 'idle'; }
         }
@@ -468,8 +946,10 @@ export class Bridge {
         await this.updateGeneration(binding, { transcript: { ...current.transcript, lastRecordAt: this.now() } });
       state.transcriptSource = { key, path, adapter };
       const session = adapter.sessions?.get(path);
+      if (!current.outputBatch?.transcript && ['codex', 'pi'].includes(key) && session?.sessionId && (current.sessionId !== session.sessionId || current.sessionSource !== 'verified'))
+        await this.updateGeneration(binding, { sessionId: session.sessionId, sessionSource: 'verified', sessionVerified: true });
       if (key === 'claude' && session?.sessionId && current.claudeSessionId !== session.sessionId)
-        await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionHandoff: null });
+        await this.updateGeneration(binding, { claudeSessionId: session.sessionId, sessionId: session.sessionId, sessionHandoff: null });
     } catch (error) {
       state.transcriptSource = null;
       if (error.code === 'binding_unverified' || error.code === 'binding_changed') throw error;
@@ -480,25 +960,28 @@ export class Bridge {
     const state = this.state(binding), source = state.transcriptSource;
     const current = this.store.binding(binding.chatId, binding.topicId), checkpoint = current.transcript;
     if (!checkpoint || checkpoint.path !== source.path || checkpoint.adapter !== source.key) return null;
-    const { items, cursor } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
+    const { items, cursor, model } = await this.readVerified(binding, () => source.adapter.read(source.path, checkpoint.cursor));
     if (JSON.stringify(cursor) === JSON.stringify(checkpoint.cursor)) return null;
+    if (items.some(item => item.role === 'user' || item.role === 'assistant'))
+      await this.updateGeneration(binding, { inputTranscriptSeen: true });
     const inputs = (current.sentInputs ?? []).filter(item => item.expires > this.now());
-    const { chunks, consumedInputs } = turnChunks(items, current.turn, source,
-      this.agentName(source.key), state.status, inputs, text => this.inputHash(text));
+    const { chunks, consumedInputs, checkedInputs } = turnChunks(items, current.turn, source,
+      this.agentName(source.key), state.status, inputs, text => this.inputHash(text), { now: this.now(), terminalId: current.identity.terminalId });
     if (!current.turn && !chunks.some(chunk => chunk.turn) && cursor.background?.running?.length) {
       const turn = freshTurn(source, this.agentName(source.key), state.status);
       if (['idle', 'done'].includes(state.status)) { turn.settled = true; turn.status = 'idle'; }
       chunks.push({ turn });
     }
-    return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs,
+    return { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks, consumedInputs, checkedInputs,
       transcript: { adapter: source.key, path: source.path, cursor,
-        lastRecordAt: cursor.offset !== checkpoint.cursor.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() } };
+        lastRecordAt: cursor.offset !== checkpoint.cursor?.offset ? this.now() : checkpoint.lastRecordAt ?? this.now() },
+      ...(model ? { model } : {}) };
   }
-  async createPane() {
-    return this.enqueue(() => this.createPaneSerial(), 'pane-create');
+  async createPane(chatId) {
+    return this.enqueue(() => this.createPaneSerial(chatId), 'pane-create');
   }
-  async createPaneSerial() {
-    const pane = await this.backend.create(null, this.config.defaultCwd);
+  async createPaneSerial(chatId) {
+    const pane = await this.backend.create(null, this.registry.get(chatId)?.cwd ?? this.config.defaultCwd);
     if (pane?.terminal_id) await this.store.transaction(data => {
       data.createdTerminals ??= [];
       if (!data.createdTerminals.includes(pane.terminal_id)) data.createdTerminals.push(pane.terminal_id);
@@ -506,7 +989,7 @@ export class Bridge {
     return pane;
   }
   label(pane) {
-    const binding = this.store.list().find(b => b.chatId === this.chatId && b.paneId === pane.pane_id);
+    const binding = this.store.list().find(b => b.paneId === pane.pane_id);
     return paneLabel(pane, { bound: Boolean(binding), frozen: Boolean(binding?.frozen),
       owned: this.store.data.createdTerminals?.includes(pane.terminal_id) });
   }
@@ -516,14 +999,16 @@ export class Bridge {
   async open(event, paneId, expectedTerminalId) {
     return this.enqueue(() => this.openSerial(event, paneId, expectedTerminalId), `open:${paneId}`);
   }
-  async openSerial(event, paneId, expectedTerminalId) {
+  async openSerial(event, paneId, expectedTerminalId, options = {}) {
     const existing = this.store.forPane(paneId);
+    if (options.automatic && existing) return existing.topicId;
     if (existing && existing.chatId !== event.chatId) throw new Error('终端已变化，请重新 /t ls');
     if (existing && !existing.frozen) return this.recoverOpen(event, existing, expectedTerminalId);
     const identity = await this.identity(paneId, Boolean(expectedTerminalId));
     if (expectedTerminalId && identity.terminalId !== expectedTerminalId) throw new Error('终端已变化，请重新 /t ls');
     if (existing) {
-      await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false,
+      await this.store.update(existing.chatId, existing.topicId, { identity, generation: randomUUID(), frozen: false, dormant: false,
+        cli: null, cwd: null, sessionId: null, sessionTitle: null, wakeTarget: null, wakePending: false, wakeAttempt: null, queuedInputs: [],
         claudeSessionId: null, sessionHandoff: null,
         lastTranscript: undefined, transcript: null, turn: null, cardTurnId: null, cardSignature: null,
         cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
@@ -539,10 +1024,16 @@ export class Bridge {
     const panes = await this.backend.list();
     const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === identity.terminalId);
     if (!pane) throw new Error('Unconfirmed pane identity');
-    const root = this.newRoot(pane);
-    const topicId = await this.feishu.send(event.chatId, root.card);
+    const tree = options.intent?.tree ?? this.tree.relation(pane, event.chatId);
+    const root = options.intent?.root ?? await this.newRoot(pane, undefined, { tree, chatId: event.chatId });
+    if (options.automatic) {
+      const parent = this.store.binding(event.chatId, options.intent.parentTopicId);
+      if (!parent || parent.frozen || parent.dormant || !this.registry.get(event.chatId) || this.tree.parentId(pane) !== parent.paneId) return;
+      await this.verify(parent);
+    }
+    const topicId = await this.feishu.send(event.chatId, root.card, options.intent?.uuid);
     await this.rememberCard(topicId, root.card, 'root');
-    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, topicRoot: root.metadata, welcomePending: true,
+    await this.store.bind({ chatId: event.chatId, topicId, paneId, identity, ...root.session, ...(tree ? { tree } : {}), topicRoot: root.metadata, welcomePending: true,
       ...(expectedTerminalId ? { allowDesktop: true } : {}) });
     await this.verify(this.store.binding(event.chatId, topicId));
     await this.initializeTranscript(this.store.binding(event.chatId, topicId));
@@ -590,7 +1081,7 @@ export class Bridge {
           const panes = await this.backend.list();
           const pane = panes.find(p => p.pane_id === paneId && p.terminal_id === binding.identity.terminalId);
           if (!pane) throw new Error('终端已变化，请重新 /t ls');
-          const root = this.newRoot(pane), text = root.metadata.text;
+          const root = await this.newRoot(pane, undefined, binding), text = root.metadata.text;
           await this.verify(binding);
           const topicId = await this.feishu.send(event.chatId, root.card);
           await this.rememberCard(topicId, root.card, 'root');
@@ -599,13 +1090,19 @@ export class Bridge {
             const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
             if (!this.sameGeneration(binding, current) || current.frozen) throw new Error('终端已变化，请重新 /t ls');
             Object.assign(current, { topicId, generation: randomUUID(), nonce: randomUUID(), cardId: null,
+              topicNavigation: null, childrenCard: null,
               cardCreatedAt: null, cardTurnId: null, cardSignature: null, pendingCard: null,
               welcomePending: true, firstTipTurnId: null, tipTurnId: null, tipText: null,
               lastTipAt: null, tipIndex: 0, backgroundTailCache: null,
               cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0,
               menuCardId: null, menuNonce: null, pendingMenuCard: null, menuSelected: null, menuSignature: null,
               retiredCardId: undefined, retiredCardKind: undefined, retiredCardAt: undefined, retiredCardAttempts: undefined, outputBatch: null,
-              topicRoot: root.metadata });
+              ...root.session, topicRoot: root.metadata });
+            for (const child of data.bindings) if (child.chatId === binding.chatId && child.tree?.parentTopicId === binding.topicId)
+              Object.assign(child.tree, { parentTopicId: topicId, parentTerminalId: current.identity.terminalId });
+            for (const intent of data.childTopics ?? []) if (intent.chatId === binding.chatId && intent.parentTopicId === binding.topicId) {
+              intent.parentTopicId = topicId; intent.tree.parentTopicId = topicId;
+            }
             for (const pointer of data.topicPointers ?? []) {
               if (pointer.chatId === binding.chatId && pointer.topicId === binding.topicId)
                 Object.assign(pointer, { topicId, title: text });
@@ -663,9 +1160,10 @@ export class Bridge {
       return pending.card.header.title.content;
     }, `card:${binding.topicId}`);
   }
-  async input(binding, text) {
+  async input(binding, text, staged = false, firstInput = false, claim = null) {
+    this.reap.input(binding.topicId);
     await this.verify(binding);
-    if (this.store.binding(binding.chatId, binding.topicId).needs_check) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
+    if (this.store.binding(binding.chatId, binding.topicId).needs_check && !staged) throw Object.assign(new Error('Inspect input'), { code: 'needs_check' });
     const state = this.state(binding);
     await this.initializeTranscript(binding);
     // Establish the transcript baseline BEFORE input, including for /t open.
@@ -678,14 +1176,33 @@ export class Bridge {
       }
       state.initialized = true;
     }
+    if (!state.transcriptSource) {
+      const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId));
+      state.previous = clean(read.text); state.current = state.previous; state.cardPending = true;
+      await this.updateGeneration(binding, { lastTranscript: state.previous, screenCardFresh: true, screenInteraction: randomUUID() });
+    }
+    const { read: inputScreen } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
+    const inputInteraction = randomUUID();
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    await this.updateGeneration(binding, { lastInputAt: this.now(), inputScreen: stripChrome(inputScreen.text).split('\n').filter(line => line.trim()).join('\n'),
+      inputInteraction, inputTranscriptSeen: false, menuSelected: null,
+      ...((firstInput && current?.cardId || binding.firstWakeCardId && binding.firstWakeCardId === binding.cardId) ?
+        { cardInteraction: inputInteraction, screenCardFresh: false, firstWakeCardId: null } : {}) });
     const agent = (await this.backend.list()).find(p => p.pane_id === binding.paneId);
     this.status(state, agent ? this.backend.status(agent, state.visible) : 'unknown', agent?.agent ?? null);
+    await this.updateGeneration(binding, { menuTurnContinuation: false });
+    // A rating survey takes the next keystroke as its answer, so a text message
+    // has to dismiss it first: the text belongs to the agent, not to the survey.
+    const survey = detectMenu(inputScreen.text, { cli: agent?.agent ?? binding.cli });
+    if (survey.dismissKey) await this.writeInput(binding, 'keys', { keys: [survey.dismissKey] });
     const inputId = await this.rememberInput(binding, text);
-    await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
+    if (claim) await claim();
+    else await this.store.update(binding.chatId, binding.topicId, { needs_check: true });
     try {
       await this.backend.sendText(binding.paneId, text, { submit: true, beforeSubmit: () => this.verify(binding) });
       await this.updateGeneration(binding, { needs_check: false });
     } catch (error) {
+      if (error.code === 'connection_error') error.inputId = inputId;
       if (!['agent_blocked', 'blocked'].includes(error.code)) throw error;
       await this.updateGeneration(binding, { needs_check: false });
       await this.store.transaction(data => {
@@ -693,49 +1210,63 @@ export class Bridge {
         if (this.sameGeneration(binding, b)) b.sentInputs = (b.sentInputs ?? []).filter(item => item.id !== inputId);
       });
       this.status(state, 'blocked', agent?.agent); state.dirty = true;
-      await this.refresh(binding, true, true); return;
+      await this.refresh(binding, true, true); return false;
     }
     state.dirty = true;
+    return true;
   }
   async button(event, binding) {
+    if (event.key?.startsWith('tree:')) { await this.tree.navigate(event, binding); return; }
     if (/^picker:(?:open|move|close|unbind|kill|cancel):\d+$/.test(event.key ?? '')) { await this.picker.button(event); return; }
-    if (event.key !== 'refresh' && !validKeys([event.key]) && !/^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '')) {
+    if (/^engine:[a-z][a-z0-9-]*$/.test(event.key ?? '')) { await this.engineButton(event); return; }
+    // A card callback may only carry a key the card really offers: the generic
+    // allowlist stays shut on a key no menu put on screen, while a menu's own
+    // option keys (a survey's "0: Dismiss" included) stay tappable.
+    const offered = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '') ||
+      binding?.cardMenu?.kind === 'numbered' &&
+      binding.cardMenu.items.some((item, i) => (item.key ?? String(i + 1)) === event.key);
+    if (event.key !== 'refresh' && !validKeys([event.key]) && !offered) {
+
       await this.feishu.reply(event.topicId || event.messageId, '该按钮已停用'); return;
     }
     const isMenu = Boolean(binding?.menuCardId && event.messageId === binding.menuCardId);
     if (binding?.menuCardId && !isMenu && event.key !== 'refresh') {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     if (isMenu) binding = { ...binding, cardId: binding.menuCardId, nonce: binding.menuNonce, cardCreatedAt: binding.menuCreatedAt };
     else if (binding) binding = { ...binding, cardMenu: null };
     const menuAction = /^menu:(?:select:\d+|confirm:\d+|more|back)$/.test(event.key ?? '');
     if (!binding || !binding.cardId || event.messageId !== binding.cardId || event.nonce !== binding.nonce ||
-      (event.key !== 'refresh' && !validKeys([event.key]) && !menuAction)) {
+      (event.key !== 'refresh' && !validKeys([event.key]) && !(menuAction ||
+        binding?.cardMenu?.kind === 'numbered' &&
+        binding.cardMenu.items.some((item, i) => (item.key ?? String(i + 1)) === event.key)))) {
+      if (binding) { await this.staleCard(binding, event); return; }
       await this.feishu.reply(event.topicId || event.messageId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
     }
     const state = this.state(binding);
-    if (!Number.isFinite(binding.cardCreatedAt) || this.now() - binding.cardCreatedAt >= 600000 || this.now() < binding.cardCreatedAt) {
-      await this.feishu.reply(event.topicId, '卡片已过期，请重新 /t screen'); return;
-    }
     try { await this.verify(binding); }
-    catch { await this.feishu.reply(event.topicId, '终端已变化，请重新 /t ls'); return; }
+    catch (error) {
+      if (error.code !== 'binding_dormant') {
+        await this.feishu.reply(event.topicId, '终端已变化，请重新 /t ls'); return;
+      }
+    }
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (current?.dormant || current?.wakePending) {
+      if (menuAction && current.wakeCardId === event.messageId) return;
+      if (!await this.store.consumeCard(binding.chatId, binding.topicId, event.messageId, event.nonce, isMenu)) return;
+      await this.wake.button(current, event); return;
+    }
     if (menuAction && binding.cardMenu?.kind !== 'list') {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'numbered' && !['esc', 'refresh',
-      ...binding.cardMenu.items.map((_, i) => String(i + 1))].includes(event.key)) {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+      ...binding.cardMenu.items.map((item, i) => item.key ?? String(i + 1))].includes(event.key)) {
+      await this.staleCard(binding, event); return;
     }
     if (binding.cardMenu?.kind === 'list' && !menuControls(binding.cardMenu, {
       page: binding.menuPage, confirm: binding.menuConfirm, pageSize: binding.menuPageSize,
     }).some(([, key]) => key === event.key)) {
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
-    }
-    if (event.key !== 'refresh' && !binding.cardMenu?.kind) {
-      const agents = await this.backend.list();
-      if (!agents.some(a => a.pane_id === binding.paneId && this.backend.status(a, state.visible) === 'blocked')) {
-        await this.feishu.reply(binding.topicId, '终端已经不在等待确认，请发送 /t screen 查看当前状态。'); return;
-      }
+      await this.staleCard(binding, event); return;
     }
     // Consume the nonce durably before sending any key. A replay under a new
     // event_id cannot execute the same card action again, including on restart.
@@ -745,17 +1276,29 @@ export class Bridge {
     await this.log(event, binding, event.key === 'refresh' ? 'refresh' : 'button_key', event.key);
     if (event.key !== 'refresh') {
       if (binding.cardMenu?.kind) {
-        await this.menuButton(event, binding);
-      } else await this.writeInput(binding, 'keys', { keys: [event.key] });
+        if (await this.menuButton(event, binding) === false) { state.dirty = true; return; }
+      } else {
+        const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
+        const panes = await this.backend.backend(binding.paneId).list(), pane = panes.find(p => p.pane_id === binding.paneId);
+        if (!pane || this.backend.status(pane, read.text) !== 'blocked' || (await this.liveMenu(binding, read.text)).kind ||
+            ((binding.cardScreenHash ?? null) !== this.approvalHash(read.text))) {
+          await this.changedCard(binding, event); return;
+        }
+        const fresh = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
+        if ((await this.liveMenu(binding, fresh.read.text)).kind || this.approvalHash(fresh.read.text) !== this.approvalHash(read.text)) {
+          await this.changedCard(binding, event); return;
+        }
+        await this.writeInput(binding, 'keys', { keys: ['y', 'n'].includes(event.key) && !lookupCli(pane) ? [event.key, 'enter'] : [event.key] });
+      }
     }
     state.dirty = true; await this.refresh(this.store.binding(binding.chatId, binding.topicId), true);
   }
   async menuButton(event, binding) {
     const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-    const menu = detectMenu(read.text);
-    if (!sameMenu(binding.cardMenu, menu) || (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, read.text)) {
-      await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+    const menu = await this.liveMenu(binding, read.text);
+    if (!sameMenuChoices(binding.cardMenu, menu) || (event.key.startsWith('menu:confirm:') && !sameMenu(binding.cardMenu, menu)) ||
+        (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, read.text)) {
+      await this.changedCard(binding, event); return;
     }
     if (event.key === 'menu:more' || event.key === 'menu:back') {
       await this.updateGeneration(binding, { menuConfirm: null,
@@ -779,20 +1322,147 @@ export class Bridge {
     // Recheck after durable nonce consumption, auditing and duplicate lookup.
     // No movement or Enter is sent for a stale item/cursor/title snapshot.
     const fresh = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
-    if (!sameMenu(menu, detectMenu(fresh.read.text)) || menuScreenHash(menu, read.text) !== menuScreenHash(menu, fresh.read.text)) {
-      await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-      await this.feishu.reply(binding.topicId, '菜单已变化，请刷新'); return;
+    if (!sameMenu(menu, await this.liveMenu(binding, fresh.read.text)) || menuScreenHash(menu, read.text) !== menuScreenHash(menu, fresh.read.text)) {
+      await this.changedCard(binding, event); return;
     }
-    await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-    await this.writeInput(binding, 'keys', { keys });
+    const picked = menu.kind === 'numbered' ? menu.items.find((item, i) => (item.key ?? String(i + 1)) === event.key) : null;
     const selected = selection ? menu.items[Number(selection[2])]?.label :
-      menu.kind === 'numbered' && /^[1-9]$/.test(event.key) ? menu.items[Number(event.key) - 1]?.label :
+      picked ? `${event.key}. ${picked.label}` :
       event.key === 'enter' ? menu.items[menu.cursorIndex]?.label : null;
-    await this.updateGeneration(binding, { menuSelected: selected ?? null });
+    let selectionPatchFailed = false;
+    if (selected) {
+      const interaction = binding.inputInteraction ?? randomUUID();
+      await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0, menuSelected: selected,
+        menuTurnContinuation: true, lastInputAt: this.now(), selectedMenu: selectedMenuSignature(menu), selectedMenuAt: this.now(),
+        inputInteraction: interaction, cardInteraction: interaction, inputTranscriptSeen: false });
+      this.state(binding).menu = detectMenu('');
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      const prepared = await this.prepareCard(current);
+      const card = renderSchema(prepared.card, '2.0');
+      card.body.elements.push({ tag: 'markdown', content: `已选择：${selected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
+      try { await this.enqueue(() => this.patchCard(event.messageId, card, 'menu'), `card:${binding.topicId}`); }
+      catch (error) { selectionPatchFailed = true; this.reportFailure('menu_selection_patch_failed', error); }
+    } else await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
+    try { await this.writeInput(binding, 'keys', { keys }); }
+    catch (error) {
+      if (selected) {
+        const current = this.store.binding(binding.chatId, binding.topicId);
+        const prepared = await this.prepareCard(current);
+        const card = renderSchema(prepared.card, '2.0');
+        card.body.elements.push({ tag: 'markdown', content: '发送失败，请检查终端状态。' }, ...menuElements({ menu, topicId: binding.topicId,
+          nonce: current.menuNonce, agent: this.agentName(this.state(binding).agent ?? binding.cli ?? '终端'),
+          menuUI: { page: binding.menuPage ?? 0, pageSize: binding.menuPageSize } }));
+        await this.patchCard(event.messageId, card, 'menu');
+        await this.updateGeneration(binding, { menuSelected: null, menuSignature: null, menuAttemptAt: null });
+      }
+      throw error;
+    }
+    if (selectionPatchFailed) return false;
+  }
+  screenHash(text) { return createHash('sha256').update(clean(text)).digest('hex'); }
+  async liveMenu(binding, text) {
+    const panes = await this.backend.backend(binding.paneId).list();
+    const pane = panes.find(p => p.pane_id === binding.paneId);
+    return detectMenu(text, { status: pane ? this.backend.status(pane, text) : 'unknown', cli: pane?.agent ?? binding.cli });
+  }
+  async staleCard(binding, event) {
+    const current = this.store.binding(binding.chatId, binding.topicId);
+    if (![current.cardId, current.menuCardId].filter(Boolean).includes(event.messageId)) {
+      await this.feishu.reply(event.topicId, '这张卡片已失效或属于其他话题，请发送 /t screen 获取当前卡片。'); return;
+    }
+    const state = this.state(current);
+    state.forceTurnCard = true; state.cardPending = true;
+    if (event.messageId === current.menuCardId) {
+      // Keep a live duplicate-session confirmation intact on an old-nonce tap.
+      state.menuRetryAt = 0;
+      await this.updateGeneration(current, { menuSignature: null, menuAttemptAt: null });
+    }
+    state.cardRetryAt = 0; state.lastCard = -Infinity;
+    await this.updateGeneration(current, { cardAttemptAt: null });
+    await this.refresh(this.store.binding(current.chatId, current.topicId), true, false, true);
+    state.forceCurrentCard = event.messageId;
+    try { await this.publishCard(this.store.binding(current.chatId, current.topicId), true); }
+    finally { state.forceCurrentCard = null; }
+  }
+  approvalHash(text) {
+    const context = approvalContext(text);
+    return context === null ? null : this.screenHash(context);
+  }
+  async changedCard(binding, event) {
+    await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
+    await this.refresh(binding, true, false, true);
+    let current = this.store.binding(binding.chatId, binding.topicId);
+    const state = this.state(current);
+    state.menuRetryAt = 0; // This nonce admits one explicit refresh attempt.
+    // Reconcile an uncertain version with its fixed payload before publishing
+    // today's screen. Never discard a pending UUID or resurrect it afterward.
+    if (current.pendingMenuCard) {
+      await this.updateGeneration(current, { menuAttemptAt: null });
+      await this.publishMenuCard(this.store.binding(current.chatId, current.topicId));
+      current = this.store.binding(current.chatId, current.topicId);
+    }
+    if (event.messageId === current.menuCardId && state.menu?.kind) {
+      await this.updateGeneration(current, { menuAttemptAt: null });
+      await this.publishMenuCard(this.store.binding(current.chatId, current.topicId));
+    } else if (event.messageId === current.cardId && event.messageId === current.menuCardId) {
+      await this.publishMenuCard(current);
+      await this.publishCard(this.store.binding(current.chatId, current.topicId), true);
+    } else {
+      await this.verify(current);
+      // The screen still asks the user something: the card they are looking at
+      // must keep the question and its options, never the bare terminal text.
+      const card = state.menu?.kind ? menuCard({ menu: state.menu, topicId: current.topicId, nonce: current.nonce,
+        agent: this.agentName(state.agent ?? current.cli ?? '终端'), menuUI: { page: 0, pageSize: menuPageSize(state.menu) } }) :
+        outputCard(state.visible, { full: true });
+      await this.patchCard(event.messageId, this.sessionCard(card, current),
+        event.messageId === current.menuCardId ? 'menu' : current.cardTurnId ? 'turn' : 'status');
+      if (event.messageId === current.menuCardId) await this.updateGeneration(current, {
+        menuCardId: null, menuNonce: null, cardMenu: null, menuSignature: null, menuPublishedNonce: null,
+      });
+      current = this.store.binding(current.chatId, current.topicId);
+      if (state.menu?.kind) await this.publishMenuCard(current);
+    }
+    await this.feishu.reply(binding.topicId, '菜单已变化，已更新卡片。');
+  }
+  async menuReply(binding, event, text) {
+    if (!/^(?:\d+|[yn])$/i.test(text)) return false;
+    const { read } = await this.readVerified(binding, () => this.backend.read(binding.paneId, { source: 'visible' }));
+    const menu = await this.liveMenu(binding, read.text);
+    if (!menu.kind) {
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      if (!current.menuCardId) return false;
+      await this.changedCard(current, { ...event, messageId: current.menuCardId }); return true;
+    }
+    if (!menu.items.length) return false;
+    if (/^[yn]$/i.test(text) && !['yes', 'no'].every(label => menu.items.some(item => new RegExp(`^${label}\\b`, 'i').test(item.label)))) return false;
+    const index = /^\d+$/.test(text) ? menu.items.findIndex((item, i) => (item.key ?? String(i + 1)) === text) :
+      menu.items.findIndex(item => new RegExp(text.toLowerCase() === 'y' ? '^yes\\b' : '^no\\b', 'i').test(item.label));
+    if (index < 0 || index >= menu.items.length) return false;
+    let current = this.store.binding(binding.chatId, binding.topicId);
+    if (!current.menuCardId) {
+      await this.refresh(current, true); current = this.store.binding(current.chatId, current.topicId);
+      if (!sameMenuChoices(menu, current.cardMenu)) {
+        await this.feishu.reply(binding.topicId, '菜单已变化，已更新卡片。'); return true;
+      }
+    }
+    if (menu.kind === 'list' && !current.menuConfirm) {
+      const page = Math.floor(index / (current.menuPageSize ?? menuPageSize(menu)));
+      if (page !== (current.menuPage ?? 0)) {
+        await this.updateGeneration(current, { menuPage: page, menuAttemptAt: null });
+        await this.publishMenuCard(this.store.binding(current.chatId, current.topicId));
+        current = this.store.binding(current.chatId, current.topicId);
+      }
+    }
+    const key = menu.kind === 'numbered' ? menu.items[index].key ?? String(index + 1) :
+      `menu:${current.menuConfirm?.index === index ? 'confirm' : 'select'}:${index}`;
+    await this.button({ ...event, kind: 'button', messageId: current.menuCardId, nonce: current.menuNonce, key }, current);
+    return true;
   }
   tick() {
     if (this.tickPending || this.stopped) return Promise.resolve();
+    this.deliveryEvents.emit('tick');
     this.tickPending = true;
+    this.observeTick = (this.observeTick ?? 0) + 1;
     return (async () => {
       if (this.now() - (this.lastMaintenance ?? -Infinity) >= 60000) {
         await this.store.maintain(this.now()); this.lastMaintenance = this.now();
@@ -800,30 +1470,33 @@ export class Bridge {
         for (const id of this.runtime.keys()) if (!topics.has(id)) this.runtime.delete(id);
       }
       await this.scanSessions();
-    })().then(() => Promise.all(this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && this.state(b).verified).map(binding =>
+      await this.tree.tick();
+    })().then(() => Promise.all(this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && this.state(b).verified).map(binding =>
       this.enqueue(async () => {
         if (!this.store.binding(binding.chatId, binding.topicId)) return;
         const state = this.state(binding);
         try {
           if (state.dirty || this.now() - state.lastRead >= 1000) await this.refresh(binding, false, false, true);
-        } catch { this.onError('output_refresh_failed'); }
-        try { await this.flush(binding); } catch { this.onError('output_flush_failed'); }
-        try { await this.refreshCard(binding); } catch { this.onError('card_refresh_failed'); }
+        } catch (error) { this.reportFailure('output_refresh_failed', error); }
+        try { await this.flush(binding); } catch (error) { this.reportFailure('output_flush_failed', error); }
+        try { await this.refreshCard(binding); } catch (error) { this.reportFailure('card_refresh_failed', error); }
       }, `output:${binding.topicId}`)
-    ))).finally(() => { this.tickPending = false; });
+    ))).then(() => this.reap.tick()).finally(() => { this.tickPending = false; });
   }
   async scanSessions() {
     if (this.now() - (this.lastSessionScan ?? -Infinity) < 1000) return;
     this.lastSessionScan = this.now();
-    for (const b of this.store.list().filter(b => b.chatId === this.chatId && (b.frozen || b.recoveryPending))) {
+    for (const b of this.store.list().filter(b => this.registry.get(b.chatId) && (b.frozen || b.recoveryPending))) {
       await this.enqueue(() => this.enqueue(() => this.healBinding(b), `output:${b.topicId}`), b.topicId)
         .catch(() => this.onError('binding_recovery_failed'));
     }
-    for (const snapshot of this.store.list().filter(b => b.chatId === this.chatId)) {
+    for (const snapshot of this.store.list().filter(b => this.registry.get(b.chatId))) {
+      await this.enqueue(() => this.wake.tick(this.store.binding(snapshot.chatId, snapshot.topicId)), snapshot.topicId)
+        .catch(() => this.onError('wake_retry_failed'));
       // Input, output and card work all drain before the atomic retarget.
       await this.enqueue(() => this.enqueue(() => this.enqueue(async () => {
         let binding = this.store.binding(snapshot.chatId, snapshot.topicId);
-        if (!binding) return;
+        if (!binding || binding.wakeTarget || binding.wakeAttempt?.phase === 'launching') return;
         if (this.config.sessionFollow === 'warn') return;
         if (binding.sessionHandoff && !binding.sessionHandoff.done) {
           await this.finishHandoff(binding); return;
@@ -844,13 +1517,24 @@ export class Bridge {
             const sessionId = await this.sessionFollow.sessionIdOf(pid);
             const active = sessionId && await this.sessionFollow.process(pid, sessionId);
             if (active && active.terminalId === binding.paneId && sessionId !== binding.claudeSessionId) {
-              await this.updateGeneration(binding, { claudeSessionId: sessionId, sessionHandoff: null });
+              await this.updateGeneration(binding, { claudeSessionId: sessionId, sessionId, sessionHandoff: null });
               binding = this.store.binding(binding.chatId, binding.topicId);
             }
           }
         }
-        if (!binding.claudeSessionId) return;
-        const candidates = await this.sessionFollow.candidates(binding.claudeSessionId);
+        if (['codex', 'pi'].includes(binding.cli) && binding.sessionSource !== 'verified' && !binding.dormant && !binding.frozen) {
+          const term = await this.backend.get(binding.paneId).catch(() => null);
+          if (term && this.identitiesMatch(binding, term)) {
+            const facts = await this.sessionFollow.describe(term);
+            if (facts.sessionVerified && facts.sessionId === binding.sessionId) {
+              await this.updateGeneration(binding, { sessionSource: 'verified', sessionVerified: true });
+              binding = this.store.binding(binding.chatId, binding.topicId);
+            }
+          }
+        }
+        const followedSession = binding.sessionId ?? binding.claudeSessionId;
+        if (!followedSession || (['codex', 'pi'].includes(binding.cli) && binding.sessionSource !== 'verified')) return;
+        const candidates = await this.sessionFollow.candidates(followedSession);
         if (!candidates.length) return;
         const winner = candidates[0], terminals = await this.backend.list();
         const terminal = this.sessionFollow.terminal(winner, terminals, this.backend);
@@ -863,12 +1547,14 @@ export class Bridge {
         }
         const identity = await this.identity(terminal.pane_id, true);
         const live = await this.sessionFollow.process(winner.pid, winner.sessionId);
-        if (!live || live.start !== winner.start || live.terminalId !== winner.terminalId) return;
+        if (!live || live.start !== winner.start || live.terminalId !== winner.terminalId ||
+          (winner.hcIdentity && live.hcIdentity?.terminalId !== winner.hcIdentity.terminalId)) return;
         const generation = randomUUID();
         const moved = await this.store.transaction(data => {
           const current = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
           if (!this.sameGeneration(binding, current) || data.bindings.some(b => b !== current && b.paneId === terminal.pane_id)) return null;
-          Object.assign(current, { paneId: terminal.pane_id, identity, generation, allowDesktop: true, frozen: false,
+          Object.assign(current, { paneId: terminal.pane_id, identity, generation, allowDesktop: true, frozen: false, dormant: false,
+            wakePending: false, wakeTarget: null, wakeAttempt: null,
             nonce: randomUUID(), menuNonce: randomUUID(), cardMenu: null, menuConfirm: null, menuPage: 0,
             pendingMenuCard: null, menuSignature: null,
             sessionHandoff: { winner, older: candidates.slice(1).map(p => ({ process: p })),
@@ -891,7 +1577,7 @@ export class Bridge {
       }, `card:${snapshot.topicId}`), `output:${snapshot.topicId}`), snapshot.topicId).catch(() => this.onError('session_follow_failed'));
     }
     let recovered = false;
-    for (const b of this.store.list().filter(b => b.chatId === this.chatId && !b.frozen && !this.state(b).verified)) {
+    for (const b of this.store.list().filter(b => this.registry.get(b.chatId) && !b.frozen && !this.state(b).verified)) {
       await this.verify(b).catch(() => {});
       recovered ||= this.state(b).verified;
     }
@@ -945,12 +1631,24 @@ export class Bridge {
     }
     const content = clean(recent.text);
     if (content !== state.current) { state.current = content; state.lastChange = now; state.pending = true; }
-    const menu = detectMenu(visible.text), warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
+    let menu = detectMenu(visible.text, { status: state.status, cli: agent?.agent ?? binding.cli });
+    if (!menu.kind && (binding.selectedMenu != null || binding.selectedMenuAt != null)) {
+      if (!await this.updateGeneration(binding, { selectedMenu: null, selectedMenuAt: null })) return;
+    }
+    if (binding.menuSelected && selectedMenuSignature(menu) === binding.selectedMenu && now - binding.selectedMenuAt < 5000) menu = detectMenu('');
+    const warnings = resumeWarnings(menu, panes, binding.paneId, visible.text);
+    if (!menu.kind && state.menu?.kind) {
+      // A vanished menu must not leave output behind its publication backoff.
+      state.menuRetryAt = 0; state.menuFailures = 0; state.cardRetryAt = 0;
+      await this.updateGeneration(binding, { menuAttemptAt: null });
+    }
     const menuSignature = JSON.stringify({ menu, warnings, screenHash: menuScreenHash(menu, visible.text) });
     if ((binding.menuConfirm || binding.menuPage) && (!sameMenu(binding.cardMenu, menu) ||
         (binding.cardMenuScreenHash ?? null) !== menuScreenHash(menu, visible.text)))
       await this.updateGeneration(binding, { menuConfirm: null, menuPage: 0 });
-    const signature = createHash('sha256').update(visible.text + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature).digest('hex');
+    const screen = state.transcriptSource ? visible.text :
+      screenBody(binding, pane, content, visible.text) || stripChrome(visible.text).split('\n').filter(line => line.trim()).slice(-10).join('\n');
+    const signature = createHash('sha256').update(screen + '\0' + state.status + '\0' + this.label(pane) + '\0' + menuSignature).digest('hex');
     state.cardPending = state.cardPending || force || signature !== state.signature || state.blockedNotice;
     if (state.transcriptSource && ((state.status === 'blocked' && state.visible !== visible.text) ||
         ((menu.kind || state.menu?.kind) && menuSignature !== state.menuSignature))) state.forceTurnCard = true;
@@ -966,30 +1664,61 @@ export class Bridge {
     return Boolean(this.state(binding).transcriptSource || binding.pendingCard?.turnId ||
       binding.outputBatch?.chunks[binding.outputBatch.next]?.turn);
   }
-  async prepareCard(binding, resume = false) {
-    const state = this.state(binding), nonce = randomUUID();
+  inputCard(binding) {
+    return Boolean(binding.inputInteraction && binding.cardInteraction === binding.inputInteraction && binding.cardId);
+  }
+  screenFallback(binding) {
+    const state = this.state(binding);
+    return Boolean(this.turnMode(binding) && binding.inputInteraction && !binding.inputTranscriptSeen &&
+      (this.now() - binding.lastInputAt >= 3000 || (state.forceCurrentCard && binding.menuSelected)) && !state.menu?.kind && typeof state.visible === 'string' &&
+      (this.inputCard(binding) || stripChrome(state.visible).split('\n').filter(line => line.trim()).join('\n') !== binding.inputScreen));
+  }
+  interactionCard(binding, pane, nonce, resume, tip = '') {
+    const state = this.state(binding);
+    if (this.turnMode(binding) && binding.turn && !this.screenFallback(binding) && !(state.menu?.kind && !binding.inputTranscriptSeen && binding.inputInteraction)) return this.sessionCard(turnCard({
+      turn: binding.turn, tip, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible,
+      suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding);
+    if (this.screenFallback(binding)) {
+      const row = lookupCli(pane), lines = stripChrome(state.visible).split('\n').filter(line => line.trim() && !(row?.footerPatterns ?? []).some(pattern => pattern.test(line)));
+      const counts = new Map();
+      for (const line of (binding.inputScreen ?? '').split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
+      const diff = lines.filter(line => { const n = counts.get(line) ?? 0; if (!n) return true; counts.set(line, n - 1); return false; });
+      const card = renderSchema(this.sessionCard(turnCard({ turn: { agent: ({ claude: 'Claude', codex: 'Codex', pi: 'Pi' }[state.agent] ?? 'Claude'), status: state.status, ...binding.turn, text: (diff.length ? diff : lines).join('\n') }, topicId: binding.topicId, nonce, screen: state.visible, suppressMenu: true, tip, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
+      if (binding.menuSelected && !binding.inputTranscriptSeen) card.body.elements.unshift({ tag: 'markdown', content: `已选择：${binding.menuSelected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
+      return card;
+    }
+    const output = screenBody(binding, pane, state.current, state.menu?.kind ? state.current : state.visible, state.menu?.kind ? 3000 : 20000);
+    const card = renderSchema(this.sessionCard(screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
+      agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, output, suppressMenu: true,
+      ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }), binding), '2.0');
+    if (binding.menuSelected && !binding.inputTranscriptSeen && !state.menu?.kind)
+      card.body.elements.unshift({ tag: 'markdown', content: `已选择：${binding.menuSelected.replace(/[\\`*_\[\]<>]/g, '\\$&')}` });
+    return card;
+  }
+  async prepareCard(binding, resume = false, nonce = randomUUID()) {
+    const state = this.state(binding);
     await this.verify(binding);
     const panes = await this.readVerified(binding, () => this.backend.backend(binding.paneId).list());
     const pane = panes.find(p => p.pane_id === binding.paneId && p.terminal_id === binding.identity.terminalId);
     if (!pane) throw Object.assign(new Error('Binding unverified'), { code: 'binding_unverified' });
-    if (this.turnMode(binding) && binding.turn) {
-      const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id;
+    if (this.turnMode(binding) && binding.turn && !this.screenFallback(binding) && !(state.menu?.kind && !binding.inputTranscriptSeen && binding.inputInteraction)) {
+      const turn = binding.turn, newTurn = binding.cardTurnId !== turn.id && !binding.menuTurnContinuation && !this.inputCard(binding);
       const eligible = !['blocked', 'error', 'failed', 'frozen'].includes(turn.status) &&
         !turn.truncated && !turn.toolsTruncated && Array.from(stripChrome(turn.text)).length <= 1500;
       const tip = planTurnTip(binding, turn, this.now(), eligible);
-      return { nonce, createdAt: this.now(), targetId: resume || newTurn ? null : binding.cardId ?? null,
+      return { nonce, createdAt: this.now(), targetId: state.forceCurrentCard ?? (resume || newTurn ? null : binding.cardId ?? null),
         ...((resume || (newTurn && !binding.cardTurnId)) && binding.cardId ? {
           previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status',
           ...(binding.cardTurnId ? { previousCardAt: binding.cardAttemptAt } : {}),
         } : {}),
-        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), tipPatch: tip.patch,
-        card: turnCard({ turn, tip: tip.text, topicId: binding.topicId, nonce, screen: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+        uuid: randomUUID(), turnId: turn.id, signature: turnSignature(turn), session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible), tipPatch: tip.patch,
+        card: this.interactionCard(binding, pane, nonce, resume, tip.text) };
     }
-    return { nonce, createdAt: this.now(), targetId: resume ? null : binding.cardId ?? null,
+    return { nonce, createdAt: this.now(), targetId: state.forceCurrentCard ?? (resume || binding.screenCardFresh || (this.turnMode(binding) && binding.inputInteraction && !this.inputCard(binding)) ? null : binding.cardId ?? null),
+      screenPublication: true, screenInteraction: binding.screenInteraction ?? null,
       ...(resume && binding.cardId ? { previousCardId: binding.cardId, previousCardKind: binding.cardTurnId ? 'turn' : 'status' } : {}),
-      uuid: randomUUID(), signature: state.nextSignature,
-      card: screenCard({ paneId: binding.paneId, label: this.label(pane), topicId: binding.topicId, nonce,
-        agent: state.agent, status: state.status, text: state.menu?.kind ? '' : state.visible, suppressMenu: true, ...(resume ? { note: '📍 已从终端列表恢复' } : {}) }) };
+      uuid: randomUUID(), signature: state.nextSignature, session: this.sessionIdentity(binding), screenHash: this.approvalHash(state.visible),
+      card: this.interactionCard(binding, pane, nonce, resume) };
   }
   async retireCard(binding) {
     const current = this.store.binding(binding.chatId, binding.topicId);
@@ -1027,11 +1756,103 @@ export class Bridge {
   }
   async publishMenuCard(binding) {
     const state = this.state(binding), menu = state.menu ?? detectMenu(state.visible);
+    if (binding.pendingCard) return;
+    // Old separate menu cards must be retired using their original state machine.
+    const legacy = binding.menuCardId && binding.menuCardId !== binding.cardId;
+    if (legacy && !binding.pendingMenuCard) {
+      const saved = state.menu; state.menu = detectMenu('');
+      try { await this.publishMenuCardLegacy(binding); }
+      finally { state.menu = saved; }
+      binding = this.store.binding(binding.chatId, binding.topicId);
+      if (binding.menuCardId) return;
+    }
+    if (!menu.kind && binding.menuCardId && binding.menuCardId === binding.cardId && !binding.pendingMenuCard) {
+      await this.updateGeneration(binding, { menuCardId: null, menuNonce: null, menuPublishedNonce: null,
+        menuSignature: null, cardMenu: null, cardMenuScreenHash: null, menuConfirm: null, menuPage: 0, menuAttemptAt: null });
+      state.cardPending = true; state.forceTurnCard = true;
+      return;
+    }
+    if (binding.pendingMenuCard && !binding.pendingMenuCard.inline) {
+      await this.publishMenuCardLegacy(binding);
+      binding = this.store.binding(binding.chatId, binding.topicId);
+      if (binding.pendingMenuCard || binding.menuCardId && binding.menuCardId !== binding.cardId) return;
+    }
+    if (!menu.kind && !binding.pendingMenuCard) return;
+    const panes = await this.backend.list();
+    const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
+    let pending = binding.pendingMenuCard;
+    if (!pending) {
+      const nonce = sameMenu(binding.cardMenu, menu) && binding.menuNonce && binding.menuNonce === binding.menuPublishedNonce ? binding.menuNonce : randomUUID();
+      const prepared = await this.prepareCard(binding, false, nonce);
+      const card = renderSchema(prepared.card, '2.0');
+      const pageSize = menuPageSize(menu, warnings, Math.max(1000, 26000 - Buffer.byteLength(JSON.stringify(card))));
+      card.body.elements.push(...menuElements({ menu, topicId: binding.topicId, nonce,
+        agent: this.agentName(state.agent ?? binding.cli ?? '终端'),
+        menuUI: { page: binding.menuPage ?? 0, pageSize, warnings,
+          confirm: sameMenu(binding.menuConfirm?.menu, menu) ? binding.menuConfirm : null } }));
+      const signature = JSON.stringify({ menu, warnings, session: this.sessionIdentity(binding), page: binding.menuPage ?? 0,
+        confirm: binding.menuConfirm, selected: binding.menuSelected, hash: menuScreenHash(menu, state.visible), body: prepared.card });
+      if (signature === binding.menuSignature && binding.menuNonce === binding.menuPublishedNonce) return;
+      if (this.now() < (state.menuRetryAt ?? 0) || binding.menuCardId && this.now() - (binding.menuAttemptAt ?? -Infinity) < 1000) return;
+      const schema = this.store.data.cardSchemas?.[binding.cardId]?.schemaVersion;
+      pending = { inline: true, nonce, uuid: randomUUID(), targetId: schema === '1.0' ? null : prepared.targetId,
+        createdAt: this.now(), signature, menu, pageSize, screenHash: menuScreenHash(menu, state.visible), card,
+        turnId: prepared.turnId, cardSignature: prepared.signature };
+      if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
+    }
+    try {
+      await this.verify(binding);
+      const current = this.store.binding(binding.chatId, binding.topicId);
+      if (current?.menuSelected && selectedMenuSignature(pending.menu) === current.selectedMenu && this.now() - current.selectedMenuAt < 5000) {
+        await this.updateGeneration(current, { pendingMenuCard: null });
+        return;
+      }
+      if (!await this.updateGeneration(binding, { menuAttemptAt: this.now() })) return;
+      let id = pending.targetId;
+      if (id) {
+        try { await this.patchCard(id, pending.card, 'menu'); }
+        catch (error) {
+          if (state.forceCurrentCard) throw error;
+          if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
+          id = null; pending.targetId = null;
+          if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
+        }
+      }
+      if (!id) {
+        if (this.now() - pending.createdAt >= 55 * 60 * 1000) throw new Error('Menu retry window expired');
+        await this.verify(binding);
+        id = await this.feishu.reply(binding.topicId, pending.card, 'interactive', pending.uuid);
+        await this.rememberCard(id, pending.card, 'menu');
+      }
+      await this.updateGeneration(binding, { pendingMenuCard: null, cardId: id, cardNonce: pending.nonce,
+        nonce: pending.nonce, cardCreatedAt: pending.createdAt, cardTurnId: pending.turnId ?? null,
+        cardSignature: pending.cardSignature, screenCardFresh: false, cardInteraction: binding.inputInteraction ?? null,
+        ...(!pending.turnId && this.turnMode(binding) ? { menuTurnContinuation: true } : {}),
+        menuCardId: id, menuNonce: pending.nonce, menuPublishedNonce: pending.nonce, menuCreatedAt: pending.createdAt,
+        menuSignature: pending.signature, menuPageSize: pending.pageSize, cardMenu: pending.menu,
+        cardMenuScreenHash: pending.screenHash });
+      state.menuRetryAt = 0; state.menuFailures = 0;
+      if (!menu.kind) await this.publishMenuCard(this.store.binding(binding.chatId, binding.topicId));
+    } catch (error) {
+      state.menuRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.menuFailures ?? 0));
+      state.menuFailures = (state.menuFailures ?? 0) + 1;
+      throw error;
+    }
+  }
+  async publishMenuCardLegacy(binding) {
+    const state = this.state(binding), menu = state.menu ?? detectMenu(state.visible);
     if (!menu.kind && !binding.menuCardId && !binding.pendingMenuCard) return;
+    if (!menu.kind && binding.pendingMenuCard?.targetId) {
+      // A patch is a replace operation: retire the obsolete menu in its known
+      // message, rather than retrying old choices before the current state.
+      await this.updateGeneration(binding, { pendingMenuCard: null, menuAttemptAt: null,
+        menuCardId: binding.menuCardId ?? binding.pendingMenuCard.targetId });
+      binding = this.store.binding(binding.chatId, binding.topicId);
+    }
     const panes = await this.backend.list();
     const warnings = resumeWarnings(menu, panes, binding.paneId, state.visible);
     const pageSize = menuPageSize(menu, warnings);
-    const signature = JSON.stringify({ menu, warnings, page: binding.menuPage ?? 0,
+    const signature = JSON.stringify({ menu, warnings, session: this.sessionIdentity(binding), page: binding.menuPage ?? 0,
       confirm: binding.menuConfirm, selected: binding.menuSelected, hash: menuScreenHash(menu, state.visible) });
     if (!binding.pendingMenuCard && signature === binding.menuSignature && binding.menuNonce === binding.menuPublishedNonce) return;
     if (this.now() < (state.menuRetryAt ?? 0) ||
@@ -1041,10 +1862,10 @@ export class Bridge {
       const nonce = randomUUID();
       pending = { nonce, uuid: randomUUID(), targetId: binding.menuCardId ?? null, createdAt: this.now(),
         signature, menu, pageSize, screenHash: menuScreenHash(menu, state.visible),
-        card: menuCard({ menu, topicId: binding.topicId, nonce,
+        card: this.sessionCard(menuCard({ menu, topicId: binding.topicId, nonce, agent: this.agentName(state.agent ?? binding.cli ?? '终端'),
           menuUI: { page: binding.menuPage ?? 0, pageSize, warnings,
             confirm: sameMenu(binding.menuConfirm?.menu, menu) ? binding.menuConfirm : null },
-          ...(!menu.kind ? { result: binding.menuSelected ?? '' } : {}) }) };
+          ...(!menu.kind ? { result: binding.menuSelected ?? '' } : {}) }), binding) };
       if (!await this.updateGeneration(binding, { pendingMenuCard: pending })) return;
     }
     try {
@@ -1072,6 +1893,12 @@ export class Bridge {
         cardMenu: pending.menu.kind ? pending.menu : null, cardMenuScreenHash: pending.screenHash,
         ...(!pending.menu.kind ? { menuSelected: null, menuConfirm: null, menuPage: 0 } : {}) });
       state.menuRetryAt = 0; state.menuFailures = 0;
+      if (!menu.kind && pending.menu.kind) {
+        // Reconcile an uncertain create with its original UUID, then retire it
+        // in this tick. The obsolete choices never become actionable locally.
+        await this.updateGeneration(binding, { menuNonce: null, menuAttemptAt: null });
+        await this.publishMenuCard(this.store.binding(binding.chatId, binding.topicId));
+      }
     } catch (error) {
       state.menuRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.menuFailures ?? 0));
       state.menuFailures = (state.menuFailures ?? 0) + 1;
@@ -1084,15 +1911,26 @@ export class Bridge {
     if (!this.sameGeneration(binding, current)) return;
     binding = current;
     if (!binding || binding.frozen || !state.verified) return;
-    await this.publishMenuCard(binding);
+    try { await this.publishMenuCard(binding); }
+    catch (error) {
+      if (state.menu?.kind) throw error;
+      // Retirement of a vanished menu must never gate transcript delivery.
+      this.reportFailure('menu_card_refresh_failed', error);
+    }
     binding = this.store.binding(binding.chatId, binding.topicId);
-    // Menus own a reply and never change the existing turn/status card.
-    if (state.menu?.kind) return;
+    // The inline menu publication already includes the interaction body.
+    if (state.menu?.kind && binding.menuCardId === binding.cardId && !binding.pendingCard) return;
     await this.retireCard(binding);
     if (this.turnMode(binding)) {
-      // Transcript cards require an observed turn; menus publish independently.
-      if (!binding.turn && !binding.pendingCard) return;
-      if (binding.turn) {
+      const fallback = this.screenFallback(binding);
+      // A previous turn must not obscure a screen-only interaction.
+      if (!state.forceCurrentCard && !binding.inputTranscriptSeen && binding.inputInteraction && !binding.pendingCard && !fallback) return;
+      if (!state.forceCurrentCard && !binding.turn && !binding.pendingCard && !fallback) return;
+      if (fallback) {
+        state.nextSignature = createHash('sha256').update(stripChrome(state.visible).split('\n').filter(line => line.trim()).join('\n')).digest('hex');
+        state.cardPending = state.forceTurnCard || !this.inputCard(binding) || binding.cardSignature !== state.nextSignature;
+      }
+      if (binding.turn && !fallback) {
         const previousTurnSignature = turnSignature(binding.turn);
         if (!binding.turn.settled && ['blocked', 'working'].includes(state.status) &&
           (binding.turn.status !== state.status || !binding.turn.activeObserved)) {
@@ -1122,7 +1960,7 @@ export class Bridge {
             }
           }
         }
-        if (binding.turn.adapter === 'claude') binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
+        if (['claude', 'codex', 'pi'].includes(binding.turn.adapter)) binding.turn.liveActivity = binding.turn.settled ? '' : screenActivity(state.visible).spinner;
         if (turnSignature(binding.turn) !== previousTurnSignature && !await this.updateGeneration(binding, { turn: binding.turn })) return;
         state.nextSignature = turnSignature(binding.turn);
         state.cardPending = state.forceTurnCard || binding.cardTurnId !== binding.turn.id ||
@@ -1131,27 +1969,33 @@ export class Bridge {
     }
     // Turn patches, including manual refresh and retries, obey a durable 2 s
     // interval. Fallback status cards keep 1 Hz; recovery sends a new reply.
-    const turnPublication = this.turnMode(binding) && binding.turn;
+    const turnPublication = this.turnMode(binding) && binding.turn && !this.screenFallback(binding);
     const targetId = binding.pendingCard ? binding.pendingCard.targetId :
-      turnPublication && binding.cardTurnId !== binding.turn?.id ? null : binding.cardId;
+      turnPublication && binding.cardTurnId !== binding.turn?.id && !binding.menuTurnContinuation && !this.inputCard(binding) ? null : binding.cardId;
     const turnThrottled = turnPublication && targetId && binding.cardAttemptId === targetId &&
       now - binding.cardAttemptAt < 2000;
-    const ready = turnPublication ? !turnThrottled && now >= (state.cardRetryAt ?? 0) :
-      immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0));
+    const ready = turnPublication ? (immediate || !turnThrottled) && now >= (state.cardRetryAt ?? 0) :
+      (immediate || (now - state.lastCard >= 1000 && now >= (state.cardRetryAt ?? 0))) &&
+      !(!immediate && this.screenFallback(binding) && targetId && binding.cardAttemptId === targetId && now - binding.cardAttemptAt < 1000);
     if (ready && (state.cardPending || binding.pendingCard)) {
+      // Startup may observe new session metadata while only retrying retirement.
+      // Reconcile saved payloads, but wait for a screen read before creating a
+      // new status payload; verification alone supplies no screen or status.
+      if (!binding.pendingCard && !turnPublication && typeof state.visible !== 'string') return;
       await this.verify(binding);
       let pending = binding.pendingCard;
       if (!pending) {
-        pending = await this.prepareCard(binding);
+        pending = await this.prepareCard(binding, false, state.forceCurrentCard && binding.nonce === binding.cardNonce ? binding.nonce : undefined);
         if (!await this.updateGeneration(binding, { pendingCard: pending, ...pending.tipPatch })) return;
       }
       try {
         let cardId = pending.targetId;
         if (cardId) {
           await this.verify(binding);
-          if (pending.turnId && !await this.updateGeneration(binding, { cardAttemptId: cardId, cardAttemptAt: this.now() })) return;
+          if ((pending.turnId || this.screenFallback(binding)) && !await this.updateGeneration(binding, { cardAttemptId: cardId, cardAttemptAt: this.now() })) return;
           try { await this.patchCard(cardId, pending.card, binding.cardTurnId ? 'turn' : 'status'); }
           catch (error) {
+            if (state.forceCurrentCard) throw error;
             if (!['230011', '230031', '230110'].includes(String(error.code))) throw error;
             pending.targetId = null; cardId = null;
             if (!await this.updateGeneration(binding, { pendingCard: pending })) return;
@@ -1169,13 +2013,17 @@ export class Bridge {
           await this.rememberCard(cardId, pending.card, pending.turnId ? 'turn' : 'status');
         }
         // The old nonce stays valid until publication succeeds. A pending
-        // version always has a fresh nonce; consumed versions are never reused.
+        // version preserves an unconsumed nonce only for a stale-card refresh.
         await this.store.transaction(data => {
           const b = data.bindings.find(b => b.chatId === binding.chatId && b.topicId === binding.topicId);
           if (this.sameGeneration(binding, b) && b.pendingCard?.nonce === pending.nonce) {
             Object.assign(b, { cardId, nonce: pending.staleNonce ? randomUUID() : pending.nonce, cardCreatedAt: pending.createdAt, pendingCard: null,
-              cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce });
-            if (pending.turnId) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
+              cardTurnId: pending.turnId ?? null, cardSignature: pending.signature, cardNonce: pending.nonce, cardScreenHash: pending.screenHash ?? null,
+              cardInteraction: pending.turnId ? null : binding.inputInteraction ?? null });
+            if (pending.screenPublication && (b.screenInteraction ?? null) === pending.screenInteraction) {
+              b.screenCardFresh = false;
+            }
+            if (pending.turnId || this.screenFallback(binding)) Object.assign(b, { cardAttemptId: cardId, cardAttemptAt: this.now() });
             if (pending.previousCardId && pending.previousCardId !== cardId) {
               b.retiredCardKind = pending.previousCardKind; b.retiredCardId = pending.previousCardId; b.retiredCardAt = pending.previousCardAt; delete b.retiredCardAttempts;
             }
@@ -1187,10 +2035,20 @@ export class Bridge {
         state.cardRetryAt = this.now() + Math.min(30000, 1000 * 2 ** (state.cardFailures - 1));
         throw error;
       }
+      // A settled turn card is published: the answer of a waiting delivery is
+      // this turn's final assistant text.
+      const publishedTurn = this.store.binding(binding.chatId, binding.topicId);
+      if (pending.turnId && publishedTurn?.turn?.settled && pending.turnId === publishedTurn.turn.id &&
+          pending.signature === turnSignature(publishedTurn.turn))
+        this.deliveryEvents.emit('turnSettled', { chatId: binding.chatId, topicId: binding.topicId,
+          text: publishedTurn.turn.text, sessionId: publishedTurn.sessionId, turnId: publishedTurn.turn.id });
       state.cardFailures = 0; state.cardRetryAt = 0;
       state.lastCard = this.now(); state.signature = pending.signature; state.blockedNotice = false;
-      state.forceTurnCard = false;
-      state.cardPending = state.nextSignature !== pending.signature || Boolean(pending.staleNonce);
+      // A retry must keep its fixed payload/UUID, then catch up with identity
+      // changes observed while that payload was pending (also pre-W6 cards).
+      state.forceTurnCard = JSON.stringify(pending.session) !== JSON.stringify(this.sessionIdentity(binding));
+      state.cardPending = state.forceTurnCard || state.nextSignature !== pending.signature || Boolean(pending.staleNonce) ||
+        Boolean(this.store.binding(binding.chatId, binding.topicId)?.screenCardFresh);
     }
   }
   async flush(binding) {
@@ -1221,9 +2079,8 @@ export class Bridge {
         if (!state.pending && !state.settle) return;
         if (state.agent && !['idle', 'done'].includes(state.status)) return;
         if (!state.settle && this.now() - state.lastChange < 1500) return;
-        batch = { generation: binding.generation ?? 0, checkpoint: state.current, next: 0, chunks: [] };
-        const output = stripChrome(newOutput(state.previous, state.current));
-        if (output.trim()) batch.chunks.push({ card: state.agent ? assistantCard(output, [], this.agentName(state.agent)) : outputCard(output), uuid: randomUUID() });
+        state.pending = false; state.settle = false;
+        return;
       }
       const prepared = batch;
       if (!await this.store.transaction(data => {
@@ -1231,6 +2088,7 @@ export class Bridge {
         if (!this.sameGeneration(binding, b)) return false;
         b.outputBatch = prepared;
         b.sentInputs = (b.sentInputs ?? []).filter(item => !(prepared.consumedInputs ?? []).includes(item.id));
+        for (const input of b.sentInputs) if (prepared.checkedInputs?.includes(input.id)) input.echoChecked = true;
         return true;
       })) return;
     }
@@ -1257,9 +2115,18 @@ export class Bridge {
       batch.next++;
       if (!await this.updateGeneration(binding, { outputBatch: batch })) return;
     }
-    if (!await this.updateGeneration(binding, { lastTranscript: batch.checkpoint, outputBatch: null,
+    const keepScreenAnchor = !batch.transcript && !state.transcriptSource &&
+      this.store.binding(binding.chatId, binding.topicId)?.screenInteraction;
+    // A transcript read may carry the model record of a still-running turn; the
+    // memory is written once that turn actually completes.
+    if (batch.model) state.seenModel = batch.model;
+    if (state.seenModel && batch.chunks.some(chunk => chunk.turn?.settled)) {
+      await this.rememberModel(binding, state.seenModel); state.seenModel = null;
+    }
+    if (!await this.updateGeneration(binding, { ...(keepScreenAnchor ? {} : { lastTranscript: batch.checkpoint }), outputBatch: null,
       ...(batch.transcript ? { transcript: batch.transcript } : {}) })) return;
-    state.previous = batch.checkpoint; state.pending = state.current !== batch.checkpoint; state.settle = false;
+    if (!keepScreenAnchor) state.previous = batch.checkpoint;
+    state.pending = state.current !== batch.checkpoint; state.settle = false;
   }
   async publishTurn(binding, turn) {
     let current = this.store.binding(binding.chatId, binding.topicId);
@@ -1282,6 +2149,10 @@ export class Bridge {
         if (current.pendingCard || current.cardSignature !== turnSignature(old)) return false;
       }
     }
+    if (turn.userPrompt && current.turn?.id !== turn.id && current.menuTurnContinuation) {
+      await this.updateGeneration(binding, { menuTurnContinuation: false });
+      current = this.store.binding(binding.chatId, binding.topicId);
+    }
     const signature = turnSignature(turn);
     if (current.turn?.id !== turn.id || turnSignature(current.turn) !== signature) {
       if (!await this.updateGeneration(binding, { turn })) return false;
@@ -1299,6 +2170,7 @@ export class Bridge {
     if ((['idle', 'done'].includes(state.status) && (current.turn.hasOutput || current.turn.activeObserved)) ||
       current.turn.path !== state.transcriptSource?.path) {
       await this.updateGeneration(binding, { turn: { ...current.turn, settled: true, status: 'idle' } });
+      if (state.seenModel) { await this.rememberModel(binding, state.seenModel); state.seenModel = null; }
     }
   }
 }

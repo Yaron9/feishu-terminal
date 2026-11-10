@@ -1,0 +1,26 @@
+────────────────────────────────────────────────────────────────────────────────
+
+Only showing models from configured providers. Use /login to add providers.
+
+>
+
+→ ✓ deepseek/deepseek-flash (DeepSeek-V4.1-Flash · DeepSeek) [magpie] · default
+    group/smart-split (routing group) [magpie]
+    strata/qwen3.8-flash-next [magpie]
+    deepseek/deepseek-v4-pro [magpie]
+    codex/gpt-6.1-sol [magpie]
+    codex/gpt-6-astra [magpie]
+    codex/gpt-6.1-terra [magpie]
+    codex/gpt-6-sol [magpie]
+    codex/gpt-6-luna [magpie]
+    codex/gpt-5.6-sol [magpie]
+  (1/25)
+
+  Model Name: DeepSeek-V4.1-Flash · DeepSeek
+
+  Model catalogs refreshed.
+
+  Enter to select · Ctrl+S to set as default · Escape/Ctrl+C to cancel
+────────────────────────────────────────────────────────────────────────────────
+D:\work\superagent-ft\work\picker
+0.0%/1.0M (auto)                        model • high

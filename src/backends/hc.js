@@ -1,9 +1,13 @@
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { statSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { HerdrClient, HerdrError } from '../herdr-client.js';
 import { detectMenu } from '../menus.js';
 import { screenActivity } from '../transcripts/background.js';
+import { yesNoPrompt } from '../render.js';
+import { lookupCli } from '../cli-table.js';
 
 const required = ['terminal.list', 'terminal.get', 'terminal.read', 'terminal.send', 'terminal.keys', 'terminal.run', 'terminal.kill', 'events.subscribe', 'server.status'];
 const rpcError = e => new HerdrError(e.data?.kind === 'unavailable' ? 'connection_error' : e.data?.kind ?? 'hc_error');
@@ -12,9 +16,24 @@ const checkHello = h => {
     throw new HerdrError('hc_incompatible');
   return h;
 };
-export function hcEndpoint(env = process.env) {
-  return { path: env.HC_TERMINAL_SOCKET || env.HC_SOCKET_PATH ||
-    join(env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`, 'herdr-core', 'default.sock') };
+export function hcEndpoint(env = process.env, platform = process.platform, isDir = path => { try { return statSync(path).isDirectory(); } catch { return false; } }) {
+  const session = env.HC_SESSION?.trim() || 'default';
+  if (session === '.' || session === '..' || /[\x00-\x1f/\\:*?"<>|]/.test(session)) throw new Error('invalid HC_SESSION');
+  const home = env.HOME || (platform === 'win32' ? env.USERPROFILE : null) || homedir();
+  const configHome = env.XDG_CONFIG_HOME || (platform === 'win32' ? env.APPDATA || join(home, 'AppData', 'Roaming') : join(home, '.config'));
+  let configured;
+  try {
+    const config = readFileSync(join(configHome, 'herdr-core', 'config.toml'), 'utf8');
+    const root = config.split(/^\s*\[/m, 1)[0];
+    const value = /^\s*socket\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/m.exec(root)?.[1];
+    if (value) configured = value[0] === '"' ? JSON.parse(value) : value.slice(1, -1);
+  } catch { /* hc ignores unreadable or invalid config */ }
+  const override = env.HC_TERMINAL_SOCKET || env.HC_SOCKET_PATH || env.HC_SOCKET || configured;
+  if (override) return { path: override };
+  if (platform === 'win32') return { path: `\\\\.\\pipe\\herdr-core-${(env.USERNAME || '').replace(/[^a-zA-Z0-9]/g, '')}-${session}.sock` };
+  const run = env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 1000}`;
+  const state = env.XDG_STATE_HOME || join(home, '.local', 'state');
+  return { path: env.XDG_RUNTIME_DIR || isDir(run) ? join(run, 'herdr-core', `${session}.sock`) : join(state, 'herdr-core', session, `${session}.sock`) };
 }
 
 // Plain JSON-RPC over the local socket: no helper process, attach viewer or
@@ -25,18 +44,18 @@ export class HcClient extends HerdrClient {
     if (this.closed) return Promise.reject(new HerdrError('client_closed'));
     return new Promise((resolve, reject) => {
       const id = randomUUID(), helloId = randomUUID();
-      let finished = false;
+      let finished = false, dispatched = false;
       const finish = (error, result) => {
         if (finished) return;
         finished = true; clearTimeout(timer); socket.destroy();
-        if (error) reject(error); else resolve(result);
+        if (error) { if (!dispatched) error.notDispatched = true; reject(error); } else resolve(result);
       };
       const send = (id, method, params) => socket.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
       const socket = this.socket(message => {
         if (![id, helloId].includes(message.id)) return;
         if (message.error) { finish(rpcError(message.error)); return; }
         if (message.id === helloId) {
-          try { onHello(checkHello(message.result)); send(id, method, params); } catch (error) { finish(error); }
+          try { onHello(checkHello(message.result)); dispatched = true; send(id, method, params); } catch (error) { finish(error); }
         } else if ('result' in message) finish(null, message.result);
         else finish(new HerdrError('invalid_response'));
       }, () => finish(new HerdrError('connection_closed')));
@@ -137,7 +156,7 @@ export class HcBackend {
     return { ...t, pane_id: `hc:${t.address}`, terminal_id: `hc:${hello.core.id}:${t.address}:${t.created_ms}:${t.pid}`,
       backendLabel: 'herdr-core', foreground_pid: t.foreground?.pid ?? t.pid,
       foreground_cwd: t.foreground?.cwd, terminal_title_stripped: t.title,
-      agent: /^(claude|codex)$/i.test(t.foreground?.name ?? '') ? t.foreground.name.toLowerCase() : null,
+      agent: lookupCli(t)?.cli ?? t.agent ?? null,
       agent_status: this.status(t) };
   }
   async call(method, params) { let hello; const result = await this.client.request(method, params, h => { hello = h; }); return { result, hello }; }
@@ -146,8 +165,13 @@ export class HcBackend {
     return result.terminals.filter(t => t.state === 'live').map(t => this.normalize(t, hello));
   }
   async get(id) {
+    const terminal = await this.inspect(id);
+    if (terminal.state !== 'live') throw new HerdrError('terminal_finished');
+    return terminal;
+  }
+  async inspect(id) {
     const { result, hello } = await this.call('terminal.get', { terminal: this.address(id) });
-    if (result.state !== 'live' || `hc:${result.address}` !== id) throw new HerdrError('terminal_finished');
+    if (`hc:${result.address}` !== id) throw new HerdrError('not_found');
     return this.normalize(result, hello);
   }
   async read(id, _options) {
@@ -169,8 +193,10 @@ export class HcBackend {
     return result;
   }
   close(id) { return this.client.request('terminal.kill', { terminal: this.address(id) }); }
-  async create(cmd, cwd) {
-    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), cwd, no_parent: true, wait: false, labels: { source: 'feishu-terminal' } });
+  remove(id) { return this.client.request('terminal.rm', { terminal: this.address(id) }); }
+  async create(cmd, cwd, { labels = {}, name, parent } = {}) {
+    const { result } = await this.call('terminal.run', { ...(cmd ? { line: cmd } : {}), ...(name ? { name } : {}), cwd,
+      ...(parent ? { parent: this.address(parent) } : { no_parent: true }), wait: false, labels: { ...labels, source: 'feishu-terminal' } });
     const terminal = await this.get(`hc:${result.address}`);
     return terminal;
   }
@@ -178,8 +204,12 @@ export class HcBackend {
   identity(t) { return { terminalId: t.terminal_id }; }
   processOf(t) { return t.foreground?.pid ?? t.pid ?? null; }
   status(t, screen = '') {
-    if (t.reported) return ({ done: 'idle', error: 'blocked' })[t.status?.state] ??
+    if (t.reported) return ({ done: 'idle', error: 'error' })[t.status?.state] ??
       (['working', 'blocked', 'idle'].includes(t.status?.state) ? t.status.state : 'unknown');
+    // A shell/SSH wrapper cannot report the remote CLI's readiness. Its screen
+    // may contain a prompt or spinner belonging to a different process.
+    if (yesNoPrompt(screen)) return 'blocked';
+    if (t.agent && !lookupCli(t) && !t.status) return 'unknown';
     if (detectMenu(screen).kind) return 'blocked';
     if (screenActivity(screen).spinner) return 'working';
     return /(?:[❯›]\s*$|\?\s+for shortcuts)/mu.test(screen) ? 'idle' : 'unknown';

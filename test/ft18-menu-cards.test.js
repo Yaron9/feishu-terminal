@@ -43,7 +43,7 @@ test('ft18 menu posts its own reply; cursor/items/pages/confirm patch it and pre
   assert.equal(h.feishu.calls.slice(before).filter(c => c.id === statusId).length, 0);
 });
 
-test('ft18 close/select finalizes only the menu with no controls; later menu gets a fresh card, including after restart', async t => {
+test('ft18 close/select removes menu controls; later menu reuses the card across restart', async t => {
   for (const select of [false, true]) {
     const { h, pane } = await setup(t);
     await screen(h, pane, resume);
@@ -60,15 +60,13 @@ test('ft18 close/select finalizes only the menu with no controls; later menu get
     h.advance(1000); await h.bridge.tick();
     assert.equal(bound(h).menuCardId, null);
     const final = payload(h.feishu.calls.findLast(c => c.type === 'patch' && c.id === id));
-    assert.equal(final.header.template, select ? 'green' : 'grey');
-    assert.match(JSON.stringify(final), select ? /已选择：paper30-reloading 研究交接文档/ : /菜单已关闭/);
     assert.ok(!/behaviors|"button"|interactive_container/.test(JSON.stringify(final)));
     await h.restart(); await screen(h, pane, resume);
-    assert.ok(bound(h).menuCardId && bound(h).menuCardId !== id && bound(h).menuCardId !== statusId);
+    assert.ok(bound(h).menuCardId === id && bound(h).menuCardId === statusId);
   }
 });
 
-test('ft18 settled transcript turn is left untouched while a separate menu opens and updates', async t => {
+test('ft18 settled transcript turn is patched when the menu opens and updates', async t => {
   const records = [], adapter = { locate: async () => 'turn.jsonl', read: async (_path, cursor) => ({
     cursor: { offset: records.length }, items: cursor.atEnd ? [] : records.slice(cursor.offset),
   }) };
@@ -79,8 +77,8 @@ test('ft18 settled transcript turn is left untouched while a separate menu opens
   const turnId = bound(h).cardId, before = h.feishu.calls.length;
   await screen(h, pane, resume); await screen(h, pane, model);
   assert.equal(bound(h).cardId, turnId);
-  assert.ok(bound(h).menuCardId !== turnId);
-  assert.equal(h.feishu.calls.slice(before).filter(c => c.id === turnId).length, 0);
+  assert.equal(bound(h).menuCardId, turnId);
+  assert.ok(h.feishu.calls.slice(before).some(c => c.type === 'patch' && c.id === turnId));
 });
 
 test('ft18 resume snapshot uses vertically stacked full labels, grey details, cursor and callback safety values', async () => {
@@ -107,22 +105,23 @@ test('ft18 long Chinese titles remain whole across reduced pages, and hidden ind
   const b = bound(h), card = payload(h.feishu.calls.findLast(c => c.id === b.menuCardId));
   assert.ok(b.menuPageSize < 10);
   assert.ok(Buffer.byteLength(JSON.stringify(card)) < 28000);
-  assert.ok(card.body.elements[1].elements[0].content.includes(title + '0'));
+  assert.ok(card.body.elements.find(e => e.tag === 'interactive_container').elements[0].content.includes(title + '0'));
   await tap(h, `menu:select:${b.menuPageSize}`);
   assert.equal(h.fake.calls.filter(c => c.method === 'pane.send_keys').length, 0);
   await tap(h, 'menu:more'); h.advance(1000); await h.bridge.tick();
   const next = payload(h.feishu.calls.findLast(c => c.id === b.menuCardId));
-  assert.ok(next.body.elements[1].elements[0].content.includes(title + b.menuPageSize));
+  assert.ok(next.body.elements.find(e => e.tag === 'interactive_container').elements[0].content.includes(title + b.menuPageSize));
   assert.ok(Buffer.byteLength(JSON.stringify(next)) < 28000);
 });
 
 test('ft18 an uncertain menu reply retries the persisted UUID across restart and recovery preserves its identity', async t => {
   const { h, pane } = await setup(t);
+  const b = bound(h); await h.bridge.store.update(b.chatId, b.topicId, { cardId: null });
   const original = h.feishu.reply.bind(h.feishu);
   let failed = false;
   h.feishu.reply = async (...args) => {
     const id = await original(...args);
-    if (!failed && args[1]?.header?.title?.content === 'Claude · 等待菜单选择') {
+    if (!failed && JSON.stringify(args[1]).includes('interactive_container')) {
       failed = true; throw new Error('Lost reply acknowledgement');
     }
     return id;

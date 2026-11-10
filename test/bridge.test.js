@@ -4,7 +4,7 @@ import { legacyHarness as harness, message, pickerEvent, outputReplies } from '.
 
 const writes = fake => fake.calls.filter(c => ['pane.send_text', 'pane.send_keys', 'agent.prompt'].includes(c.method));
 const records = outputReplies;
-const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive') && !(c.card ?? c.content)?.schema);
+const cards = edge => edge.calls.filter(c => (c.type === 'patch' || c.msgType === 'interactive'));
 
 test('legacy-root fixture creates workspace/pane and sends first shell input in order', async t => {
   const h = await harness(t);
@@ -46,7 +46,7 @@ test('recognized agent uses agent.prompt; blocked prompt displays one live card 
   await h.bridge.handle(message('do next', 'm3', 'm1'));
   assert.equal(writes(h.fake).at(-1).method, 'agent.prompt');
   const card = cards(h.feishu).at(-1).content;
-  assert.equal(card.header.template, 'orange'); assert.equal(card.elements.flatMap(e => e.actions ?? []).length, 5);
+  assert.equal(card.header.template, 'orange'); assert.equal(card.body.elements.filter(e => e.tag === 'button').length, 5);
   assert.ok(!records(h.feishu).some(c => String(c.content).includes('fixture error')));
 });
 
@@ -58,12 +58,13 @@ test('live card edits are throttled to 1 Hz and quiet shell posts only new outpu
   assert.equal(cards(h.feishu).length, 1);
   h.advance(700); await h.bridge.tick(); assert.equal(cards(h.feishu).length, 2);
   h.advance(800); await h.bridge.tick();
-  const initialOutput = records(h.feishu).map(c => c.content).join(''); assert.equal(initialOutput, 'pwd\n/tmp\n$ new');
-  // No event emitted: fallback polling must still discover and settle changes.
+  assert.match(JSON.stringify(cards(h.feishu).at(-1).card), /\/tmp/);
+  // No event emitted: fallback polling must still discover changes without a new reply.
   h.fake.panes.get('w1:p1').text += '\nonly polling'; h.fake.panes.get('w1:p1').visible += '\nonly polling';
   h.advance(1000); await h.bridge.tick(); h.advance(1500); await h.bridge.tick();
-  assert.equal(records(h.feishu).at(-1).content, '\nonly polling');
-  const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
+  assert.match(JSON.stringify(cards(h.feishu).at(-1).card), /only polling/);
+  const count = cards(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(cards(h.feishu).length, count);
+  assert.equal(records(h.feishu).length, 0);
   assert.ok(cards(h.feishu).slice(1).every((c, i) => c.time - cards(h.feishu)[i].time >= 1000));
   assert.ok(cards(h.feishu).filter(c => c.type === 'patch').every(c => c.id === cards(h.feishu)[0].id));
 });
@@ -73,12 +74,16 @@ test('fallback agent output waits through working and flushes working -> done as
   h.fake.status('w1:p1', 'working'); h.fake.output('w1:p1', '$ ' + '中文🙂'.repeat(6000));
   await h.drain(); await h.bridge.tick(); h.advance(5000); await h.bridge.tick(); assert.equal(records(h.feishu).length, 0);
   h.fake.status('w1:p1', 'done'); await h.drain(); await h.bridge.tick();
-  assert.equal(records(h.feishu).length, 1);
-  assert.equal(records(h.feishu)[0].content, '中文🙂'.repeat(500));
-  assert.equal(records(h.feishu)[0].card.header.title.content, '🤖 Codex · 已完成');
-  assert.match(records(h.feishu)[0].card.body.elements[0].content, /仅显示末尾/);
-  assert.ok(Buffer.byteLength(JSON.stringify(records(h.feishu)[0].card)) < 28000);
-  const count = records(h.feishu).length; h.advance(2000); await h.bridge.tick(); assert.equal(records(h.feishu).length, count);
+  assert.equal(records(h.feishu).length, 0);
+  const publications = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive');
+  assert.ok(publications.some(c => JSON.stringify(c.card ?? c.content).includes('\u4e2d\u6587\ud83d\ude42')));
+  assert.equal(publications.filter(c => c.msgType === 'interactive').length, 1);
+  assert.ok(publications.filter(c => c.type === 'patch').every(c => c.id === publications[0].id));
+  for (let i = 0; i < 12; i++) { h.advance(2000); await h.bridge.tick(); }
+  const count = h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive').length;
+  h.advance(2000); await h.bridge.tick();
+  assert.equal(h.feishu.calls.filter(c => c.type === 'patch' || c.msgType === 'interactive').length, count);
+
 });
 
 test('blocked card buttons validate ACL, card identity and nonce, consume nonce, reject stale and cross-topic clicks', async t => {
@@ -107,7 +112,7 @@ test('message/event dedupe persists across restart and ACL refuses once without 
   await h.bridge.handle(message('bad', 'denied', 'denied', { openId: 'ou_bad' }));
   await h.bridge.handle(message('bad again', 'denied2', 'denied2', { openId: 'ou_bad' }));
   await h.bridge.handle(message('wrong group', 'denied3', 'denied3', { chatId: 'oc_other' }));
-  assert.equal(h.fake.calls.length, 0); assert.equal(h.feishu.calls.length, 2);
+  assert.equal(h.fake.calls.length, 0); assert.equal(h.feishu.calls.length, 1);
   await Promise.all(Array.from({ length: 4 }, () => h.bridge.handle(message('pwd'))));
   assert.equal(writes(h.fake).length, 2);
   const restored = await h.restart(); assert.equal(restored.binding('oc_test', 'm1').paneId, 'w1:p1');
@@ -126,7 +131,7 @@ test('Refresh consumes nonce and schedules an unchanged blocked card after the t
   assert.equal(cards(h.feishu).length, 1); assert.notEqual(h.store.binding('oc_test', 'm1').nonce, before.nonce);
   h.advance(900); await h.bridge.tick(); assert.equal(cards(h.feishu).length, 2);
   const card = cards(h.feishu).at(-1).card;
-  assert.equal(card.elements.find(e => e.actions).actions[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
+  assert.equal(card.body.elements.find(e => e.tag === 'button').behaviors[0].value.nonce, h.store.binding('oc_test', 'm1').nonce);
 });
 
 test('/t open binds desktop pane with a fresh topic; picker includes agent status; close offers unbind and --kill destroys', async t => {

@@ -1,0 +1,23 @@
+────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (All)                    ○ Current Folder | ◉ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s sort · ctrl+n named · ctrl+d delete · ctrl+p path (off) · ctrl+r rename
+
+>
+
+› Session one                                                      ~ 325 4h
+  Session two                                                      ~ 9 13h
+  Session three                                                    ~ 5 17h
+  Session four                                                     ~ 5 18h
+  Session five                                                     ~ 3 18h
+  Session six                                                      ~ 3 19h
+  Session seven                                                    ~ 178 1d
+  Session eight                                                    ~ 6 1d
+  Session nine                                                     ~ 27 3d
+  Session ten                                                      ~ 64 3d
+  (1/47)
+
+────────────────────────────────────────────────────────────────────────────────
+D:\work\superagent-ft\work\picker
+0.0%/1.0M (auto)                        model • high
