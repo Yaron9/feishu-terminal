@@ -16,7 +16,7 @@ import { Wake } from './wake.js';
 import { Reap } from './reap.js';
 import { TerminalTree } from './terminal-tree.js';
 import { auditRecord, appendAudit } from './store.js';
-import { topicTitle, sessionTitle, cleanTitle } from './topics.js';
+import { topicTitle, sessionTitle, cleanTitle, listTitle } from './topics.js';
 import { paneLabel } from './panes.js';
 import { PanePicker } from './picker.js';
 import { detectMenu, sameMenu, sameMenuChoices, approvalContext, resumeWarnings, menuControls, menuPageSize } from './menus.js';
@@ -134,8 +134,8 @@ export class Bridge {
   // state changes here: reading the list must never wake or type into a topic.
   async topics() {
     const panes = new Map();
-    // A topic whose root text is a delivery header has no human title, so one
-    // list call supplies the terminal title the user sees in hc.
+    // A topic with no root message text still needs a name, so one list call
+    // supplies the terminal title the user sees in hc as the last fallback.
     try {
       for (const pane of await this.backend.backends.get('hc')?.list() ?? []) panes.set(pane.pane_id, pane);
     } catch { /* a missing title must never fail the listing */ }
@@ -144,10 +144,9 @@ export class Bridge {
       const group = this.registry.get(binding.chatId);
       if (!group) continue;
       const pane = panes.get(binding.paneId) ?? {};
-      const root = cleanTitle(binding.topicRoot?.text);
-      const title = [...(root || topicTitle(pane, binding.sessionTitle) || binding.topicId)].slice(0, 40).join('');
+      const title = listTitle(binding, topicTitle(pane, binding.sessionTitle));
       items.push({ topicId: binding.topicId, chatId: binding.chatId, group: group.project ?? null,
-        member: binding.memberName ?? binding.member ?? null, cli: binding.cli ?? null, title,
+        member: binding.memberName ?? binding.member ?? null, cli: binding.cli || 'shell', title,
         // A frozen binding has lost its pane identity and must be reopened from
         // /t ls; it cannot be attached, so it is not offered as live.
         state: binding.dormant || binding.frozen ? 'dormant' : 'live',
