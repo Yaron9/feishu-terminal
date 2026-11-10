@@ -103,10 +103,49 @@ test('topics lists every project topic newest first with the fields the picker p
     ['chatId', 'cli', 'group', 'lastInputAt', 'member', 'paneId', 'state', 'title', 'topicId']);
   assert.deepEqual(topics[0], { topicId: second, chatId: 'oc_test', group: 'w16', member: '甲', cli: 'pi',
     title: '重构唤醒路径', state: 'live', paneId: 'hc:t2', lastInputAt: 3000 });
-  assert.equal(topics[1].title, 'x'.repeat(40));
+  assert.equal(topics[1].title, 'x'.repeat(30));
   assert.equal(topics[1].member, null);
   assert.equal(topics[2].paneId, 'hc:t1');
-  assert.ok(topics[2].title.length > 0 && topics[2].title.length <= 40);
+  assert.ok(topics[2].title.length > 0 && topics[2].title.length <= 30);
+});
+
+test('a topic title is what the topic is about, never the window title', async t => {
+  const h = await harness(t);
+  h.create({ created_ms: 0 }); h.create({ title: '管理员:C:\\Program Files\\WindowsApps\\pwsh.exe' });
+  h.create(); h.create({ title: '终端：legacy' }); h.create({ title: '管理员:C:\\Program Files\\WindowsApps\\pwsh.exe' });
+  const [root, delivery, sent, window, bare] =
+    [await h.openPane('hc:t1'), await h.openPane('hc:t2'), await h.openPane('hc:t3'), await h.openPane('hc:t4'),
+      await h.openPane('hc:t5')];
+  // The user's first message wins, even when the window reports something else.
+  await h.store.update('oc_test', root, { topicRoot: { type: 'user', text: '修复\n\t主题标题 规则', createdAt: 100 } });
+  // A `📨 …` delivery root is the topic: it is a readable title, not noise.
+  await h.store.update('oc_test', delivery, { member: '甲', memberName: '甲',
+    topicRoot: { type: 'user', text: '📨 张三 → 甲：审阅 W16-S9b 的标题规则', createdAt: 100 } });
+  // An interactive root stores the card title, so it is not a root message:
+  // the first input sent into the topic names it instead.
+  await h.store.update('oc_test', sent, { topicRoot: { type: 'interactive', text: '终端：legacy', createdAt: 100 },
+    sentInputs: [{ prefix: '解释这段 ripgrep 的转义规则', sentAt: 100, expires: 100 + 600000 }] });
+  // Neither root text nor input: only now the hc window title, and a shell whose
+  // window title is its own pwsh path says 命令行, never that path.
+  h.terminals.get('t4').title = '✳ 正在读取任务文件';
+  await h.store.update('oc_test', window, { topicRoot: { type: 'interactive', text: '终端：legacy', createdAt: 100 }, sentInputs: [] });
+  await h.store.update('oc_test', bare, { topicRoot: { type: 'interactive', text: '终端：legacy', createdAt: 100 }, sentInputs: [] });
+
+  const titles = Object.fromEntries((await h.bridge.topics()).map(topic => [topic.topicId, topic.title]));
+  assert.equal(titles[root], '修复 主题标题 规则');
+  assert.equal(titles[delivery], '📨 张三 → 甲：审阅 W16-S9b 的标题规则');
+  assert.equal(titles[sent], '解释这段 ripgrep 的转义规则');
+  assert.equal(titles[window], '正在读取任务文件');
+  assert.equal(titles[bare], '命令行');
+});
+
+test('a topic with no stored CLI is a shell topic', async t => {
+  const h = await harness(t);
+  h.create({ created_ms: 0 });
+  const topicId = await h.openPane('hc:t1');
+  assert.equal((await h.bridge.topics())[0].cli, 'pi', 'the group default CLI is the topic CLI');
+  await h.store.update('oc_test', topicId, { cli: null });
+  assert.equal((await h.bridge.topics())[0].cli, 'shell');
 });
 
 test('a dormant topic stays listed as dormant', async t => {

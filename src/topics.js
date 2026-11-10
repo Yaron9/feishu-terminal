@@ -29,3 +29,19 @@ export function sessionTitle(title) {
   const value = String(title ?? '').trim();
   return /\.exe$/i.test(value) || /^(?:管理员|administrator)\s*[:：]\s*(?:[a-z]:[\\/]|\\\\|\/)/i.test(value) ? '命令行' : value;
 }
+
+// One line, at most 30 characters: the picker list must stay readable in a
+// terminal, so a root message never contributes a wrapped or giant title.
+const listLine = value => [...cleanTitle(value).replace(/\s+/gu, ' ')].slice(0, 30).join('');
+
+// The title `metame open` shows is what the topic is ABOUT, not what its window
+// happens to say. In order: the topic's root message text (a user's first
+// message or a `📨 …` delivery root; an `interactive` root has no message and is
+// only the published card title), the first input sent into the topic, and only
+// then the terminal title. `topicId` is the last resort so a line is never blank.
+export function listTitle(binding, paneTitle) {
+  const root = binding.topicRoot?.type === 'interactive' ? '' : binding.topicRoot?.text;
+  const sent = (binding.sentInputs ?? []).find(item => item.prefix)?.prefix;
+  // A window title that is only a shell path says '命令行', never a WindowsApps path.
+  return listLine(root) || listLine(sent) || listLine(sessionTitle(paneTitle)) || listLine(binding.topicId);
+}
