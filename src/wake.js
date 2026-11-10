@@ -103,7 +103,7 @@ export class Wake {
     }
     await this.ensure(binding);
   }
-  async ensure(binding, { wait = true } = {}) {
+  async ensure(binding, { wait = true, card = true } = {}) {
     const b = this.bridge;
     binding = b.store.binding(binding.chatId, binding.topicId);
     if (!binding || binding.frozen) return;
@@ -119,7 +119,7 @@ export class Wake {
     }
     const key = binding.sessionId ?? `topic:${binding.topicId}`;
     const previous = this.sessions.get(key) ?? Promise.resolve();
-    const task = previous.catch(() => {}).then(() => this.run(binding, row, wait));
+    const task = previous.catch(() => {}).then(() => this.run(binding, row, wait, card));
     this.sessions.set(key, task);
     try { await task; }
     finally { if (this.sessions.get(key) === task) this.sessions.delete(key); }
@@ -137,7 +137,7 @@ export class Wake {
     }
     return terminal;
   }
-  async run(snapshot, row, wait) {
+  async run(snapshot, row, wait, card = true) {
     const b = this.bridge;
     let binding = b.store.binding(snapshot.chatId, snapshot.topicId);
     if (!binding || binding.frozen) return;
@@ -219,7 +219,9 @@ export class Wake {
       if (b.now() >= deadline) break;
       await this.sleep(Math.min(250, deadline - b.now()));
     }
-    if (wait || !binding.wakeCardId) await this.screen(binding);
+    // A desktop pick waits for the CLI without a confirmation card: the person
+    // is already attached to the pane and handles anything the screen asks.
+    if (card && (wait || !binding.wakeCardId)) await this.screen(binding);
   }
   ready(binding, terminal) {
     return CLI_TABLE.find(row => row.cli === binding.cli)?.readyStates.includes(terminal.status?.state ?? terminal.agent_status);
